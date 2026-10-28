@@ -16,7 +16,7 @@ int main(int argc,char**argv){
   s=strtoull(argv[3],0,10)*0x9E3779B97F4A7C15ULL+1;
   int cases=atoi(argv[2]);
   for(int t=0;t<cases;t++){
-    char p[512];snprintf(p,sizeof p,"%s/f%04d.l0",argv[1],t);FILE*f=fopen(p,"w");
+    char p[512];snprintf(p,sizeof p,"%s/f%04d.cock",argv[1],t);FILE*f=fopen(p,"w");
     snprintf(p,sizeof p,"%s/f%04d.exp",argv[1],t);FILE*e=fopen(p,"w");
     int k=2+(int)(r()%60); uint64_t v[64][NA];
     fprintf(f,"fn main() -> i64 {\n");

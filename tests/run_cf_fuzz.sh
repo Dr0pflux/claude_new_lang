@@ -8,8 +8,8 @@ T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 cc -std=c11 -O2 -Wall -Wextra -Werror tests/cf_fuzz.c -o "$T/gen"
 "$T/gen" "$T" "$N" "$SEED" "$PRESSURE" "$MEM" "$FUNC" "$PAR"
 pass=0; traps=0; loops=0; spills=0
-for src in "$T"/c*.l0; do
-  b=${src%.l0}
+for src in "$T"/c*.cock; do
+  b=${src%.cock}
   if ! "${LING:-./ling}" "$src" "$T/p" > "$T/log" 2>&1; then echo "COMPILE FAIL $src"; cat "$T/log" "$src"; exit 1; fi
   grep -q while "$src" && loops=$((loops+1))
   grep -qE ' [1-9][0-9]* spills' "$T/log" && spills=$((spills+1))

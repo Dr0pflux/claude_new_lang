@@ -1,6 +1,6 @@
 # ling: a native compiler written in its own language (v0.9)
 
-**Status:** experimental Linux x86-64 compiler. **Self-hosted:** the compiler is `ling.l0`, written in ling0, and it compiles itself to a byte-identical fixed point.
+**Status:** experimental Linux x86-64 compiler. **Self-hosted:** the compiler is `ling.cock`, written in ling0, and it compiles itself to a byte-identical fixed point.
 
 - No C compiler, assembler, linker, LLVM/GCC backend, VM or libc anywhere in the build. ling writes x86-64 machine code and the ELF64 file byte by byte.
 - `bootstrap/ling-seed` is a prebuilt ling executable used to start the build. `bootstrap/ling0.c` is the original C seed, kept only so the chain can be audited (`make seed-from-c`).
@@ -8,17 +8,17 @@
 ## Build and use
 
 ```
-make            # bootstrap/ling-seed builds ling.l0 -> ling, which rebuilds itself
+make            # bootstrap/ling-seed builds ling.cock -> ling, which rebuilds itself
 make selfcheck  # ling must reproduce itself byte for byte
 make test       # regression suite + small fuzz runs
-./ling prog.l0 prog && ./prog
+./ling prog.cock prog && ./prog
 ```
 
 Learn the language with `TUTORIAL.md`; the reference is `LANGUAGE.md`.
 
 ## New in v0.9: self-hosting
 
-- The whole compiler (lexer, type checker, range analysis, inliner, strength reduction, register allocator, x86-64 encoder, ELF writer) is ported to ling0: about 4,300 lines in `ling.l0`. Its output was verified byte-identical to the C seed on every example, test and benchmark before the C seed was retired.
+- The whole compiler (lexer, type checker, range analysis, inliner, strength reduction, register allocator, x86-64 encoder, ELF writer) is ported to ling0: about 4,300 lines in `ling.cock`. Its output was verified byte-identical to the C seed on every example, test and benchmark before the C seed was retired.
 - New built-ins the compiler needed: `argv(k)` (an argument's text as `[u8]`) and `ewrite(…)` (unbuffered stderr).
 - Fixes found while porting: inlined-call result variables were live from program start (spills on the compiler 1,316 → 789); every function shared one global-sized stack frame (now per-function frames); an unread inlined result could be stored below the stack pointer; error-path functions (always `exit`) are no longer inlined and are treated as non-returning by range analysis.
 - See `V0.9_NOTES.md`.
@@ -50,7 +50,7 @@ Learn the language with `TUTORIAL.md`; the reference is `LANGUAGE.md`.
 - **`par k in a..b { … }`:** deterministic, race-free parallelism. Workers are forked processes with private snapshots, and results come back through `shared8/16/32/64` arrays.
 - **`ncpu()`** reports the CPUs in the affinity mask.
 - **Compile-time rules:** no output, outer-variable assignment, or printing calls inside a `par` body.
-- **Parallel Vigenère solver** (`bench/vigenere/vigp.l0`), same algorithm and identical output, 2 CPUs, median of 15 runs:
+- **Parallel Vigenère solver** (`bench/vigenere/vigp.cock`), same algorithm and identical output, 2 CPUs, median of 15 runs:
 
 | | ling0 `par` | gcc -O3 OpenMP | Rust `std::thread` |
 |---|---:|---:|---:|
@@ -67,7 +67,7 @@ Learn the language with `TUTORIAL.md`; the reference is `LANGUAGE.md`.
   - The Vigenère solver, now written with 5 helpers, keeps 67/67 checks proven.
   - It runs in **474 ms vs gcc -O3 551 ms**, clang 573 ms and Rust 780 ms (median of 15, 4,000 texts).
 - **Text:** string literals, plus `write(a)`, `write(a, off, n)` and `write("..")`.
-- **New examples:** `examples/hello.l0` and `examples/wordfreq.l0` (letter profile + index of coincidence of any file).
+- **New examples:** `examples/hello.cock` and `examples/wordfreq.cock` (letter profile + index of coincidence of any file).
 - See `V0.5_NOTES.md`.
 
 ## New in v0.4
@@ -90,7 +90,7 @@ See `V0.4_NOTES.md` for details, bugs found and fixed, and evidence; `LANGUAGE.m
 
 ```sh
 make            # builds ./ling0 with -Wall -Wextra -Wpedantic -Werror
-./ling0 examples/argc.l0 ./program && ./program a b
+./ling0 examples/argc.cock ./program && ./program a b
 make test       # regressions + C oracles + control-flow fuzz + div-by-const
 make fuzz       # 16,000-program control-flow campaign
 make runtime    # ling0 vs clang/gcc/rustc (needs all three)

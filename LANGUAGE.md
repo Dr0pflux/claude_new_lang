@@ -205,7 +205,7 @@ A flow-sensitive interval analysis tracks every scalar through assignments, `if`
   - unsigned compares refine when both sides are proven non-negative;
   - `x % c` on `u64` is in `0..c−1`.
 
-A check is removed when the index range lies within `[0, len−1]` for a constant length, when a length fact applies, or when the index's maximum is below a validated minimum length (`if len(q) < N { return …; }`). In `bench/vigenere/vig.l0`, 67 of 67 checks are proven.
+A check is removed when the index range lies within `[0, len−1]` for a constant length, when a length fact applies, or when the index's maximum is below a validated minimum length (`if len(q) < N { return …; }`). In `bench/vigenere/vig.cock`, 67 of 67 checks are proven.
 
 ## Optimizations that change cost, never results
 

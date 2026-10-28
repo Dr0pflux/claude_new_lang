@@ -10,7 +10,7 @@ Environment: Intel Xeon @ 2.10 GHz (2 vCPU, VM), Linux 6.18, gcc + clang 18. Pat
 | D1 | High (hostile input) | `unary`/`atom`/`expr` recursion | `return ((((…1…))));` 200k parens, or 1M `-` signs | diagnostic | **compiler SIGSEGV (rc 139)** [T] | **Fixed**: `MAX_DEPTH=256` on `unary()`; regression in `test.sh` (fails on old binary [T]) |
 | D2 | Medium (semantics) | `optimize` fold+DCE | (a) `let x = 1/0; return 5;` (b) `let x = argc()/0; return 5;` (c) `return argc()/0;` | one consistent rule | (a) compile error, (b) compiles, prints 5, (c) compiles, SIGFPE [T] | **Open — needs owner decision** (§6) |
 | D3 | Low (perf) | `reg_imm` | any literal | short encoding | always 10-byte `movabs`; no ALU-immediate forms [T] | **Fixed** |
-| D4 | Low (perf) | `allocate_result` | `examples/operations.l0` | value stays in RAX | `mov r8,rax; mov rax,r8` round-trip for single-use values [T] | **Fixed** (RAX forwarding) |
+| D4 | Low (perf) | `allocate_result` | `examples/operations.cock` | value stays in RAX | `mov r8,rax; mov rax,r8` round-trip for single-use values [T] | **Fixed** (RAX forwarding) |
 | D5 | Low (perf) | `generate` prologue | any program w/o spills | no frame | `push rbp; mov rbp,rsp; sub rsp,0` (11 B) [T] | Open |
 | D6 | Low (hardening) | `write_elf` | any output | headers not executable | single R+X `PT_LOAD` maps ELF header/phdrs executable [T] | Open — split R / RX when data sections arrive |
 | D7 | Low (input integrity) | `read_source` | `return 7; }\0 garbage` | reject | garbage after NUL silently ignored [T] | **Fixed** + regression |
@@ -33,11 +33,11 @@ Environment: Intel Xeon @ 2.10 GHz (2 vCPU, VM), Linux 6.18, gcc + clang 18. Pat
 
 | Input | v0.2 code bytes | v0.2.1 | Δ |
 |---|---:|---:|---:|
-| examples/argc.l0 | 187 | 151 | −19.3% |
-| examples/arith.l0 | 137 | 132 | −3.6% |
-| examples/minimum.l0 | 145 | 145 | 0 |
-| examples/negative.l0 | 137 | 134 | −2.2% |
-| examples/operations.l0 | 239 | 178 | −25.5% |
+| examples/argc.cock | 187 | 151 | −19.3% |
+| examples/arith.cock | 137 | 132 | −3.6% |
+| examples/minimum.cock | 145 | 145 | 0 |
+| examples/negative.cock | 137 | 134 | −2.2% |
+| examples/operations.cock | 239 | 178 | −25.5% |
 | 300 DAG-fuzz programs (seed 31), total | 200,784 | 168,181 | −16.2% |
 
 Code size only [T]. **Runtime: unmeasured.** These programs run in microseconds and are dominated by `execve`, so a timing result would just measure noise. Runtime claims must wait for loops (G1).
@@ -50,8 +50,8 @@ Code size only [T]. **Runtime: unmeasured.** These programs run in microseconds 
 |---|---|---|
 | G1 | CFG, `if`/`while`, comparisons, mutable locals, block params | DAG fuzzer extended with loops vs a C oracle; 10k programs, 0 mismatches; SSA/dominance verifier runs on every IR |
 | G2 | functions, SysV calls, recursion, callee-saved regs | call/recursion fuzz; every call site asserts `rsp%16==0` (test callee executes `movaps [rsp],xmm0`); deep recursion terminates by guard page, not corruption |
-| G3 | u8/i32/u64, pointers, slices with bounds checks, structs, `read/write/open/close/mmap` | `.l0` implementations of `cat`, `wc -c`, hexdump; byte-identical output to coreutils on a 1 GiB randomized corpus |
-| G4 | lexer ported | `.l0` lexer token stream == C lexer over all test sources + fuzz corpus |
+| G3 | u8/i32/u64, pointers, slices with bounds checks, structs, `read/write/open/close/mmap` | `.cock` implementations of `cat`, `wc -c`, hexdump; byte-identical output to coreutils on a 1 GiB randomized corpus |
+| G4 | lexer ported | `.cock` lexer token stream == C lexer over all test sources + fuzz corpus |
 | G5 | parser, IR, regalloc, encoder, ELF writer ported | stage1→stage2→stage3; `sha256(stage2)==sha256(stage3)`; all suites pass on every stage |
 
 ## 5. Next three changes (priority order)

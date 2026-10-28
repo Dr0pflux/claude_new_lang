@@ -30,7 +30,7 @@ int main(int argc,char **argv){
     for(int i=0;i<200;i++){rs^=rs<<13;rs^=rs>>7;rs^=rs<<17;add(I(rs>>(rs%60)));}
     int per=8,prog=0;
     for(int base=0;base<nd;base+=per,prog++){
-        char p[600];snprintf(p,sizeof p,"%s/d%04d.l0",argv[1],prog);FILE *f=fopen(p,"w");
+        char p[600];snprintf(p,sizeof p,"%s/d%04d.cock",argv[1],prog);FILE *f=fopen(p,"w");
         snprintf(p,sizeof p,"%s/d%04d.exp",argv[1],prog);FILE *e=fopen(p,"w");
         int cnt=nd-base<per?nd-base:per;
         fprintf(f,"fn main() -> i64 {\n  let z = argc() - 1;\n  let mut acc = 0;\n");

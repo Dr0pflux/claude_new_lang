@@ -3,7 +3,7 @@
 # usage: bench/vigenere/run_bench.sh QUAD CIPHER [RUNS]
 set -euo pipefail
 cd "$(dirname "$0")"; Q=$1; C=$2; RUNS=${3:-9}; B=$(mktemp -d); trap 'rm -rf "$B"' EXIT
-../../ling0 vig.l0 $B/ling0 >/dev/null
+../../ling0 vig.cock $B/ling0 >/dev/null
 gcc -O3 -march=native vig.c -o $B/gcc; clang -O3 -march=native vig.c -o $B/clang
 rustc -C opt-level=3 -C target-cpu=native vig.rs -o $B/rust
 ref=$($B/gcc $Q $C | md5sum)

@@ -6,8 +6,8 @@ cd "$(dirname "$0")"; RUNS=${1:-7}; B=$(mktemp -d); trap 'rm -rf "$B"' EXIT
 L=../../ling0; [[ -x $L ]] || (cd ../.. && make ling0 >/dev/null)
 echo "cpu: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs)"
 echo "clang: $(clang --version | head -1)"; echo "gcc: $(gcc --version | head -1)"; echo "rustc: $(rustc --version)"
-for k in *.l0; do k=${k%.l0}
-  $L $k.l0 $B/$k.ling0 >/dev/null
+for k in *.cock; do k=${k%.cock}
+  $L $k.cock $B/$k.ling0 >/dev/null
   clang -O3 -march=native $k.c -o $B/$k.clang
   gcc -O3 -march=native $k.c -o $B/$k.gcc
   rustc -C opt-level=3 -C target-cpu=native $k.rs -o $B/$k.rust

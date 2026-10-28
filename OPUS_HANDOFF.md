@@ -17,7 +17,7 @@ Current target is **Linux x86-64**, and the current compiler is temporarily writ
 - Optimizer passes: forward constant folding, backward DCE (straight-line SSA-like IR only).
 - Registers: R8/R9/R10/R11/R13/R14/R15 pool; RAX/RCX arithmetic temps; RDX implicit idiv; R12 initial argc; stack spill slots `[rbp - 8*n]`.
 - ELF64 direct output (ET_EXEC, PT_LOAD RX, PT_GNU_STACK NX); direct Linux syscalls for decimal output and exit.
-- Static emitted machine code on `examples/operations.l0`: S0 381 B, S1 239 B. This is code-size evidence, NOT measured execution speed.
+- Static emitted machine code on `examples/operations.cock`: S0 381 B, S1 239 B. This is code-size evidence, NOT measured execution speed.
 
 ## Workstream 1: independent correctness audit (highest priority)
 

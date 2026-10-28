@@ -1,7 +1,7 @@
 // ling: the ling0 compiler written in ling0 (self-hosted).
 // A faithful port of the C seed (ling0.c): it creates AST nodes and variables
 // in the same order, so for the same input both compilers emit identical bytes.
-// usage: ling input.l0 output-executable
+// usage: ling input.cock output-executable
 
 // ---------------------------------------------------------------- limits
 let MAX_NODES = 1048576;
@@ -4304,7 +4304,7 @@ fn report(total: i64, out: [u8]) {
   putnum(ninlined + ninl_stmt); write(" calls inlined)\n");
 }
 fn main() {
-  if argc() != 3 { ewrite("usage: ling input.l0 output-executable\n"); exit(2); }
+  if argc() != 3 { ewrite("usage: ling input.cock output-executable\n"); exit(2); }
   let input = file(1);
   let nm = argv(1);
   srcname_len = len(nm); if srcname_len > 4000 { srcname_len = 4000; }

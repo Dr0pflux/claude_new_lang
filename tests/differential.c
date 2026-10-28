@@ -17,7 +17,7 @@ int main(int argc,char **argv){
     int cases=atoi(argv[2]);if(cases<1||cases>2000)return 2;
     for(int t=0;t<cases;t++){
         char src[1024],expected[1024];
-        snprintf(src,sizeof src,"%s/case_%03d.l0",argv[1],t);
+        snprintf(src,sizeof src,"%s/case_%03d.cock",argv[1],t);
         snprintf(expected,sizeof expected,"%s/case_%03d.expected",argv[1],t);
         FILE *f=fopen(src,"w");FILE *e=fopen(expected,"w");
         if(!f||!e){perror("differential generator");return 1;}

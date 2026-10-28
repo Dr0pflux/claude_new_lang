@@ -6,7 +6,7 @@ Compiler, type checker, optimizer, instruction encoder, ELF object generator, li
 
 ### Bootstrapping chain
 
-**B0, current:** `ling0.c` compiled by ordinary C compiler -> a working S0/S1 native ELF `.l0` compiler. The generated `.l0` executables do not depend on C.
+**B0, current:** `ling0.c` compiled by ordinary C compiler -> a working S0/S1 native ELF `.cock` compiler. The generated `.cock` executables do not depend on C.
 
 **B1, expressive core:** implement language features allowing compiler source code: primitive signed/unsigned ints, fixed-width bitwise ops, static arrays, dynamic slices, pointers and references, structs, explicit memory allocation, direct syscalls, conditionals, loops, functions/calls, error reporting, string/byte literals. Preserve deterministic arithmetic rules. Introduce proper CFG and block parameters/phi semantics in IR.
 

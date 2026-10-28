@@ -1,5 +1,5 @@
 // Parallel version of vig.rs: same algorithm, std::thread::scope over ciphertexts
-// with the same static stride distribution as vigp.l0.
+// with the same static stride distribution as vigp.cock.
 use std::io::Write;
 fn solve(q:&[i16],c:&[u8],n:i64,p:&mut [u8],uni:&[i64;26],key:&mut [u8;32])->(i64,i64){
   let mut cnt=[0i32;520];let mut ioc=[0i64;21];

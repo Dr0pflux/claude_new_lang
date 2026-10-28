@@ -2,7 +2,7 @@
  * bool, f32, f64) with casts, promotions, unsigned ops, float arithmetic,
  * typed arrays, typed helper functions and compound assignment, checked
  * against this independent interpreter of the v0.7 type rules.
- * usage: ty_fuzz OUT_DIR CASES SEED  -> OUT_DIR/tNNNN.l0 + tNNNN.out */
+ * usage: ty_fuzz OUT_DIR CASES SEED  -> OUT_DIR/tNNNN.cock + tNNNN.out */
 #define _POSIX_C_SOURCE 200809L
 #include <stdint.h>
 #include <inttypes.h>
@@ -396,7 +396,7 @@ int main(int argc,char **argv){
     int cases=atoi(argv[2]);rs=0x9E3779B97F4A7C15ULL^(uint64_t)atoll(argv[3])*0x2545F4914F6CDD1DULL;
     for(int c=0;c<cases;c++){
         nn=0;nvars=1;ns=0;na=0;nf=0;   /* var 0: return value slot */
-        char path[512];snprintf(path,sizeof path,"%s/t%04d.l0",argv[1],c);out=fopen(path,"w");
+        char path[512];snprintf(path,sizeof path,"%s/t%04d.cock",argv[1],c);out=fopen(path,"w");
         snprintf(path,sizeof path,"%s/t%04d.out",argv[1],c);res=fopen(path,"w");
         if(!out||!res){perror("open");return 2;}
         /* helpers: typed parameters, a few typed locals, return of the declared type (or unit + print) */
