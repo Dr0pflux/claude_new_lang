@@ -27,6 +27,8 @@
   refinement re-evaluated it under the assumption that the check had already passed (pre-existing;
   `tests/data/refine_trap.ck`). The if-conversion operand reorder in `7b6f7bb` also reused a
   register for both compare operands when both were non-trivial (miscompile on `84ff0e4`; fixed).
+- **Recursive inlining:** tiny recursive bodies get an 8x statement budget for their inlined
+  copies (binarytrees 524 → 454 ms on Xeon, gcc 296; compiler +2% size, same compile time).
 - **Loop-carried stores:** `a[i - 1]` after a store `a[i]` reads a register (prefixsum 994 → 204 ms).
 - **String matching:** small search loops become conjunctions vectorized in byte lanes (strsearch 334 → 43 ms, clang 172).
 - **Paired division:** `a / b` and `a % b` share one divide when both are unconditionally evaluated (divmod 390 → 201 ms). The transformation stops at short-circuit `&&`/`||`, so skipped branches cannot introduce division traps.

@@ -33,7 +33,7 @@ Benchmarks Game (`bench/game`):
 | mandelbrot | 334 | clang 955 | **0.35** |
 | spectralnorm | 256 | gcc 261 | **0.98** |
 | fannkuchredux | 2821 | clang 2557 | 1.10 |
-| binarytrees | 562 | gcc 488 | 1.15 |
+| binarytrees | 454 | gcc 296 | 1.53 |
 | fasta | 391 | rust 332 | 1.18 |
 | nbody | 324 | rust 228 | 1.42 |
 
