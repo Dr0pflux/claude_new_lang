@@ -789,7 +789,8 @@ fn set_dead(e: i64) { envp[e + env_n].lo = 1; }
 fn env_copy(d: i64, s: i64) {
   let mut i = 0;
   while i <= env_n {
-    envp[d + i].lo = envp[s + i].lo; envp[d + i].hi = envp[s + i].hi; envp[d + i].lt = envp[s + i].lt; envp[d + i].bot = envp[s + i].bot;
+    let j = d + i; let k = s + i;
+    envp[j].lo = envp[k].lo; envp[j].hi = envp[k].hi; envp[j].lt = envp[k].lt; envp[j].bot = envp[k].bot;
     i += 1;
   }
 }

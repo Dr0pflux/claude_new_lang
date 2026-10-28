@@ -63,6 +63,28 @@ candidate order, reduced median compile time from 2.520167 s at `027a8d9` to 2.2
 compiler-source output, and a nested integer/float constant probe were byte-identical. This is a
 compiler build-time improvement, not a generated-program runtime improvement.
 
+## Compiler size: analysis-copy index reuse
+
+Naming the existing source/destination indices once per `env_copy` iteration lets
+bounds-check refinement reuse their checks across the four fields. Copy order,
+indices and trap semantics are unchanged. The compiler executable shrinks from
+1,214,532 bytes at integration `08737b4` to 1,211,216 bytes (3,316 bytes, about 0.27%).
+Candidate compiler source SHA-256:
+`7e93d1c9d5855138ad9d1263373271dde1b788094d32bfde8032b5d1b9c32391`.
+
+On the same Ryzen 7 5700U (AVX2, no AVX-512), native defaults, no affinity,
+one warmup and five alternating paired compilations of the unchanged compiler
+source gave these elapsed seconds:
+
+- Baseline: 2.253320, 2.247334, 2.250139, 2.192374, 2.174151; median 2.247334.
+- Candidate: 2.308262, 2.248720, 2.255666, 2.167758, 2.167910; median 2.248720.
+
+The 0.06% median increase is noise, not evidence of a speed gain. Fannkuch source
+compilation medians were 11.181 versus 10.730 ms, also too small/noisy to support
+a reliable speed claim. Both compilers emitted byte-identical binaries for all
+six Game sources and the unchanged compiler source. This is a compiler-size
+improvement; no generated-program runtime or binary-size gain is claimed.
+
 ## Correctness scope
 
 Measured outputs match for the listed programs. This does not establish a universal bit-exact

@@ -30,6 +30,12 @@ Codex independently reviewed `e872829` and `027a8d9`. PR #10 received independen
 Luna and parent Codex review; Claude review remains pending after its CLI-reported
 2026-10-28 11:40 a.m. America/Chicago reset. Do not describe pending review as approval.
 
+The subsequent analysis-copy index reuse has the same copy/access order and
+passed independent static review and generated-binary equivalence checks for all
+six Game programs and the unchanged compiler source. Its measured benefit is a
+3,316-byte smaller compiler executable; compile-time samples show no reliable
+speed gain. Exact integration/CI status is recorded in the ledger.
+
 ## Open findings
 
 1. [Issue #9](https://github.com/Dr0pflux/skite.ck/issues/9) tracks mixed-width

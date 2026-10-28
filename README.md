@@ -33,6 +33,11 @@ Merged PR #10 reduced compiler self-compilation median time on the same Ryzen fr
 program runtime; binaries for the six Game programs remained byte-identical. See the measurement
 method and compiler versions in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
+Reusing analysis-copy indices also trims the compiler executable from 1,214,532 to
+1,211,216 bytes (3,316 bytes). Paired measurements showed no reliable compile-time
+gain; generated Game binaries remain unchanged. See the compiler-size measurement
+in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+
 What makes skite fast:
 
 - **Vectorization:** eligible loops can use AVX-512; CPUs without AVX-512 take the scalar path.
