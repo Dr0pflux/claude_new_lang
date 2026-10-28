@@ -15,11 +15,18 @@ make bench        # Benchmarks Game suite vs gcc, clang and rustc (QUICK=1: smal
 Learn the language with [`docs/TUTORIAL.md`](docs/TUTORIAL.md); the reference is
 [`docs/LANGUAGE.md`](docs/LANGUAGE.md).
 
+Contributors (people and AI agents): read [`AGENTS.md`](AGENTS.md),
+[`docs/TEAM_HANDOFF.md`](docs/TEAM_HANDOFF.md) and the current state in
+[`docs/HANDOFF.md`](docs/HANDOFF.md) before changing anything.
+
 ## Performance
 
 Benchmarks Game programs, the same algorithm in skite, C and Rust, byte-identical output
 required (`bench/game/`). gcc/clang `-O3 -march=native`, rustc `-C opt-level=3 -C target-cpu=native`.
-Results and methodology: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+Results and methodology: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md); latest quick-size table in
+[`docs/HANDOFF.md`](docs/HANDOFF.md). Today skite is about 3.8x faster than the best of
+gcc/clang/rustc on mandelbrot, on par on fasta, spectralnorm and fannkuchredux, and behind on
+nbody (1.5x) and binarytrees (2.5x).
 
 What makes skite fast:
 
@@ -37,8 +44,9 @@ What makes skite fast:
 |---|---|
 | `skite.ck` | the compiler |
 | `bootstrap/` | `skite-seed` (prebuilt compiler that starts the build), `skite.c` (original C seed, audit only) |
-| `docs/` | tutorial, language reference, design notes, limitations, changelog, benchmarks |
+| `docs/` | tutorial, language reference, design notes, limitations, changelog, benchmarks, audit and handoff notes |
 | `examples/` | example and tutorial programs |
-| `tests/` | `run.sh` regressions; fuzzers with independent oracles (`cf_fuzz`, `ty_fuzz`, `dag_fuzz`, `divconst`, `vec_fuzz.py`) |
+| `tests/` | `run.sh` regressions; fuzzers with independent oracles (`cf_fuzz`, `ty_fuzz`, `dag_fuzz`, `divconst`, `vec_fuzz.py`); `alignment.py`, `zero_divisor.py` |
+| `.github/workflows/` | CI: clean build, fixed point, `make test`, divisor oracle |
 | `bench/game/` | Benchmarks Game suite in skite, C and Rust |
 | `bench/kernels/`, `bench/vigenere/` | computational-linguistics kernels and a Vigenère solver |

@@ -1819,6 +1819,14 @@ fn parse_stmt() -> i64 {
       else { kind = A_VIEW; et = legacy_et(digits_at(co + 4, cl - 4)); }
       let w = ty_width(et);
       if kind == A_VIEW && et == TY_BOOL { fail("no bool views (a byte is not always a valid bool)"); }
+      if kind == A_VIEW && is_struct(et) {
+        let st = et - TY_STRUCT0;
+        let mut fi = 0;
+        while fi < sts[st].nf {
+          if sfty[st * 32 + fi] == TY_BOOL { fail("no views of structs containing bool (a byte is not always a valid bool)"); }
+          fi += 1;
+        }
+      }
       if ann != 0 && (!aarr || ann != et) { fail("array type annotation does not match the constructor"); }
       if inpar && kind != A_VIEW && kind != A_ARG { fail("no allocation or file mapping inside a par block"); }
       if mut_ { fail("array bindings are immutable (their elements are not)"); }
@@ -3659,7 +3667,7 @@ fn memop(w: i64, p66: bool, force_rex: bool, nop: i64, o1: i64, o2: i64, regf: i
   byte((scale << 6) | (ix << 3) | (base & 7));
   if md == 1 { byte(d & 255); } else if md == 2 { u32_(d); }
 }
-fn lg(w: i64) -> i64 { if w == 1 { return 0; } if w == 2 { return 1; } if w == 4 { return 2; } return 3; }
+fn lg(w: i64) -> i64 { let mut k = 0; while (1 << k) < w { k += 1; } return k; }
 fn load_elem(t: i64, d: i64, base: i64, idx: i64, sc: i64) {
   if t == TY_U8 || t == TY_BOOL { memop(0, false, false, 2, 15, 182, d, base, idx, sc); }
   else if t == TY_I8 { memop(1, false, false, 2, 15, 190, d, base, idx, sc); }
@@ -5498,7 +5506,9 @@ fn gen_arr(s: i64, rg: i64, n: i64) {
     if (w & (w - 1)) == 0 { shift_ri(4, RAX, lg(w)); } else { imul_r(RAX, K_IMM, 0, w as u64); }
     if nd[s].v != 0 {
       alui(A_ADD, RAX, 15); alui(A_AND, RAX, 18446744073709551600);
-      abs_op(139, RCX, ARENA_TOP); lea(RDX, RCX, RAX, 0);
+      abs_op(139, RCX, ARENA_TOP);
+      alui(A_ADD, RCX, 63); alui(A_AND, RCX, 18446744073709551552);
+      lea(RDX, RCX, RAX, 0);
       abs_op(59, RDX, ARENA_END); trap_if(7);
       abs_op(137, RDX, ARENA_TOP);
       emh("574889cf4889ca4889c131c0f3aa5f4889d0");

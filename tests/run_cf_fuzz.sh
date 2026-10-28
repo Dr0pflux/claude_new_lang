@@ -4,18 +4,19 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 N=${1:-300}; SEED=${2:-1}; PRESSURE=${3:-0}; MEM=${4:-0}; FUNC=${5:-0}; PAR=${6:-0}
-T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+T=$(mktemp -d)
+source tests/fuzz_helpers.sh
 cc -std=c11 -O2 -Wall -Wextra -Werror tests/cf_fuzz.c -o "$T/gen"
 "$T/gen" "$T" "$N" "$SEED" "$PRESSURE" "$MEM" "$FUNC" "$PAR"
 pass=0; traps=0; loops=0; spills=0
 for src in "$T"/c*.ck; do
   b=${src%.ck}
-  if ! "${SKITE:-./skite}" "$src" "$T/p" > "$T/log" 2>&1; then echo "COMPILE FAIL $src"; cat "$T/log" "$src"; exit 1; fi
+  if ! fuzz_compile; then exit 1; fi
   grep -q while "$src" && loops=$((loops+1))
   grep -qE ' [1-9][0-9]* spills' "$T/log" && spills=$((spills+1))
   args=()
   for a in 1 2 3; do
-    rc=$( ( "$T/p" "${args[@]}" > "$T/got" 2>/dev/null ); echo $? ) 2>/dev/null
+    rc=0; fuzz_run "${args[@]}" > "$T/got" || rc=$?
     want=$(cat "$b.a$a.rc")
     if [[ $want == TRAP ]]; then
       if [[ $rc -ne 136 && $rc -ne 132 ]]; then echo "EXPECTED TRAP $src argc=$a rc=$rc"; cat "$src"; exit 1; fi
