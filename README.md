@@ -23,7 +23,7 @@ Contributors (people and AI agents): read [`AGENTS.md`](AGENTS.md),
 
 Matched implementations (same algorithm in skite, C and Rust, byte-identical output required);
 gcc/clang `-O3 -march=native`, rustc `-C opt-level=3 -C target-cpu=native`. Quick sizes, Xeon
-(AVX-512, shared 4-vCPU cloud host, so expect ±10% noise), 2026-10-28, head `3a479db`;
+(AVX-512, shared 4-vCPU cloud host, so expect ±10% noise), 2026-10-28, head `3a479db` (binarytrees `c0cbc2d`);
 Game medians of 3 runs, kernels of 5.
 Ratio = skite time / fastest other; below 1 means skite is faster.
 
@@ -36,7 +36,7 @@ Benchmarks Game (`bench/game`):
 | spectralnorm | 253 | gcc 240 | 1.06 |
 | fannkuchredux | 2592 | rust 2316 | 1.12 |
 | nbody | 268 | rust 205 | 1.30 |
-| binarytrees | 518 | gcc 320 | 1.62 |
+| binarytrees | 422 | gcc 335 | 1.26 |
 
 Arithmetic and text kernels (`bench/kernels`, `run.py 3`):
 
