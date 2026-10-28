@@ -1060,7 +1060,14 @@ fn set_var_rg(env: i64, v: i64, lo: i64, hi: i64, bot: bool) {
 fn as_stmt(s: i64, env: i64) {
   if dead(env) { return; }
   let k = nd[s].k;
-  if k == S_LET || k == S_ASSIGN { er(nd[s].a, env); set_var_rg(env, nd[s].var, RLO, RHI, RBOT); return; }
+  if k == S_LET || k == S_ASSIGN {
+    er(nd[s].a, env);
+    let mut lt: u64 = 0;   // a copy keeps the source's length facts (x = i with i < len(a))
+    if nd[nd[s].a].k == N_VAR { lt = envp[env + LV(nd[nd[s].a].var)].lt; }
+    set_var_rg(env, nd[s].var, RLO, RHI, RBOT);
+    envp[env + LV(nd[s].var)].lt = lt;
+    return;
+  }
   if k == S_ARR {
     let a = nd[s].var;
     if nd[s].a >= 0 { er(nd[s].a, env); }
@@ -1974,8 +1981,12 @@ fn parse_stmt() -> i64 {
           TB_A = probe; TB_B = r; type_bin(op); val = TB_B;
         } else {
           expect(';');
-          let ti = hidden(); vars[ti].ty = nd[idx].ty;
-          let l2 = mk(S_LET); nd[l2].var = ti; nd[l2].a = idx;
+          // the index is evaluated once, after r: a constant or a local variable (which r cannot change) is used
+          // directly, anything else goes through a hidden copy
+          let direct = is_const(idx) || (nd[idx].k == N_VAR && vars[nd[idx].var].glob == 0);
+          let mut ti = -1;
+          let mut l2 = -1;
+          if !direct { ti = hidden(); vars[ti].ty = nd[idx].ty; l2 = mk(S_LET); nd[l2].var = ti; nd[l2].a = idx; }
           let mut head = l2;
           let mut rv = 0;
           if is_const(r) { rv = r; }
@@ -1983,14 +1994,18 @@ fn parse_stmt() -> i64 {
             let tv = hidden(); let r2 = deflt(r); vars[tv].ty = nd[r2].ty;
             let l1 = mk(S_LET); nd[l1].var = tv; nd[l1].a = r2; nd[l1].next = l2; head = l1; rv = mk_var(tv);
           }
-          let st = mk(S_STORE); nd[st].var = v; nd[st].a = mk_var(ti); nd[st].op = -1; nd[st].chk = 1; nd[st].c = fld;
-          let ld = mk_load(v, mk_var(ti));
+          let st = mk(S_STORE); nd[st].var = v; nd[st].op = -1; nd[st].chk = 1; nd[st].c = fld;
+          let mut ld = 0;
+          if direct { nd[st].a = idx; ld = mk_load(v, clone_expr(idx)); }
+          else { nd[st].a = mk_var(ti); ld = mk_load(v, mk_var(ti)); }
           if fld >= 0 { nd[ld].op = fld + 1; nd[ld].ty = et; } else if gidx >= 0 { nd[ld].ty = et; }
           let mut val2 = typed_bin(op, ld, rv);
           if !ty_int(et) || !ty_int(nd[val2].ty) { val2 = conv(val2, et); }
           nd[st].b = val2;
           vars[vars[v].basev].reads += 1; if vars[v].lenv >= 0 { vars[vars[v].lenv].reads += 1; }
-          nd[l2].next = st;
+          if head < 0 { head = st; }
+          else if l2 >= 0 { nd[l2].next = st; }
+          else { nd[head].next = st; }
           s = mk(S_BLOCK); nd[s].a = head;
           depth -= 1; return s;
         }
@@ -3550,7 +3565,18 @@ fn lea(d: i64, base: i64, index: i64, disp: i64) {
   }
   if md == 1 { byte(disp & 255); } else if md == 2 { u32_(disp); }
 }
+fn lea_s(d: i64, base: i64, index: i64, scale: i64, disp: i64) {   // lea d, [base + index * 2^scale + disp]
+  let mut md = 2;
+  if disp == 0 && (base & 7) != 5 { md = 0; } else if fits_s8(disp as u64) { md = 1; }
+  let mut rx = 72;
+  if (d & 8) != 0 { rx = rx | 4; } if (index & 8) != 0 { rx = rx | 2; } if (base & 8) != 0 { rx = rx | 1; }
+  byte(rx); byte(141);
+  byte((md << 6) | ((d & 7) << 3) | 4);
+  byte((scale << 6) | ((index & 7) << 3) | (base & 7));
+  if md == 1 { byte(disp & 255); } else if md == 2 { u32_(disp); }
+}
 let mut mdisp: i64 = 0;
+let mut mstr: i64 = -1;   // >= 0: the disp32 of a base-less operand is a string address (image offset mstr + disp)
 fn memop(w: i64, p66: bool, force_rex: bool, nop: i64, o1: i64, o2: i64, regf: i64, base: i64, index: i64, scale: i64) {
   if p66 { byte(102); }
   let mut rex = 64;
@@ -3558,12 +3584,20 @@ fn memop(w: i64, p66: bool, force_rex: bool, nop: i64, o1: i64, o2: i64, regf: i
   if rex != 64 || force_rex { byte(rex); }
   byte(o1); if nop == 2 { byte(o2); }
   let d = mdisp; mdisp = 0;
+  let so = mstr; mstr = -1;
   if base < 0 {   // no base register: [index * 2^scale + disp32] or [disp32]
     let mut ix = 4; if index >= 0 { ix = index & 7; }
-    byte(4 | ((regf & 7) << 3)); byte((scale << 6) | (ix << 3) | 5); u32_(d); return;
+    byte(4 | ((regf & 7) << 3)); byte((scale << 6) | (ix << 3) | 5);
+    if so >= 0 { str_site(clen, so + d); u32_(0); } else { u32_(d); }
+    return;
   }
   let mut md = 2;
   if d == 0 && (base & 7) != 5 { md = 0; } else if fits_s8(d as u64) { md = 1; }
+  if index < 0 && (base & 7) != 4 {   // [base + disp]: no SIB byte
+    byte((md << 6) | ((regf & 7) << 3) | (base & 7));
+    if md == 1 { byte(d & 255); } else if md == 2 { u32_(d); }
+    return;
+  }
   byte((md << 6) | ((regf & 7) << 3) | 4);
   let mut ix = index & 7; if index < 0 { ix = 4; }
   byte((scale << 6) | (ix << 3) | (base & 7));
@@ -3964,6 +3998,7 @@ fn elem_addr(a: i64, idx: i64, chk: i64, foff: i64, rg: i64, n: i64) {
   let w = vars[a].arr;
   let bv = vars[a].basev;
   let static_base = vars[bv].isconst != 0 && vars[bv].glob == 1;
+  let str_base = vars[bv].glob == 2;   // string literal in the image: its address is a link-time constant
   // static array, constant index, no check: one absolute address
   if static_base && chk == 0 && is_const(idx) && fits_s32(nd[idx].v) {
     let ad = GLOB_BASE + (vars[bv].cval as i64) + (nd[idx].v as i64) * w + foff;
@@ -3974,12 +4009,18 @@ fn elem_addr(a: i64, idx: i64, chk: i64, foff: i64, rg: i64, n: i64) {
   bounds(a, ri, chk);
   let mut sc = 0;
   if w == 1 || w == 2 || w == 4 || w == 8 || ri < 0 { if ri >= 0 { sc = lg(w); } }
+  else if w % 3 == 0 && (w / 3) & (w / 3 - 1) == 0 && w / 3 <= 8 { lea_s(RDX, ri, ri, 1, 0); ri = RDX; sc = lg(w / 3); }   // 3 << k: lea
+  else if w % 5 == 0 && (w / 5) & (w / 5 - 1) == 0 && w / 5 <= 8 { lea_s(RDX, ri, ri, 2, 0); ri = RDX; sc = lg(w / 5); }
+  else if w % 9 == 0 && (w / 9) & (w / 9 - 1) == 0 && w / 9 <= 8 { lea_s(RDX, ri, ri, 3, 0); ri = RDX; sc = lg(w / 9); }
   else {
     if w < 128 { encr(1, false, 1, 107, 0, RDX, ri); byte(w); } else { encr(1, false, 1, 105, 0, RDX, ri); u32_(w); }
     ri = RDX; sc = 0;
   }
   if static_base && GLOB_BASE + (vars[bv].cval as i64) + d + foff < 2147483647 && d + foff > -1048576 {
     EA_B = -1; EA_RI = ri; EA_SC = sc; mdisp = GLOB_BASE + (vars[bv].cval as i64) + d + foff; return;
+  }
+  if str_base && d + foff > -1048576 && d + foff < 1048576 {
+    EA_B = -1; EA_RI = ri; EA_SC = sc; mdisp = d + foff; mstr = vars[bv].cval as i64; return;
   }
   EA_B = base_reg(a); EA_RI = ri; EA_SC = sc; mdisp = d + foff;
 }
@@ -5176,6 +5217,104 @@ fn assign(v: i64, e: i64, rg: i64, n: i64) {
   }
   gen(e, rg, n); store(Lk, Lr, RGS[rg]);
 }
+// ---- fill / copy loops: `while i < E { b[i] = c; i += 1; }` and `while i < E { b[i] = a[i]; i += 1; }`
+// A guarded fast path runs in front of the unchanged loop: when the trip count is large enough and every index
+// i..E-1 is in bounds of every array touched, one rep stos / rep movsb does the whole loop and i becomes E (the
+// loop then exits at once). Otherwise the loop runs as written, trapping at exactly the same iteration.
+// Copies are safe under aliasing: two arrays either share their base address (same index: a copy onto itself)
+// or are disjoint.
+let BULK_MIN_BYTES = 256;
+let mut nbulk: i64 = 0;
+fn bulk_value(e0: i64, w: i64) -> i64 {   // the stored value without free narrowing casts
+  let mut e = e0;
+  while nd[e].k == N_UN && ext_width(nd[e].op) >= w { e = nd[e].a; }
+  return e;
+}
+fn bulk_loop(s: i64) -> i64 {   // 1: fill, 2: copy, 0: neither
+  if nd[s].c >= 0 || vplan[s] != 0 { return 0; }
+  let cnd = nd[s].a;
+  if nd[cnd].k != N_BIN || nd[cnd].op != O_LT || nd[nd[cnd].a].k != N_VAR { return 0; }
+  let iv = nd[nd[cnd].a].var;
+  if vars[iv].ty != TY_I64 || vars[iv].xr >= 0 { return 0; }
+  let E = nd[cnd].b;
+  if !simple(E) || xvar_node(E) || (nd[E].k == N_VAR && nd[E].var == iv) { return 0; }
+  let body = nd[s].b;
+  if nd[body].k != S_BLOCK { return 0; }
+  let st = nd[body].a;
+  if st < 0 || nd[st].k != S_STORE { return 0; }
+  let inc = nd[st].next;
+  if inc < 0 || nd[inc].next >= 0 || !is_inc1(inc, iv) { return 0; }
+  if nd[st].op >= 0 || nd[st].c >= 0 { return 0; }
+  let ix = nd[st].a;
+  if nd[ix].k != N_VAR || nd[ix].var != iv { return 0; }
+  let b = nd[st].var;
+  let w = vars[b].arr;
+  if w != 1 && w != 2 && w != 4 && w != 8 { return 0; }
+  let val = bulk_value(nd[st].b, w);
+  if nd[val].k == N_CONST { return 1; }
+  if nd[val].k == N_VAR && nd[val].var != iv { return 1; }
+  if nd[val].k == N_LOAD && nd[val].op == 0 && vars[nd[val].var].arr == w && nd[nd[val].a].k == N_VAR && nd[nd[val].a].var == iv { return 2; }
+  return 0;
+}
+fn bulk_bounds(a: i64, chk: i64, skip0: i64) -> i64 {   // RDX = first index, RAX = E: skip unless 0 <= RDX and RAX <= len(a)
+  let mut skip = skip0;
+  if chk == 0 { return skip; }
+  let mut Lk = K_IMM; let mut Lr = 0; let mut Li = vars[a].alen as u64;
+  if vars[a].lenv >= 0 { loc(vars[a].lenv); Lk = OK; Lr = ORR; Li = OI; }
+  alu(A_CMP, K_REG, RDX, Lk, Lr, Li); skip = pl_add(skip, jcc(CC_AE));
+  alu(A_CMP, K_REG, RAX, Lk, Lr, Li); skip = pl_add(skip, jcc(7));   // ja
+  return skip;
+}
+fn gen_bulk(s: i64, kind: i64, rg: i64, n: i64) {
+  let cnd = nd[s].a;
+  let iv = nd[nd[cnd].a].var;
+  let E = nd[cnd].b;
+  let st = nd[nd[s].b].a;
+  let b = nd[st].var;
+  let w = vars[b].arr;
+  let val = bulk_value(nd[st].b, w);
+  // RDX = i, RCX = E - i, RAX = E
+  loc(iv); load(RDX, OK, ORR, OI);
+  opnd(E); load(RAX, OK, ORR, OI);
+  mov_rr(RCX, RAX); alur(A_SUB, RCX, RDX);
+  alui(A_CMP, RCX, ((BULK_MIN_BYTES + w - 1) / w) as u64);
+  let mut skip = pl_add(-1, jcc(CC_L));
+  skip = bulk_bounds(b, nd[st].chk, skip);
+  if kind == 2 { skip = bulk_bounds(nd[val].var, nd[val].chk, skip); }
+  if kind == 1 {
+    load_base(RAX, b); lea_s(RDX, RAX, RDX, lg(w), 0);
+    if nd[val].k == N_VAR { loc(nd[val].var); load(RAX, OK, ORR, OI); } else { opnd(val); load(RAX, OK, ORR, OI); }
+    push_r(RDI); mov_rr(RDI, RDX);
+    if w == 2 { byte(102); } byte(243); if w == 8 { byte(72); }
+    if w == 1 { byte(170); } else { byte(171); }   // rep stos{b,w,d,q}
+    pop_r(RDI);
+  } else {
+    load_base(RAX, b); lea_s(RAX, RAX, RDX, lg(w), 0);
+    push_r(RSI); push_r(RDI); sp_adj += 16;
+    load_base(RSI, nd[val].var); lea_s(RSI, RSI, RDX, lg(w), 0);
+    sp_adj -= 16;
+    mov_rr(RDI, RAX);
+    shift_ri(4, RCX, lg(w));
+    emh("f3a4");   // rep movsb
+    pop_r(RDI); pop_r(RSI);
+  }
+  assign(iv, E, rg, n);
+  pl_patch(skip, clen);
+  nbulk += 1;
+}
+// e (a store's value) always evaluates a load of array a at the index idx (a constant or a local variable)
+// before the store, so that load's bounds check already covers the store
+fn same_index(x: i64, y: i64) -> bool {
+  if is_const(x) && is_const(y) { return nd[x].v == nd[y].v; }
+  return nd[x].k == N_VAR && nd[y].k == N_VAR && nd[x].var == nd[y].var && vars[nd[x].var].glob == 0;
+}
+fn loads_slot(e: i64, a: i64, idx: i64) -> bool {
+  let k = nd[e].k;
+  if k == N_LOAD { return nd[e].var == a && same_index(nd[e].a, idx); }
+  if k == N_UN { return loads_slot(nd[e].a, a, idx); }
+  if k == N_BIN && nd[e].op != O_LAND && nd[e].op != O_LOR { return loads_slot(nd[e].a, a, idx) || loads_slot(nd[e].b, a, idx); }
+  return false;
+}
 fn sys_save() { emh("56574150415141524153"); }
 fn sys_restore() { emh("415b415a415941585f5e"); }
 fn trap_if(cc: i64) { trap_list = pl_add(trap_list, jcc(cc)); }
@@ -5311,6 +5450,8 @@ fn gen_stmt_body(s: i64, is_final: bool, rg: i64, n: i64) {
     let m = nd[s].c;
     if m >= 0 { abs_op(139, RAX, ARENA_TOP); loc(m); store(OK, ORR, RAX); }
     if vplan[s] != 0 { let ts = gen_vloop(s, vplan[s] - 1); pl_patch(ts, clen); }
+    let bk = bulk_loop(s);
+    if bk != 0 { gen_bulk(s, bk, rg, n); }
     if !is_const(nd[s].a) { entry = pl_add(entry, jmp()); }
     let top = clen;
     let L = nloopctx; nloopctx += 1; brk_list[L] = -1; cont_list[L] = -1;
@@ -5359,6 +5500,7 @@ fn gen_stmt_body(s: i64, is_final: bool, rg: i64, n: i64) {
     let mut val = nd[s].b;
     let mut ir = rg; let mut inn = n;
     while nd[val].k == N_UN && ext_width(nd[val].op) >= w { val = nd[val].a; }
+    if nd[s].chk != 0 && loads_slot(val, av, nd[s].a) { nd[s].chk = 0; }   // a[i] = a[i] op e: the load checked i
     let mut fo = 0; if fs { fo = sfoff[(vars[av].et - TY_STRUCT0) * 32 + nd[s].c]; }
     let mut et = vars[av].et; if fs { et = sfty[(vars[av].et - TY_STRUCT0) * 32 + nd[s].c]; }
     // float element: the value goes straight from an xmm register to memory
