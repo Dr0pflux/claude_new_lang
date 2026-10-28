@@ -7250,7 +7250,7 @@ fn assign(v: i64, e: i64, rg: i64, n: i64) {
     if Lk == K_REG { load(Lr, sk, sr, 0); } else if sk == K_REG { store(Lk, Lr, sr); } else { load(RAX, sk, sr, 0); store(Lk, Lr, RAX); }
     return;
   }
-  if Lk == K_REG && !refs(e, v) {
+  if Lk == K_REG && (!refs(e, v) || ld_idx_only(e, v)) {
     let r2 = rgs_top; rgs_top += n + 1;
     RGS[r2] = Lr;
     let mut i = 0;
@@ -7260,6 +7260,13 @@ fn assign(v: i64, e: i64, rg: i64, n: i64) {
     return;
   }
   gen(e, rg, n); store(Lk, Lr, RGS[rg]);
+}
+// e is (conversions of) a load a[v]: v is read only as the index register, before the load
+// writes the destination, so the result can go straight into v's register (t = rgt[t])
+fn ld_idx_only(e: i64, v: i64) -> bool {
+  let mut x = e;
+  while nd[x].k == N_UN && (nd[x].op >= U_SX8 && nd[x].op <= U_ZX32) { x = nd[x].a; }
+  return nd[x].k == N_LOAD && nd[nd[x].a].k == N_VAR && nd[nd[x].a].var == v && !ty_flt(nd[x].ty);
 }
 fn sys_save() { emh("56574150415141524153"); }
 fn sys_restore() { emh("415b415a415941585f5e"); }
