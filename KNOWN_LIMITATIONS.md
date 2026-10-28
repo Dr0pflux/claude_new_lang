@@ -1,7 +1,7 @@
 # Current limitations (v0.9)
 
 1. **Self-hosted, with caveats.**
-   - The compiler is `ling.cock`. The build starts from the prebuilt `bootstrap/ling-seed`; `bootstrap/ling0.c` is only an audit trail.
+   - The compiler is `skite.cock`. The build starts from the prebuilt `bootstrap/skite-seed`; `bootstrap/skite.c` is only an audit trail.
    - Test generators (`tests/*_fuzz.c`) and C/Rust baselines in `bench/` are still C; they are tooling, not part of the compile path.
    - The self-built compiler compiles itself in ~2 s (the gcc-built C seed took ~1.6 s for the same source). Compile-speed work is still to come.
    - Missing for larger programs: modules, returning or storing arrays, dynamic strings.

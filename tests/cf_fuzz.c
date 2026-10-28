@@ -1,4 +1,4 @@
-/* Control-flow + memory differential fuzzer for ling0 (G1 gate, v0.4 memory).
+/* Control-flow + memory differential fuzzer for skite (G1 gate, v0.4 memory).
  * Builds a random structured program (let/let mut/assign/op-assign/if/else/
  * while/break/continue/early return, all operators), prints it as .cock source
  * and evaluates it with an independent tree interpreter. Expected output is

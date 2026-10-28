@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # usage: tests/run_dag_fuzz.sh [CASES] [SEED]
 set -euo pipefail
-cd "$(dirname "$0")/.."; L=./ling0; N=${1:-300}; SEED=${2:-1}; D=tests
+cd "$(dirname "$0")/.."; L=./skite; N=${1:-300}; SEED=${2:-1}; D=tests
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 cc -O2 -o "$T/gen" -std=c11 -Wall -Wextra -Werror "$D/dag_fuzz.c"; "$T/gen" "$T" "$N" "$SEED"
 pass=0; spills=0

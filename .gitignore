@@ -1,5 +1,5 @@
-/ling
-/ling.tmp
-/ling.check
+/skite
+/skite.tmp
+/skite.check
 *.o
 /bench/**/target/

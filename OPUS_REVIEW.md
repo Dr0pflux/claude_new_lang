@@ -1,4 +1,4 @@
-# Claude Opus review of ling0 v0.2 → v0.2.1 patch
+# Claude Opus review of skite v0.2 → v0.2.1 patch
 
 Legend: **[T]** = tested here; **[I]** = by inspection; **[H]** = hypothesis, not measured.
 Environment: Intel Xeon @ 2.10 GHz (2 vCPU, VM), Linux 6.18, gcc + clang 18. Patch: `opus-review-v0.2.1.patch` (applies with `patch -p1` to the v0.2 zip; verified on a clean extract).
@@ -16,13 +16,13 @@ Environment: Intel Xeon @ 2.10 GHz (2 vCPU, VM), Linux 6.18, gcc + clang 18. Pat
 | D7 | Low (input integrity) | `read_source` | `return 7; }\0 garbage` | reject | garbage after NUL silently ignored [T] | **Fixed** + regression |
 | D8 | Low (test gap) | `tests/differential.c` | — | — | locals only reference `n`; no `x/x`, negative divisors, operand sharing, or imm boundaries [I] | **Fixed**: `tests/dag_fuzz.c` |
 | D9 | Low (forward risk) | entry | — | — | after `push rbp`, `rsp ≡ 8 (mod 16)`; harmless today (no calls), ABI violation once calls exist [I] | Gate G2 |
-| D10 | Process | zip | — | — | prebuilt `ling0` binary shipped; unauditable, build scripts already rebuild [I] | Drop from canonical zip |
+| D10 | Process | zip | — | — | prebuilt `skite` binary shipped; unauditable, build scripts already rebuild [I] | Drop from canonical zip |
 
 **Audited, no defect found:** all REX/ModRM/disp32 forms (byte-checked vs `objdump`) [T]; `x+x`, `x/x`, spill eviction/reload [T: 8,000 DAG-fuzz comparisons on the original, ~74% of programs spilling]; `INT64_MIN` print [T]; constant fold vs runtime agreement [T: 1,000 programs with `argc()` replaced by `1`, all fully folded, all equal]; ELF header fields, entry, `PT_GNU_STACK` RW [T].
 
 ## 2. Patch (v0.2.1)
 
-- `ling0.c`: D1 depth bound; D7 NUL rejection; `reg_imm` uses `mov r32,imm32` (zero-ext) / `mov r/m64,simm32` / `movabs`; `add/sub/imul rax,imm8|imm32`; commutative swap puts constants into the immediate slot; RAX forwarding when a value's single use is operand `a` of the next emitting instruction (commutative swap applied when it is operand `b`).
+- `skite.c`: D1 depth bound; D7 NUL rejection; `reg_imm` uses `mov r32,imm32` (zero-ext) / `mov r/m64,simm32` / `movabs`; `add/sub/imul rax,imm8|imm32`; commutative swap puts constants into the immediate slot; RAX forwarding when a value's single use is operand `a` of the next emitting instruction (commutative swap applied when it is operand `b`).
 - `test.sh`: D1, D7 regressions; immediate-boundary program (values from an independent Python oracle; old binary produces the same values [T]).
 - `tests/dag_fuzz.c`, `tests/run_dag_fuzz.sh`: DAG fuzzer, wired into `make test`.
 - Existing tests untouched and passing.

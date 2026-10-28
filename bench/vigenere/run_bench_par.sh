@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Parallel Vigenere benchmark: ling0 par vs gcc OpenMP vs Rust std::thread (same algorithm,
-# same static stride over ciphertexts, identical output required). Serial ling0/gcc for scaling.
+# Parallel Vigenere benchmark: skite par vs gcc OpenMP vs Rust std::thread (same algorithm,
+# same static stride over ciphertexts, identical output required). Serial skite/gcc for scaling.
 # usage: bench/vigenere/run_bench_par.sh QUAD CIPHER [RUNS]
 set -euo pipefail
 cd "$(dirname "$0")"; Q=$1; C=$2; RUNS=${3:-11}; B=$(mktemp -d); trap 'rm -rf "$B"' EXIT
-../../ling0 vigp.cock $B/ling0_par >/dev/null; ../../ling0 vig.cock $B/ling0_serial >/dev/null
+../../skite vigp.cock $B/ling0_par >/dev/null; ../../skite vig.cock $B/ling0_serial >/dev/null
 gcc -O3 -march=native -fopenmp vigp.c -o $B/gcc_omp; gcc -O3 -march=native vig.c -o $B/gcc_serial
 rustc -C opt-level=3 -C target-cpu=native vigp.rs -o $B/rust_threads
 V="ling0_par gcc_omp rust_threads ling0_serial gcc_serial"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmarks Game suite: ling vs gcc, clang and rustc on the same algorithms.
+"""Benchmarks Game suite: skite vs gcc, clang and rustc on the same algorithms.
 
 Each program exists as NAME.cock, NAME.c and NAME.rs. A run is rejected
 unless every binary prints byte-identical output. Runs are interleaved and
@@ -11,7 +11,7 @@ import hashlib, os, shutil, statistics, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
-LING = os.path.join(ROOT, "ling")
+SKITE = os.path.join(ROOT, "skite")
 # name -> argument (standard Benchmarks Game sizes where they run in ~1 s)
 SIZES = [("nbody", "50000000"), ("spectralnorm", "5500"), ("mandelbrot", "16000"),
          ("fannkuchredux", "12"), ("fasta", "25000000"), ("binarytrees", "21")]
@@ -24,12 +24,12 @@ def sh(cmd):
 def build(name, tmp):
     src = os.path.join(HERE, name)
     exe = os.path.join(tmp, name)
-    sh([LING, src + ".cock", exe + ".ling"])
+    sh([SKITE, src + ".cock", exe + ".skite"])
     sh(["gcc", "-O3", "-march=native", src + ".c", "-o", exe + ".gcc", "-lm"])
     sh(["clang", "-O3", "-march=native", src + ".c", "-o", exe + ".clang", "-lm"])
     sh(["rustc", "-C", "opt-level=3", "-C", "target-cpu=native", "-C", "codegen-units=1",
         "-C", "panic=abort", src + ".rs", "-o", exe + ".rust"])
-    return {v: exe + "." + v for v in ("ling", "gcc", "clang", "rust")}
+    return {v: exe + "." + v for v in ("skite", "gcc", "clang", "rust")}
 
 def main():
     args = sys.argv[1:]
@@ -41,7 +41,7 @@ def main():
     print(f"cpu: {cpu}, {os.cpu_count()} cpus; median of {runs} interleaved runs, wall ms")
     for c in (["gcc", "--version"], ["clang", "--version"], ["rustc", "--version"]):
         print("  " + subprocess.run(c, capture_output=True, text=True).stdout.splitlines()[0])
-    print(f"{'benchmark':14s} {'arg':>9s} {'ling':>8s} {'gcc':>8s} {'clang':>8s} {'rust':>8s}  ling vs best")
+    print(f"{'benchmark':14s} {'arg':>9s} {'skite':>8s} {'gcc':>8s} {'clang':>8s} {'rust':>8s}  skite vs best")
     tmp = tempfile.mkdtemp()
     try:
         for name, arg in SIZES:
@@ -60,8 +60,8 @@ def main():
                     subprocess.run([e, arg], stdout=subprocess.DEVNULL)
                     t[v].append((time.perf_counter() - s) * 1000)
             med = {v: statistics.median(x) for v, x in t.items()}
-            best = min((m, v) for v, m in med.items() if v != "ling")
-            r = med["ling"] / best[0]
+            best = min((m, v) for v, m in med.items() if v != "skite")
+            r = med["skite"] / best[0]
             verdict = f"{1/r:.2f}x faster than {best[1]}" if r < 1 else f"{r:.2f}x SLOWER than {best[1]}"
             print(f"{name:14s} {arg:>9s} " + " ".join(f"{med[v]:8.0f}" for v in exes) + f"  {verdict}", flush=True)
     finally:

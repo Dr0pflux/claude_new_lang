@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""ling vs gcc/clang/rustc on every benchmark in bench/.
+"""skite vs gcc/clang/rustc on every benchmark in bench/.
 
 Every program implements the same algorithm; a run is rejected unless all
-binaries print byte-identical output. Runs are interleaved (ling, gcc, clang,
-rust, ling, ...) and the median wall time is reported.
+binaries print byte-identical output. Runs are interleaved (skite, gcc, clang,
+rust, skite, ...) and the median wall time is reported.
 
 usage: bench/run_all.py [RUNS] [NAME...]
 """
 import os, subprocess, sys, tempfile, time, statistics, hashlib, shutil
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LING = os.path.join(ROOT, "ling")
+SKITE = os.path.join(ROOT, "skite")
 B = os.path.join(ROOT, "bench")
 V = os.path.join(B, "vigenere")
 D = os.path.join(V, "data")
@@ -38,7 +38,7 @@ def build(name, base, kind, tmp):
     def run(cmd):
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     exe = os.path.join(tmp, name)
-    run([LING, base + ".cock", exe + ".ling"]); out["ling"] = exe + ".ling"
+    run([SKITE, base + ".cock", exe + ".skite"]); out["skite"] = exe + ".skite"
     extra = {"c": [], "cm": ["-lm"], "omp": ["-fopenmp"]}[kind]
     for cc in ("gcc", "clang"):
         try:
@@ -76,9 +76,9 @@ def main():
                     subprocess.run([e] + args, stdout=subprocess.DEVNULL)
                     t[v].append((time.perf_counter() - s) * 1000)
             med = {v: statistics.median(x) for v, x in t.items()}
-            best = min((m, v) for v, m in med.items() if v != "ling")
+            best = min((m, v) for v, m in med.items() if v != "skite")
             cells = "  ".join(f"{v} {med[v]:7.1f}" for v in exes)
-            print(f"{name:11s} {cells}   ling/best-other = {med['ling']/best[0]:.3f} ({best[1]})", flush=True)
+            print(f"{name:11s} {cells}   skite/best-other = {med['skite']/best[0]:.3f} ({best[1]})", flush=True)
             rows.append((name, med))
     finally:
         shutil.rmtree(tmp)

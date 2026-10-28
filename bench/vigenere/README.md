@@ -1,6 +1,6 @@
 # Vigenère solver benchmark
 
-Three implementations of the **same algorithm**, line for line, all producing byte-identical output: `vig.cock` (ling0), `vig.c` (C) and `vig.rs` (Rust).
+Three implementations of the **same algorithm**, line for line, all producing byte-identical output: `vig.cock` (skite), `vig.c` (C) and `vig.rs` (Rust).
 
 ## Algorithm
 
@@ -29,7 +29,7 @@ python3 make_data.py /path/to/gutenberg /tmp/vigbig 4000 7
 
 ## Results (Intel Xeon @ 2.10 GHz, 2-vCPU VM; median of 21 interleaved runs)
 
-| | ling0 v0.4 | gcc 13.3 -O3 -march=native | clang 18 -O3 -march=native | rustc 1.97 -O3 native |
+| | skite v0.4 | gcc 13.3 -O3 -march=native | clang 18 -O3 -march=native | rustc 1.97 -O3 native |
 |---|---:|---:|---:|---:|
 | 4,000 texts | **487 ms** (min 464) | 545 ms (min 515) | 573 ms (min 530) | 764 ms (min 729) |
 | memory safety | all 67 checks proven, 0 executed | none | runtime checks | runtime checks |
@@ -38,7 +38,7 @@ Accuracy, identical for all four: 87.4% exact keys, and **92.6% equivalent** (a 
 
 **Where the win comes from (same source algorithm):**
 1. **Periodic-index strength reduction.** `i % p` inside the IoC and decryption loops becomes a wrapping counter, so there is no `idiv`. gcc and clang keep a hardware divide (~25–40 cycles) per character.
-2. **Proven bounds.** ling0 is safe like Rust but pays nothing for it in the hot loop.
+2. **Proven bounds.** skite is safe like Rust but pays nothing for it in the hot loop.
 3. **Code quality at least matching gcc** in the scoring loop: folded address offsets and registers for all hot values.
 
 **Not measured:** AZDecrypt (a Windows binary; it can't run in this Linux environment). It uses different algorithms (higher-order n-grams, simulated annealing), so a fair comparison needs a matched-algorithm port, which is planned.

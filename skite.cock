@@ -1,7 +1,7 @@
-// ling: the ling0 compiler written in ling0 (self-hosted).
-// A faithful port of the C seed (ling0.c): it creates AST nodes and variables
+// skite: the skite compiler written in skite (self-hosted).
+// A faithful port of the C seed (skite.c): it creates AST nodes and variables
 // in the same order, so for the same input both compilers emit identical bytes.
-// usage: ling input.cock output-executable
+// usage: skite input.cock output-executable
 
 // ---------------------------------------------------------------- limits
 let MAX_NODES = 1048576;
@@ -134,7 +134,7 @@ fn die() {
   let msg_len = emlen;
   if errnode >= 0 && parsing_src != 0 && nd[errnode].src >= 0 { tstart = source + nd[errnode].src; }
   if parsing_src == 0 || tstart < source || tstart > src_len {
-    ewrite("ling: error: "); ewrite(emsg, 0, msg_len); ewrite("\n"); exit(1);
+    ewrite("skite: error: "); ewrite(emsg, 0, msg_len); ewrite("\n"); exit(1);
   }
   let mut line = 1;
   let mut ls = source;
@@ -4493,19 +4493,19 @@ fn build_elf() -> i64 {
   return total;
 }
 fn report(total: i64, out: [u8]) {
-  write("ling: wrote "); write(out); write(" ("); putnum(total); write(" bytes, "); putnum(clen); write(" machine-code bytes, ");
+  write("skite: wrote "); write(out); write(" ("); putnum(total); write(" bytes, "); putnum(clen); write(" machine-code bytes, ");
   putnum(nv - 2); write(" vars, "); putnum(spilled); write(" spills, "); putnum(peak_active); write(" peak registers, "); putnum(xpeak); write(" xmm, ");
   putnum(nelided); putc('/'); putnum(nchecks); write(" bounds checks elided, "); putnum(nsr); write(" modulo reduced, ");
   putnum(ninlined + ninl_stmt); write(" calls inlined)\n");
 }
 fn main() {
-  if argc() != 3 { ewrite("usage: ling input.cock output-executable\n"); exit(2); }
+  if argc() != 3 { ewrite("usage: skite input.cock output-executable\n"); exit(2); }
   let input = file(1);
   let nm = argv(1);
   srcname_len = len(nm); if srcname_len > 4000 { srcname_len = 4000; }
   let mut j = 0;
   while j < srcname_len { srcname[j] = nm[j]; j += 1; }
-  if len(input) > 1048576 { ewrite("ling: error: invalid source file size\n"); exit(1); }
+  if len(input) > 1048576 { ewrite("skite: error: invalid source file size\n"); exit(1); }
   let mut i = 0;
   while i < len(PRELUDE) { src[i] = PRELUDE[i]; i += 1; }
   prelude_len = len(PRELUDE);
@@ -4513,7 +4513,7 @@ fn main() {
   user_start = prelude_len + 1;
   i = 0;
   while i < len(input) {
-    if input[i] == 0 { ewrite("ling: error: source contains NUL byte\n"); exit(1); }
+    if input[i] == 0 { ewrite("skite: error: source contains NUL byte\n"); exit(1); }
     src[user_start + i] = input[i]; i += 1;
   }
   src[user_start + len(input)] = 0;

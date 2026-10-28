@@ -10,7 +10,7 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -fno-math-errno tests/ty_fuzz.c -o "$T/gen
 pass=0
 for src in "$T"/t*.cock; do
   b=${src%.cock}
-  if ! "${LING:-./ling}" "$src" "$T/p" > "$T/log" 2>&1; then echo "COMPILE FAIL $src"; cat "$T/log" "$src"; exit 1; fi
+  if ! "${SKITE:-./skite}" "$src" "$T/p" > "$T/log" 2>&1; then echo "COMPILE FAIL $src"; cat "$T/log" "$src"; exit 1; fi
   rc=$( ( "$T/p" > "$T/got" 2>/dev/null ); echo $? ) 2>/dev/null
   if [[ $rc -ne 0 ]]; then echo "UNEXPECTED rc=$rc $src"; cat "$src"; exit 1; fi
   if ! cmp -s "$T/got" "$b.out"; then echo "OUTPUT MISMATCH $src"; diff "$T/got" "$b.out" | head; cat "$src"; exit 1; fi

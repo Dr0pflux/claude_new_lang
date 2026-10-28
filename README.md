@@ -1,24 +1,24 @@
-# ling: a native compiler written in its own language (v0.9)
+# skite: a native compiler written in its own language (v0.9)
 
-**Status:** experimental Linux x86-64 compiler. **Self-hosted:** the compiler is `ling.cock`, written in ling0, and it compiles itself to a byte-identical fixed point.
+**Status:** experimental Linux x86-64 compiler. **Self-hosted:** the compiler is `skite.cock`, written in skite, and it compiles itself to a byte-identical fixed point.
 
-- No C compiler, assembler, linker, LLVM/GCC backend, VM or libc anywhere in the build. ling writes x86-64 machine code and the ELF64 file byte by byte.
-- `bootstrap/ling-seed` is a prebuilt ling executable used to start the build. `bootstrap/ling0.c` is the original C seed, kept only so the chain can be audited (`make seed-from-c`).
+- No C compiler, assembler, linker, LLVM/GCC backend, VM or libc anywhere in the build. skite writes x86-64 machine code and the ELF64 file byte by byte.
+- `bootstrap/skite-seed` is a prebuilt skite executable used to start the build. `bootstrap/skite.c` is the original C seed, kept only so the chain can be audited (`make seed-from-c`).
 
 ## Build and use
 
 ```
-make            # bootstrap/ling-seed builds ling.cock -> ling, which rebuilds itself
-make selfcheck  # ling must reproduce itself byte for byte
+make            # bootstrap/skite-seed builds skite.cock -> skite, which rebuilds itself
+make selfcheck  # skite must reproduce itself byte for byte
 make test       # regression suite + small fuzz runs
-./ling prog.cock prog && ./prog
+./skite prog.cock prog && ./prog
 ```
 
 Learn the language with `TUTORIAL.md`; the reference is `LANGUAGE.md`.
 
 ## New in v0.9: self-hosting
 
-- The whole compiler (lexer, type checker, range analysis, inliner, strength reduction, register allocator, x86-64 encoder, ELF writer) is ported to ling0: about 4,300 lines in `ling.cock`. Its output was verified byte-identical to the C seed on every example, test and benchmark before the C seed was retired.
+- The whole compiler (lexer, type checker, range analysis, inliner, strength reduction, register allocator, x86-64 encoder, ELF writer) is ported to skite: about 4,300 lines in `skite.cock`. Its output was verified byte-identical to the C seed on every example, test and benchmark before the C seed was retired.
 - New built-ins the compiler needed: `argv(k)` (an argument's text as `[u8]`) and `ewrite(…)` (unbuffered stderr).
 - Fixes found while porting: inlined-call result variables were live from program start (spills on the compiler 1,316 → 789); every function shared one global-sized stack frame (now per-function frames); an unread inlined result could be stored below the stack pointer; error-path functions (always `exit`) are no longer inlined and are treated as non-returning by range analysis.
 - See `V0.9_NOTES.md`.
@@ -34,7 +34,7 @@ Learn the language with `TUTORIAL.md`; the reference is `LANGUAGE.md`.
 - **Casts `as`:** integer casts wrap; float→int casts saturate (NaN → 0), as in Rust.
 - **Floats (SSE2):** f32/f64 arithmetic and comparisons with exact IEEE semantics (NaN-correct branches), `sqrt`, and `bits`/`from_bits`. Float expression trees are evaluated in an XMM register stack.
 - **Typed arrays:** `alloc<T>`, `shared<T>`, `view<T>` for every scalar type (`view<f32>(file(1))` reads a binary model). Typed functions take and return any scalar type; unit functions return nothing.
-- **Runtime library written in ling0:** float and bool printing are ordinary ling0 functions, emitted only when used.
+- **Runtime library written in skite:** float and bool printing are ordinary skite functions, emitted only when used.
 - **Phase 1 gate:**
   - a new typed differential fuzzer (`tests/ty_fuzz.c`, with its own interpreter of the type rules) over every type, cast, promotion, unsigned/float op, typed array and typed function;
   - ill-typed programs rejected;
@@ -52,11 +52,11 @@ Learn the language with `TUTORIAL.md`; the reference is `LANGUAGE.md`.
 - **Compile-time rules:** no output, outer-variable assignment, or printing calls inside a `par` body.
 - **Parallel Vigenère solver** (`bench/vigenere/vigp.cock`), same algorithm and identical output, 2 CPUs, median of 15 runs:
 
-| | ling0 `par` | gcc -O3 OpenMP | Rust `std::thread` |
+| | skite `par` | gcc -O3 OpenMP | Rust `std::thread` |
 |---|---:|---:|---:|
 | 4,000 texts | **~455 ms** | ~625 ms | ~975 ms |
 
-  ling0 is ~27% faster than gcc OpenMP and ~2.1× faster than Rust threads. The VM was slower during this run, so compare ratios, not absolute times with v0.5. clang is not shown because this machine has no libomp.
+  skite is ~27% faster than gcc OpenMP and ~2.1× faster than Rust threads. The VM was slower during this run, so compare ratios, not absolute times with v0.5. clang is not shown because this machine has no libomp.
 - Statement inlining also covers `a[i] = f(..)` and `print(f(..))`.
 - See `V0.6_NOTES.md`.
 
@@ -78,7 +78,7 @@ Learn the language with `TUTORIAL.md`; the reference is `LANGUAGE.md`.
 - **Periodic-index strength reduction:** `i % period` in loops becomes a wrapping counter (no division). This is the defining pattern of periodic ciphers, and gcc and clang don't do it.
 - **First real computational-linguistics workload.** A complete Vigenère solver (IoC period detection, unigram initialization, quadgram delta-scored coordinate ascent), run on 4,000 held-out Gutenberg texts with byte-identical output in all four implementations:
 
-| | ling0 | gcc -O3 -march=native | clang -O3 -march=native | rustc -O3 native |
+| | skite | gcc -O3 -march=native | clang -O3 -march=native | rustc -O3 native |
 |---|---:|---:|---:|---:|
 | Vigenère, 4,000 texts (median of 21) | **487 ms** | 545 ms | 573 ms | 764 ms |
 
@@ -89,11 +89,11 @@ See `V0.4_NOTES.md` for details, bugs found and fixed, and evidence; `LANGUAGE.m
 ## Run (x86-64 Linux)
 
 ```sh
-make            # builds ./ling0 with -Wall -Wextra -Wpedantic -Werror
-./ling0 examples/argc.cock ./program && ./program a b
+make            # builds ./skite with -Wall -Wextra -Wpedantic -Werror
+./skite examples/argc.cock ./program && ./program a b
 make test       # regressions + C oracles + control-flow fuzz + div-by-const
 make fuzz       # 16,000-program control-flow campaign
-make runtime    # ling0 vs clang/gcc/rustc (needs all three)
+make runtime    # skite vs clang/gcc/rustc (needs all three)
 make vigenere CORPUS=/path/to/gutenberg   # Vigenère solver benchmark
 ```
 
@@ -113,15 +113,15 @@ make vigenere CORPUS=/path/to/gutenberg   # Vigenère solver benchmark
 
 **Runtime.** Same algorithm and semantics; outputs verified identical; median of 11 interleaved runs (`bench/runtime/`):
 
-| kernel | ling0 | gcc -O3 -march=native | clang -O3 -march=native | rustc -O3 native |
+| kernel | skite | gcc -O3 -march=native | clang -O3 -march=native | rustc -O3 native |
 |---|---:|---:|---:|---:|
 | `ngram29` rolling 29-ary 5-gram index | 1090 ms | 1088 ms | 1164 ms | 1154 ms |
 | `vigenere29` periodic-key mod-29 transform | 671 ms | 600 ms | 922 ms | 910 ms |
 
 - **Scope:** arithmetic-only kernels; there is no memory access yet, so no real model-table lookups.
 - **Result:**
-  - ngram29: ling0 is at parity with gcc and about 6% faster than clang and Rust.
-  - vigenere29: ling0 is about 27% faster than clang and Rust, but **gcc is about 11% faster than ling0**. A likely cause is that gcc proves `i ≥ 0` for the loop counter and drops the sign fix-up on `i % 7` (limitation #5) [hypothesis].
+  - ngram29: skite is at parity with gcc and about 6% faster than clang and Rust.
+  - vigenere29: skite is about 27% faster than clang and Rust, but **gcc is about 11% faster than skite**. A likely cause is that gcc proves `i ≥ 0` for the loop counter and drops the sign fix-up on `i % 7` (limitation #5) [hypothesis].
 - **Noise:** this is a shared VM with spreads of ±5–10%.
 - These two kernels don't support any general claim about speed versus C or Rust.
 
@@ -139,7 +139,7 @@ See `KNOWN_LIMITATIONS.md` and `SELF_HOSTING.md` (next gate: G2).
 
 | Path | Contents |
 |---|---|
-| `ling0.c` | the compiler (v0.3) |
+| `skite.c` | the compiler (v0.3) |
 | `bootstrap/ling0_s0.c`, `bootstrap/ling0_s1.c` | v0.1 and v0.2.1 snapshots |
 | `LANGUAGE.md` | implemented language |
 | `LANGUAGE_SPEC.md` | linguistics design proposal |

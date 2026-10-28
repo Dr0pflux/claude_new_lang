@@ -6,7 +6,7 @@ Participate in a three-party language/backend engineering review: project owner 
 
 ## Source of truth
 
-The canonical artifact is this ZIP. The existing compiler is `ling0.c`. Previous initial stage snapshot: `bootstrap/ling0_s0.c`. Tests: `test.sh`, `tests/differential.c`, `tests/run_differential.sh`. Plans: `ARCHITECTURE.md`, `LANGUAGE_SPEC.md`, `SELF_HOSTING.md`, `KNOWN_LIMITATIONS.md`.
+The canonical artifact is this ZIP. The existing compiler is `skite.c`. Previous initial stage snapshot: `bootstrap/ling0_s0.c`. Tests: `test.sh`, `tests/differential.c`, `tests/run_differential.sh`. Plans: `ARCHITECTURE.md`, `LANGUAGE_SPEC.md`, `SELF_HOSTING.md`, `KNOWN_LIMITATIONS.md`.
 
 Current target is **Linux x86-64**, and the current compiler is temporarily written in C11. It emits raw native instructions and directly constructs ELF executable bytes; no LLVM, GCC, Cranelift, QBE, assembler, linker, or generated C is allowed in the language compilation path. GCC/Clang may be used solely to build the temporary C seed and to create independent reference baselines.
 

@@ -1,4 +1,4 @@
-# ling0 language reference — implemented in v0.9
+# skite language reference — implemented in v0.9
 
 Everything here is implemented and tested. Planned features live in `LANGUAGE_SPEC.md`.
 
@@ -121,7 +121,7 @@ fn byte_at(t: [u8], i: i64) -> u8 { return (t[i] - 32) as u8; }   // u8 - 32 is 
 - **Inside functions:** `argc()`, `file()` and `alloc` are available in `main` only. Functions get arrays through parameters, so a function can never leak memory.
 - **Evaluation order:** when calls are involved, operands and arguments are evaluated strictly left to right. A store `a[i] = e` (and `a[i] op= e`) evaluates `e` first, then `i`, each exactly once.
 - **Zero-cost abstraction:** non-recursive functions are inlined (expression helpers at simple-argument calls; whole bodies at `let x = f(..)`, `x = f(..)`, `x op= f(..)` and `f(..);`). Range analysis then sees the caller's real arrays.
-- **Runtime library:** `print` of floats and bools is implemented by functions written in ling0 itself. They are compiled with every program but emitted only if used. Names starting with `__` are reserved.
+- **Runtime library:** `print` of floats and bools is implemented by functions written in skite itself. They are compiled with every program but emitted only if used. Names starting with `__` are reserved.
 
 ## Parallelism: `par`
 

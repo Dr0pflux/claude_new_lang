@@ -1,4 +1,4 @@
-/* Deterministic, independent C reference oracle for ling0 scalar arithmetic.
+/* Deterministic, independent C reference oracle for skite scalar arithmetic.
  * Constructs expressions and checks wrapping i64 semantics, signed div/mod.
  * Not part of the language compilation path.
  */

@@ -1,4 +1,4 @@
-/* Independent DAG fuzzer for ling0 (Opus review): locals reference arbitrary
+/* Independent DAG fuzzer for skite (Opus review): locals reference arbitrary
  * earlier locals, x+x and x/x sharing, negative divisors, immediate-encoding
  * boundary constants on either side. Oracle = C wrapping i64. Not in compile path. */
 #include <inttypes.h>

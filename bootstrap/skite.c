@@ -1,4 +1,4 @@
-/* ling0 v0.7: independent native Linux x86-64 compiler (bootstrap S2/G1).
+/* skite v0.7: independent native Linux x86-64 compiler (bootstrap S2/G1).
  * Source -> typed AST (static types, constant folding) -> loop-aware liveness -> linear-scan
  * register allocation -> direct x86-64 encoding -> ELF64 executable.
  * No assembler, linker, LLVM/GCC backend, or libc in the output.
@@ -27,7 +27,7 @@ static int node_src(int e);
 static int errnode=-1;   /* type errors point at the start of this expression */
 static void fail(const char *s){
     if(errnode>=0&&parsing_src&&node_src(errnode)>=0)tstart=source+node_src(errnode);
-    if(!parsing_src||!tstart||tstart<source||tstart>source+strlen(source)){fprintf(stderr,"ling0: error: %s\n",s);exit(1);}
+    if(!parsing_src||!tstart||tstart<source||tstart>source+strlen(source)){fprintf(stderr,"skite: error: %s\n",s);exit(1);}
     int line=1;const char *ls=source;
     for(const char *p=source;p<tstart;p++)if(*p=='\n'){line++;ls=p+1;}
     int col=(int)(tstart-ls)+1;const char *le=ls;while(*le&&*le!='\n')le++;
@@ -1567,7 +1567,7 @@ static void check_par(void){
     for(int i=0;i<nn;i++)if(nd[i].k==S_PAR&&stmt_outputs(nd[i].c))
         fail("a par block calls a function that may print (output only after the par block)");
 }
-/* Runtime library written in ling0 itself; only functions a program uses are emitted. */
+/* Runtime library written in skite itself; only functions a program uses are emitted. */
 static const char *prelude_src=
 "fn __pdig(x: u64) { if x >= 10 { __pdig(x / 10); } putc((x % 10) as i64 + 48); }\n"
 "fn __print_bool(b: bool) {\n"
@@ -3308,7 +3308,7 @@ static void write_elf(const char *name){
     if(fclose(f)){perror("close ELF");free(out);exit(1);}
     if(chmod(name,0755)){perror("chmod");free(out);exit(1);}
     free(out);
-    printf("ling0: wrote %s (%zu bytes, %zu machine-code bytes, %d vars, %d spills, %d peak registers, %d/%d bounds checks elided, %d modulo reduced, %d calls inlined)\n",
+    printf("skite: wrote %s (%zu bytes, %zu machine-code bytes, %d vars, %d spills, %d peak registers, %d/%d bounds checks elided, %d modulo reduced, %d calls inlined)\n",
            name,total,clen,nv-2,spilled,peak_active,nelided,nchecks,nsr,ninlined+ninl_stmt);
 }
 static char *read_source(const char *path){
@@ -3318,7 +3318,7 @@ static char *read_source(const char *path){
     rewind(f);char *s=malloc((size_t)n+1);if(!s){perror("malloc");exit(1);}
     if(fread(s,1,(size_t)n,f)!=(size_t)n){perror("fread");exit(1);}
     fclose(f);
-    if(memchr(s,0,(size_t)n)){fprintf(stderr,"ling0: source contains NUL byte\n");exit(1);}
+    if(memchr(s,0,(size_t)n)){fprintf(stderr,"skite: source contains NUL byte\n");exit(1);}
     s[n]=0;return s;
 }
 int main(int argc,char **argv){

@@ -1,16 +1,16 @@
-# Learn ling0
+# Learn skite
 
 This is a short, practical introduction. Every program here is in `examples/tutorial/` and runs as shown. The full rules are in `LANGUAGE.md`.
 
 ## 0. Build and run
 
 ```sh
-make                                   # builds the compiler: ./ling0
-./ling examples/tutorial/01_hello.cock hello
+make                                   # builds the compiler: ./skite
+./skite examples/tutorial/01_hello.cock hello
 ./hello
 ```
 
-`ling0 input.cock output` writes a native Linux x86-64 executable. There is no runtime to install and no libraries to link.
+`skite input.cock output` writes a native Linux x86-64 executable. There is no runtime to install and no libraries to link.
 
 ## 1. Hello
 

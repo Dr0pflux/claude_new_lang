@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
-LING=${LING:-./ling}; [ -x "$LING" ] || make -s ling
+SKITE=${SKITE:-./skite}; [ -x "$SKITE" ] || make -s skite
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 check() {
   local src="$1" expected="$2";shift 2
-  "$LING" "$src" "$T/prog" > "$T/build.log"
+  "$SKITE" "$src" "$T/prog" > "$T/build.log"
   local actual
   actual=$($T/prog "$@")
   if [[ "$actual" != "$expected" ]]; then
@@ -39,7 +39,7 @@ check "$T/mod.cock" -3 a b
 cat > "$T/bad.cock" <<'SRC'
 fn main() -> i64 { return 42 / 0; }
 SRC
-if "$LING" "$T/bad.cock" "$T/prog" 2> "$T/error"; then
+if "$SKITE" "$T/bad.cock" "$T/prog" 2> "$T/error"; then
   echo 'FAIL: divide-by-zero unexpectedly accepted' >&2;exit 1
 fi
 grep -q 'division by zero' "$T/error"
@@ -48,14 +48,14 @@ echo 'PASS: constant divide-by-zero rejected'
 for unit in '(' '-'; do
   { printf 'fn main() -> i64 { return '; for _ in $(seq 100000); do printf '%s' "$unit"; done
     printf '1'; [[ $unit == '(' ]] && for _ in $(seq 100000); do printf ')'; done; printf '; }\n'; } > "$T/deep.cock"
-  rc=0; "$LING" "$T/deep.cock" "$T/prog" 2> "$T/error" || rc=$?
+  rc=0; "$SKITE" "$T/deep.cock" "$T/prog" 2> "$T/error" || rc=$?
   if [[ $rc -ne 1 ]] || ! grep -q 'nesting too deep' "$T/error"; then
     echo "FAIL: deep '$unit' nesting rc=$rc (expected diagnostic)" >&2; exit 1; fi
 done
 echo 'PASS: deep nesting rejected with diagnostic'
 # Opus review D7: bytes after an embedded NUL must not be silently ignored.
 printf 'fn main() -> i64 { return 7; }\0 trailing' > "$T/nul.cock"
-if "$LING" "$T/nul.cock" "$T/prog" 2> "$T/error"; then echo 'FAIL: NUL-truncated source accepted' >&2; exit 1; fi
+if "$SKITE" "$T/nul.cock" "$T/prog" 2> "$T/error"; then echo 'FAIL: NUL-truncated source accepted' >&2; exit 1; fi
 grep -q 'NUL byte' "$T/error"
 echo 'PASS: embedded NUL rejected'
 # Immediate-encoding boundaries (imm8 / imm32 / zero-ext imm32 / imm64), both operand sides.
@@ -110,7 +110,7 @@ fn main() -> i64 {
 }
 SRC
 printf 'ABBA CAB' > "$T/in.txt"
-"$LING" "$T/mem.cock" "$T/mem" > /dev/null
+"$SKITE" "$T/mem.cock" "$T/mem" > /dev/null
 got=$("$T/mem" "$T/in.txt" | tr '\n' ' ')
 [[ "$got" == "A=3 B=3 C=1 -20 8 " ]] || { echo "FAIL: mem.cock got [$got]" >&2; exit 1; }
 echo 'PASS: arrays/file/view/print/putc'
@@ -122,25 +122,25 @@ echo 'PASS: file errors trap'
 cat > "$T/oob.cock" <<'SRC'
 fn main() -> i64 { let a = alloc8(4); print(7); a[argc() + 3] = 1; return 0; }
 SRC
-"$LING" "$T/oob.cock" "$T/oob" > /dev/null
+"$SKITE" "$T/oob.cock" "$T/oob" > /dev/null
 rc=0; got=$( ( "$T/oob" ) 2>/dev/null ) || rc=$?
 [[ $rc -eq 132 && "$got" == "7" ]] || { echo "FAIL: bounds trap rc=$rc out=[$got]" >&2; exit 1; }
 echo 'PASS: out-of-bounds store traps after flushing output'
 cat > "$T/fpe.cock" <<'SRC'
 fn main() -> i64 { print(9); return 1 / (argc() - 1); }
 SRC
-"$LING" "$T/fpe.cock" "$T/fpe" > /dev/null
+"$SKITE" "$T/fpe.cock" "$T/fpe" > /dev/null
 rc=0; got=$( ( "$T/fpe" ) 2>/dev/null ) || rc=$?
 [[ $rc -eq 136 && "$got" == "9" ]] || { echo "FAIL: div trap rc=$rc out=[$got]" >&2; exit 1; }
 echo 'PASS: division trap flushes output (SIGFPE handler)'
 for bad in 'let mut a = alloc8(4);' 'let a = alloc8(0);' 'let a = file(1); a[0] = 1;' 'let a = alloc8(4); let x = a;' 'let mut i = 0; while i < 2 { let a = file(1); i += 1; }'; do
   printf 'fn main() -> i64 { %s return 0; }' "$bad" > "$T/bad.cock"
-  if "$LING" "$T/bad.cock" "$T/prog" 2>/dev/null; then echo "FAIL: accepted [$bad]" >&2; exit 1; fi
+  if "$SKITE" "$T/bad.cock" "$T/prog" 2>/dev/null; then echo "FAIL: accepted [$bad]" >&2; exit 1; fi
 done
 echo 'PASS: unsafe array forms rejected'
-# Vigenere solver: ling0 output must equal the C reference implementation's
+# Vigenere solver: skite output must equal the C reference implementation's
 if [[ -f bench/vigenere/data/quad.bin ]]; then
-  "$LING" bench/vigenere/vig.cock "$T/vig" > "$T/vig.log"
+  "$SKITE" bench/vigenere/vig.cock "$T/vig" > "$T/vig.log"
   grep -q '67/67 bounds checks elided' "$T/vig.log" || { echo "FAIL: vig bounds-check proof regressed" >&2; cat "$T/vig.log" >&2; exit 1; }
   cc -O2 bench/vigenere/vig.c -o "$T/vigc"
   cmp -s <("$T/vig" bench/vigenere/data/quad.bin bench/vigenere/data/cipher.txt) <("$T/vigc" bench/vigenere/data/quad.bin bench/vigenere/data/cipher.txt) \
@@ -164,7 +164,7 @@ cat > "$T/opeq.cock" <<'SRC'
 fn tick(x: i64) -> i64 { putc(66); return x; }
 fn main() -> i64 { let a = alloc64(4); a[1] = 3; a[tick(1)] <<= 2; a[tick(1)] *= 5; putc(10); return a[1]; }
 SRC
-"$LING" "$T/opeq.cock" "$T/opeq" > /dev/null
+"$SKITE" "$T/opeq.cock" "$T/opeq" > /dev/null
 got=$("$T/opeq" | tr '\n' ' ')
 [[ "$got" == "BB 60 " ]] || { echo "FAIL: compound store evaluated its index twice: [$got]" >&2; exit 1; }
 echo 'PASS: compound array store evaluates the index once'
@@ -183,7 +183,7 @@ fn main() -> i64 {
   return t;
 }
 SRC
-"$LING" "$T/par.cock" "$T/par" > /dev/null
+"$SKITE" "$T/par.cock" "$T/par" > /dev/null
 got=$("$T/par" | tr '\n' ' ')
 want=$(cat > "$T/par.c" <<'SRC'
 #include <stdio.h>
@@ -196,32 +196,32 @@ echo 'PASS: par workers + shared results + private snapshots'
 cat > "$T/parf.cock" <<'SRC'
 fn main() -> i64 { let r = shared64(4); print(1); par k in 0..4 { r[k] = 100 / (2 - k); } print(2); return 0; }
 SRC
-"$LING" "$T/parf.cock" "$T/parf" > /dev/null
+"$SKITE" "$T/parf.cock" "$T/parf" > /dev/null
 rc=$( ( "$T/parf" > "$T/parf.out" 2>/dev/null ); echo $? ) 2>/dev/null
 [[ $rc -eq 132 && "$(cat "$T/parf.out")" == "1" ]] || { echo "FAIL: failing worker rc=$rc" >&2; exit 1; }
 echo 'PASS: a failing worker makes the parent trap after the join (output before par kept)'
 for bad in 'let mut x = 0; par k in 0..2 { x = k; }' 'par k in 0..2 { print(k); }' 'par k in 0..2 { par j in 0..2 { } }' 'par k in 0..2 { let a = alloc8(4); }' 'par k in 0..2 { return 1; }'; do
   printf 'fn main() -> i64 { %s return 0; }' "$bad" > "$T/bad.cock"
-  if "$LING" "$T/bad.cock" "$T/prog" 2>/dev/null; then echo "FAIL: accepted [$bad]" >&2; exit 1; fi
+  if "$SKITE" "$T/bad.cock" "$T/prog" 2>/dev/null; then echo "FAIL: accepted [$bad]" >&2; exit 1; fi
 done
 printf 'fn say(x: i64) -> i64 { print(x); return x; }\nfn main() -> i64 { let r = shared64(2); par k in 0..2 { r[k] = say(k); } return 0; }' > "$T/bad.cock"
-if "$LING" "$T/bad.cock" "$T/prog" 2>/dev/null; then echo "FAIL: accepted printing call in par" >&2; exit 1; fi
+if "$SKITE" "$T/bad.cock" "$T/prog" 2>/dev/null; then echo "FAIL: accepted printing call in par" >&2; exit 1; fi
 echo 'PASS: unsafe par forms rejected'
 if [[ -f bench/vigenere/data/quad.bin ]]; then
-  "$LING" bench/vigenere/vigp.cock "$T/vigp" > /dev/null
+  "$SKITE" bench/vigenere/vigp.cock "$T/vigp" > /dev/null
   cmp -s <("$T/vigp" bench/vigenere/data/quad.bin bench/vigenere/data/cipher.txt) <("$T/vigc" bench/vigenere/data/quad.bin bench/vigenere/data/cipher.txt) \
     || { echo "FAIL: parallel Vigenere differs from the C reference" >&2; exit 1; }
   echo 'PASS: parallel Vigenere solver matches C reference'
 fi
-"$LING" tests/types/types.cock "$T/types" > /dev/null
+"$SKITE" tests/types/types.cock "$T/types" > /dev/null
 "$T/types" | cmp -s - tests/types/types.expected || { echo "FAIL: typed regression" >&2; "$T/types" | diff - tests/types/types.expected >&2; exit 1; }
 echo 'PASS: v0.7 types (widths, unsigned, f32/f64, casts, bool, unit functions)'
-"$LING" tests/types/xmm.cock "$T/xmm" > /dev/null
+"$SKITE" tests/types/xmm.cock "$T/xmm" > /dev/null
 "$T/xmm" | cmp -s - tests/types/xmm.expected || { echo "FAIL: XMM expression stack" >&2; exit 1; }
 echo 'PASS: float trees deeper than the XMM stack, nested in integer subexpressions'
 while IFS= read -r bad; do
   printf 'fn u() { }\nfn main() -> i64 { %s return 0; }' "$bad" > "$T/bad.cock"
-  if "$LING" "$T/bad.cock" "$T/prog" 2>/dev/null; then echo "FAIL: accepted ill-typed [$bad]" >&2; exit 1; fi
+  if "$SKITE" "$T/bad.cock" "$T/prog" 2>/dev/null; then echo "FAIL: accepted ill-typed [$bad]" >&2; exit 1; fi
 done <<'BAD'
 let x: u8 = 300;
 let a: i64 = 1; let b: u64 = 2; let c = a + b;
@@ -243,7 +243,7 @@ while 1 < 2 && 3 { }
 BAD
 echo 'PASS: ill-typed programs rejected'
 for t in structs heap; do
-  "$LING" tests/data/$t.cock "$T/$t" > /dev/null
+  "$SKITE" tests/data/$t.cock "$T/$t" > /dev/null
   "$T/$t" "$T/$t.saved" | cmp -s - tests/data/$t.expected || { echo "FAIL: $t" >&2; exit 1; }
 done
 [[ "$(cat "$T/heap.saved")" == "hi" ]] || { echo "FAIL: save()" >&2; exit 1; }

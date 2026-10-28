@@ -1,4 +1,4 @@
-/* Division/modulo-by-constant validation for ling0 (magic-number, power-of-2
+/* Division/modulo-by-constant validation for skite (magic-number, power-of-2
  * and idiv-fallback paths). For each divisor d: boundary dividends plus 20000
  * pseudo-random runtime dividends of varying magnitude, folded into a checksum.
  * The C oracle computes the same checksum. usage: divconst_gen OUT_DIR
