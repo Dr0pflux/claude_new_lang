@@ -760,11 +760,16 @@ let mut pool_top: i64 = 16000000;    // loop-entry snapshots (kept for strength 
 let freeb = alloc<i64>(1048576);     // free temporary blocks (all of size env_n+1 within a function)
 let mut nfreeb: i64 = 0;
 fn pool_reset() { pool_bump = 0; nfreeb = 0; }
-fn env_new() -> i64 {
+fn env_alloc() -> i64 { // raw block: caller must initialize every entry before reading it
   let bs = env_n + 1;
   let mut e = 0;
   if nfreeb > 0 { nfreeb -= 1; e = freeb[nfreeb]; }
   else { e = pool_bump; pool_bump += bs; if pool_bump > pool_top { fail("analysis memory exhausted"); } }
+  return e;
+}
+fn env_new() -> i64 {
+  let e = env_alloc();
+  let bs = env_n + 1;
   let mut i = 0;
   while i < bs { envp[e + i].lo = 0; envp[e + i].hi = 0; envp[e + i].lt = 0; envp[e + i].bot = false; i += 1; }
   return e;
@@ -987,7 +992,7 @@ fn er(e: i64, env: i64) { // range of expression e -> R*
   let op = nd[e].op;
   if op == O_LAND || op == O_LOR {
     er(nd[e].a, env);
-    let t = env_new(); env_copy(t, env); refine(t, nd[e].a, op == O_LAND);
+    let t = env_alloc(); env_copy(t, env); refine(t, nd[e].a, op == O_LAND);
     if !dead(t) { er(nd[e].b, t); }
     env_free(t); ret_rg(0, 1); return;
   }
@@ -1135,7 +1140,7 @@ fn as_stmt(s: i64, env: i64) {
     let alo = RLO; let abot = RBOT;
     er(nd[s].b, env);
     let blo = RLO; let bhi = RHI; let bbot = RBOT;
-    let t = env_new(); env_copy(t, env);
+    let t = env_alloc(); env_copy(t, env);
     let mut klo = INT64_MIN; let mut khi = INT64_MAX;
     if !abot && !bbot && bhi > INT64_MIN { klo = alo; khi = bhi - 1; }
     if klo <= khi {
@@ -1161,7 +1166,7 @@ fn as_stmt(s: i64, env: i64) {
   if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { as_stmt(c, env); c = nd[c].next; } return; }
   if k == S_IF {
     er(nd[s].a, env);
-    let t = env_new(); let f = env_new(); env_copy(t, env); env_copy(f, env);
+    let t = env_alloc(); let f = env_alloc(); env_copy(t, env); env_copy(f, env);
     refine(t, nd[s].a, true); refine(f, nd[s].a, false);
     as_stmt(nd[s].b, t); if nd[s].c >= 0 { as_stmt(nd[s].c, f); }
     env_copy(env, t); env_join(env, f);
@@ -1169,7 +1174,7 @@ fn as_stmt(s: i64, env: i64) {
     env_free(t); env_free(f); return;
   }
   if k == S_WHILE {
-    let entry = env_new(); let head = env_new(); let bdy = env_new(); let nh = env_new();
+    let entry = env_alloc(); let head = env_alloc(); let bdy = env_new(); let nh = env_new();
     env_copy(entry, env); env_copy(head, env);
     if wcache[s] != 0 { env_join(head, wcache[s] - 1); }
     if an_loops >= MAX_LOOPS { fail("loops nested too deeply"); }
