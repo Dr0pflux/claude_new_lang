@@ -5014,6 +5014,10 @@ fn dead_at_call(e: i64) -> i64 {
   if k == S_STORE { r = r | refs_bits(nd[s].b, e) | arr_bits(nd[s].var); }
   return m & ~r;
 }
+fn gen_simple_to(e: i64, r: i64) {   // a constant or integer variable into register r
+  if nd[e].k == N_CONST { if hoisted(e) >= 0 { mov_rr(r, hoisted(e)); } else { mov_ri(r, nd[e].v); } return; }
+  loc(nd[e].var); load(r, OK, ORR, OI);
+}
 fn gen_call(e: i64, rg: i64, n: i64) {
   let f = nd[e].var;
   let rc = regconv(f);
@@ -5068,6 +5072,13 @@ fn gen_call(e: i64, rg: i64, n: i64) {
     }
     if !direct {
       while a >= 0 { if j == 0 { load(RCX, K_MEM, slot[k], 0); } else { load(RDX, K_MEM, slot[k], 0); } k += 1; j += 1; a = nd[a].next; }
+    }
+    // plain variables and constants go straight into rcx / rdx (loading them clobbers nothing)
+    let mut allsimple = direct && a >= 0;
+    let mut q = a; while q >= 0 { if !simple(q) || xvar_node(q) { allsimple = false; } q = nd[q].next; }
+    if allsimple {
+      while a >= 0 { let d = RCX; if j == 1 { gen_simple_to(a, RDX); } else { gen_simple_to(a, d); } j += 1; a = nd[a].next; }
+      j = 0;
     }
     while a >= 0 { gen(a, rg + j, n - j); j += 1; a = nd[a].next; }
     if direct && j >= 1 { mov_rr(RCX, RGS[rg]); }
