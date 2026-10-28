@@ -3680,6 +3680,8 @@ fn dm_find(e: i64, op: i64) -> i64 {   // a node a op b (op DIV or DIVU) somewhe
   if e < 0 { return -1; }
   let k = nd[e].k;
   if k == N_CONST || k == N_VAR || k == N_ARR || k == N_LOAD || k == N_CALL || k == N_NCPU { return -1; }
+  // Hoisting before the statement is unsafe for either operand of a short-circuit node.
+  if k == N_BIN && (nd[e].op == O_LAND || nd[e].op == O_LOR) { return -1; }
   if k == N_BIN && nd[e].op == op && !is_const(nd[e].b) && ic_pure(nd[e].a) && ic_pure(nd[e].b) { return e; }
   let x = dm_find(nd[e].a, op); if x >= 0 { return x; }
   return dm_find(nd[e].b, op);
@@ -3696,6 +3698,8 @@ fn dm_mod(e: i64, d: i64, mop: i64) -> i64 {   // the matching a % b node
   if e < 0 { return -1; }
   let k = nd[e].k;
   if k == N_CONST || k == N_VAR || k == N_ARR || k == N_LOAD || k == N_CALL || k == N_NCPU { return -1; }
+  // Keep the matching remainder in the same unconditional region as its quotient.
+  if k == N_BIN && (nd[e].op == O_LAND || nd[e].op == O_LOR) { return -1; }
   if k == N_BIN && nd[e].op == mop && expr_same(nd[e].a, nd[d].a) && expr_same(nd[e].b, nd[d].b) { return e; }
   let x = dm_mod(nd[e].a, d, mop); if x >= 0 { return x; }
   return dm_mod(nd[e].b, d, mop);
