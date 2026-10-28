@@ -2423,7 +2423,7 @@ fn subst(e: i64, f: i64, call: i64) -> i64 {
   let mut x = nd[call].a;
   while x >= 0 {
     let pv = fpvar[f * 16 + i];
-    if fpw[f * 16 + i] == 0 && ck == N_VAR && cv == pv { return clone_expr(x); }
+    if fpw[f * 16 + i] == 0 && ck == N_VAR && cv == pv { let r = clone_expr(x); nd[r].ty = cty; return r; }   // keeps a bits() retag
     if fpw[f * 16 + i] != 0 {
       let av = nd[x].var;
       if ck == N_VAR && cv == vars[pv].lenv {
@@ -2453,7 +2453,7 @@ fn clone_e_inl(e: i64) -> i64 {
       if vars[av].lenv < 0 { return mkconst(vars[av].alen as u64); }
       return mk_var(vars[av].lenv);
     }
-    return mk_var(map_var(cv));
+    let r = mk_var(map_var(cv)); nd[r].ty = nd[e].ty; return r;   // keeps a bits() retag
   }
   if ck == N_LOAD { let op = nd[e].op; let ty = nd[e].ty; let r = mk_load(map_var(cv), clone_e_inl(ca)); nd[r].op = op; nd[r].ty = ty; return r; }
   if ck == N_ARR {
@@ -3834,6 +3834,47 @@ fn alu_dig(op: i64) -> i64 {
   if op == O_ADD { return A_ADD; } if op == O_SUB { return A_SUB; } if op == O_AND { return A_AND; } if op == O_OR { return A_OR; }
   return A_XOR;
 }
+// e can be computed directly in v's register: along the left spine no right operand reads v
+fn spine_x(e: i64, v: i64) -> bool {
+  let k = nd[e].k;
+  if k == N_BIN && is_fop(nd[e].op) && !is_fcmp(nd[e].op) { return spine_x(nd[e].a, v) && !refs(nd[e].b, v); }
+  if k == N_UN && xunary_inplace(nd[e].op) { return spine_x(nd[e].a, v); }
+  return true;
+}
+fn xunary_inplace(op: i64) -> bool { return op == U_FNEG || op == U_GNEG || op == U_S2D || op == U_D2S || op == U_SQRTD || op == U_SQRTS; }
+// float tree into xmm register t (a variable's register, not part of the stack)
+fn genf_to(e: i64, t: i64, rg: i64, n: i64) {
+  let k = nd[e].k;
+  let mut pfx = 243; if fprec(e) { pfx = 242; }
+  if k == N_VAR && vars[nd[e].var].xr >= 0 { movx(t, vars[nd[e].var].xr); return; }
+  if k == N_BIN && is_fop(nd[e].op) && !is_fcmp(nd[e].op) {
+    let o = foc(fop_base(nd[e].op));
+    genf_to(nd[e].a, t, rg, n);
+    let b = nd[e].b;
+    if nd[b].k == N_VAR && vars[nd[b].var].reg < 0 {
+      loc(nd[b].var);
+      if is_xk(OK) { sse(pfx, 0, o, t, K_REG, ORR); } else { sse(pfx, 0, o, t, OK, ORR); }
+      return;
+    }
+    if hoisted_x(b) >= 0 { sse(pfx, 0, o, t, K_REG, hoisted_x(b)); return; }
+    let x = xtop; genf(b, x, rg, n); sse(pfx, 0, o, t, K_REG, x); return;
+  }
+  if k == N_UN && xunary_inplace(nd[e].op) {
+    let op = nd[e].op;
+    genf_to(nd[e].a, t, rg, n);
+    if op == U_FNEG || op == U_GNEG {
+      if op == U_FNEG { mov_ri(RAX, 9223372036854775808); } else { mov_ri(RAX, 2147483648); }
+      xmov_in(1, K_REG, RAX, 0);
+      if op == U_FNEG { byte(102); }
+      encr(0, false, 2, 15, 87, t, 1); return;
+    }
+    if op == U_S2D { sse(243, 0, 90, t, K_REG, t); return; }
+    if op == U_D2S { sse(242, 0, 90, t, K_REG, t); return; }
+    if op == U_SQRTD { sse(242, 0, 81, t, K_REG, t); return; }
+    sse(243, 0, 81, t, K_REG, t); return;
+  }
+  let x = xtop; genf(e, x, rg, n); movx(t, x);
+}
 // x = e for a float variable held in an xmm register
 fn assign_x(xr: i64, dbl: bool, v: i64, e: i64, rg: i64, n: i64) {
   let k = nd[e].k;
@@ -3846,19 +3887,7 @@ fn assign_x(xr: i64, dbl: bool, v: i64, e: i64, rg: i64, n: i64) {
   }
   if k == N_VAR { loc(nd[e].var); xmov_in(xr, OK, ORR, OI); return; }
   if xroom(e) {
-    let mut pfx = 243; if dbl { pfx = 242; }
-    // in place: x = x op b (b does not read x)
-    if k == N_BIN && nd[nd[e].a].k == N_VAR && nd[nd[e].a].var == v && !refs(nd[e].b, v) {
-      let o = foc(fop_base(nd[e].op));
-      let b = nd[e].b;
-      if nd[b].k == N_VAR && vars[nd[b].var].reg < 0 {
-        loc(nd[b].var);
-        if is_xk(OK) { sse(pfx, 0, o, xr, K_REG, ORR); } else { sse(pfx, 0, o, xr, OK, ORR); }
-        return;
-      }
-      if hoisted_x(b) >= 0 { sse(pfx, 0, o, xr, K_REG, hoisted_x(b)); return; }
-      let x = xtop; genf(b, x, rg, n); sse(pfx, 0, o, xr, K_REG, x); return;
-    }
+    if spine_x(e, v) { genf_to(e, xr, rg, n); return; }
     let x = xtop; genf(e, x, rg, n); movx(xr, x); return;
   }
   gen(e, rg, n); sse(102, dbl as i64, 110, xr, K_REG, RGS[rg]);
@@ -4097,10 +4126,23 @@ fn gen_stmt_body(s: i64, is_final: bool, rg: i64, n: i64) {
     let mut val = nd[s].b;
     let mut ir = rg; let mut inn = n;
     while nd[val].k == N_UN && ext_width(nd[val].op) >= w { val = nd[val].a; }
+    let mut fo = 0; if fs { fo = sfoff[(vars[av].et - TY_STRUCT0) * 32 + nd[s].c]; }
+    let mut et = vars[av].et; if fs { et = sfty[(vars[av].et - TY_STRUCT0) * 32 + nd[s].c]; }
+    // float element: the value goes straight from an xmm register to memory
+    if nd[s].op < 0 && ty_flt(et) && (xvar_node(val) || xroom(val)) {
+      let mut xv = 0;
+      let sv = xtop;
+      if xvar_node(val) { xv = vars[nd[val].var].xr; }
+      else { xv = xtop; genf(val, xv, rg, n); xtop = xv + 1; }
+      elem_addr(av, nd[s].a, nd[s].chk, fo, rg, n);
+      xtop = sv;
+      if et == TY_F64 { byte(242); } else { byte(243); }
+      memop(0, false, false, 2, 15, 17, xv, EA_B, EA_RI, EA_SC);
+      return;
+    }
     let mut rv = 0;
     if nd[val].k == N_VAR && vars[nd[val].var].reg >= 0 { rv = vars[nd[val].var].reg; }
     else { gen(val, rg, n); rv = RGS[rg]; ir = rg + 1; inn = n - 1; }
-    let mut fo = 0; if fs { fo = sfoff[(vars[av].et - TY_STRUCT0) * 32 + nd[s].c]; }
     elem_addr(av, nd[s].a, nd[s].chk, fo, ir, inn);
     let mut dig = -1; if nd[s].op >= 0 { dig = alu_dig(nd[s].op); }
     store_elem(w, dig, rv, EA_B, EA_RI, EA_SC);
