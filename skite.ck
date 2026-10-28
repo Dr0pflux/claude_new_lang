@@ -5361,8 +5361,9 @@ fn gen_stmt_body(s: i64, is_final: bool, rg: i64, n: i64) {
     while nd[val].k == N_UN && ext_width(nd[val].op) >= w { val = nd[val].a; }
     let mut fo = 0; if fs { fo = sfoff[(vars[av].et - TY_STRUCT0) * 32 + nd[s].c]; }
     let mut et = vars[av].et; if fs { et = sfty[(vars[av].et - TY_STRUCT0) * 32 + nd[s].c]; }
-    // float element: the value goes straight from an xmm register to memory
-    if nd[s].op < 0 && ty_flt(et) && (xvar_node(val) || xroom(val)) {
+    // float element: the value goes straight from an xmm register to memory (an expression-stack
+    // register does not survive a call in the index; a variable's register does)
+    if nd[s].op < 0 && ty_flt(et) && (xvar_node(val) || (xroom(val) && !has_call(nd[s].a))) {
       let mut xv = 0;
       let sv = xtop;
       if xvar_node(val) { xv = vars[nd[val].var].xr; }
