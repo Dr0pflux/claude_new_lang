@@ -26,7 +26,8 @@ let T_WHILE = 266; let T_BREAK = 267; let T_CONTINUE = 268; let T_EQ = 269; let 
 let T_LE = 271; let T_GE = 272; let T_SHL = 273; let T_SHR = 274; let T_SHRU = 275;
 let T_LAND = 276; let T_LOR = 277; let T_OPEQ = 278; let T_STR = 279; let T_PAR = 280;
 let T_IN = 281; let T_DOTDOT = 282; let T_AS = 283; let T_TRUE = 284; let T_FALSE = 285;
-let T_FNUM = 286; let T_STRUCT = 287;
+let T_FNUM = 286; let T_STRUCT = 287; let T_FOR = 288; let T_LOOP = 289; let T_CONST = 290;
+let T_DOTDOTEQ = 291;
 
 // ---------------------------------------------------------------- operators
 let O_ADD = 0; let O_SUB = 1; let O_MUL = 2; let O_DIV = 3; let O_MOD = 4; let O_AND = 5;
@@ -191,7 +192,8 @@ fn kw_kind(off: i64, n: i64) -> i64 {
   if eqs(off, n, "continue") { return T_CONTINUE; } if eqs(off, n, "par") { return T_PAR; }
   if eqs(off, n, "in") { return T_IN; } if eqs(off, n, "as") { return T_AS; }
   if eqs(off, n, "true") { return T_TRUE; } if eqs(off, n, "false") { return T_FALSE; }
-  if eqs(off, n, "struct") { return T_STRUCT; }
+  if eqs(off, n, "struct") { return T_STRUCT; } if eqs(off, n, "for") { return T_FOR; }
+  if eqs(off, n, "loop") { return T_LOOP; } if eqs(off, n, "const") { return T_CONST; }
   return T_ID;
 }
 fn esc_char(c0: i64) -> i64 { // after a backslash; pos is past the escape letter
@@ -264,6 +266,20 @@ fn next() {
         v = v * 16 + d as u64; nd_ += 1;
       }
       if nd_ == 0 { fail("malformed number"); }
+    } else if c == '0' && (ch(pos + 1) == 'b' || ch(pos + 1) == 'B' || ch(pos + 1) == 'o' || ch(pos + 1) == 'O') {
+      let mut sh: u64 = 3;   // bits per digit
+      if ch(pos + 1) == 'b' || ch(pos + 1) == 'B' { sh = 1; }
+      pos += 2;
+      let mut nd_ = 0;
+      while is_digit(ch(pos)) || ch(pos) == '_' {
+        if ch(pos) == '_' { pos += 1; continue; }
+        let d = (ch(pos) - '0') as u64;
+        if d >> sh != 0 { fail("malformed number"); }
+        pos += 1;
+        if v >> (64 - sh) != 0 { fail("integer literal exceeds u64 maximum"); }
+        v = (v << sh) | d; nd_ += 1;
+      }
+      if nd_ == 0 { fail("malformed number"); }
     } else {
       let mut ovf = false;
       while is_digit(ch(pos)) || ch(pos) == '_' {
@@ -307,6 +323,7 @@ fn next() {
   if c == '&' && c1 == '&' { pos += 2; tk_kind = T_LAND; return; }
   if c == '|' && c1 == '|' { pos += 2; tk_kind = T_LOR; return; }
   if c == '-' && c1 == '>' { pos += 2; tk_kind = T_ARROW; return; }
+  if c == '.' && c1 == '.' && c2 == '=' { pos += 3; tk_kind = T_DOTDOTEQ; return; }
   if c == '.' && c1 == '.' { pos += 2; tk_kind = T_DOTDOT; return; }
   if c1 == '=' {
     let mut o = -1;
@@ -1294,6 +1311,8 @@ let mut loopdepth: i64 = 0;
 let mut inpar: bool = false;
 let mut par_outer_nv: i64 = 0;
 let loopmark = alloc<i64>(257);
+let loopfor = alloc<i64>(257);    // per loop depth: the `for` variable a `continue` steps first (-1: none)
+let forvar = alloc<bool>(65536);  // a `for` loop variable (read-only in the body)
 let mut use_arena: bool = false;
 let vis = alloc<i64>(65536);
 let mut nvis: i64 = 0;
@@ -1725,7 +1744,7 @@ fn clear_var(v: i64) {
   vars[v].reads = 0; vars[v].start = 0; vars[v].end = 0; vars[v].reg = -1; vars[v].slot = -1; vars[v].cval = 0;
   vars[v].weight = 0; vars[v].arr = 0; vars[v].ro = 0; vars[v].basev = 0; vars[v].lenv = -1; vars[v].shared = 0;
   vars[v].alen = 0; vars[v].lenof = 0; vars[v].aid = 0; vars[v].ty = TY_I64; vars[v].et = 0; vars[v].owner = 0;
-  vars[v].glob = 0; vars[v].garr = 0; vars[v].xr = -1;
+  vars[v].glob = 0; vars[v].garr = 0; vars[v].xr = -1; forvar[v] = false;
 }
 fn hidden() -> i64 {
   if nv >= MAX_VARS { fail("too many variables"); }
@@ -1747,19 +1766,35 @@ fn declare(off: i64, n: i64, mut_: bool) -> i64 {
 let CTORS = " alloc shared view file argv alloc8 alloc16 alloc32 alloc64 shared8 shared16 shared32 shared64 view16 view32 view64 ";
 fn legacy_et(b: i64) -> i64 { if b == 8 { return TY_U8; } if b == 16 { return TY_I16; } if b == 32 { return TY_I32; } return TY_I64; }
 fn digits_at(off: i64, n: i64) -> i64 { let mut v = 0; let mut i = 0; while i < n { v = v * 10 + (src[off + i] - '0'); i += 1; } return v; }
+let mut LB_MARK: i64 = -1;   // arena mark of the loop body parsed last
+fn loop_body(fv: i64) -> i64 {
+  loopdepth += 1; loopmark[loopdepth] = -1; loopfor[loopdepth] = fv;
+  let b = parse_block();
+  LB_MARK = loopmark[loopdepth]; loopdepth -= 1;
+  return b;
+}
+fn mk_while(c: i64, b: i64) -> i64 {
+  let s = mk(S_WHILE); nd[s].a = c; nd[s].b = b; nd[s].c = LB_MARK;
+  if LB_MARK >= 0 { vars[LB_MARK].reads += 3; }
+  return s;
+}
+fn for_step(v: i64) -> i64 { let s = mk(S_ASSIGN); nd[s].var = v; nd[s].a = typed_bin(O_ADD, var_ref(v), mkconst_t(1, TY_ILIT)); return s; }
 fn parse_stmt() -> i64 {
   enter();
   let mut s = 0;
   let k = tk_kind;
-  if k == T_LET {
+  if k == T_LET || k == T_CONST {
     next();
     let mut mut_ = false;
-    if tk_kind == T_MUT { mut_ = true; next(); }
+    if tk_kind == T_MUT { if k == T_CONST { fail("a const cannot be mut"); } mut_ = true; next(); }
     if tk_kind != T_ID { fail("expected variable name"); }
     let no = tk_noff; let nl = tk_nlen; next();
     let mut ann = TY_NONE; let mut aarr = false;
     if tk_kind == ':' { next(); if tk_kind == '[' { next(); aarr = true; ann = parse_type_s(true); expect(']'); } else { ann = parse_type(); } }
     expect('=');
+    if k == T_CONST && (aarr || tk_kind == T_STR || (tk_kind == T_ID && in_wordlist(tk_noff, tk_nlen, CTORS) && find_var(tk_noff, tk_nlen) < 0)) {
+      fail("a const is a scalar (use let for arrays)");
+    }
     if tk_kind == T_STR {
       if mut_ { fail("array bindings are immutable (their elements are not)"); }
       if ann != 0 && (!aarr || ann != TY_U8) { fail("a string literal is a [u8]"); }
@@ -1831,6 +1866,7 @@ fn parse_stmt() -> i64 {
     let mut e = parse_expr(); expect(';');
     if ann != 0 { e = conv(e, ann); }
     else if mut_ { e = deflt(e); }
+    if k == T_CONST && !is_const(e) { fail("a const value must be a compile-time constant"); }
     else if nd[e].ty == TY_UNIT { fail("this function returns no value"); }
     let v = declare(no, nl, mut_); vars[v].ty = nd[e].ty;
     if !mut_ && is_const(e) { vars[v].isconst = 1; vars[v].cval = nd[e].v; s = mk(S_BLOCK); }
@@ -1851,11 +1887,46 @@ fn parse_stmt() -> i64 {
   if k == T_WHILE {
     next();
     let c = need_bool(parse_expr());
-    loopdepth += 1; loopmark[loopdepth] = -1;
-    let b = parse_block();
-    let m = loopmark[loopdepth]; loopdepth -= 1;
-    s = mk(S_WHILE); nd[s].a = c; nd[s].b = b; nd[s].c = m;
-    if m >= 0 { vars[m].reads += 3; }
+    s = mk_while(c, loop_body(-1));
+    depth -= 1; return s;
+  }
+  if k == T_LOOP {
+    next();
+    s = mk_while(mkconst_t(1, TY_BOOL), loop_body(-1));
+    depth -= 1; return s;
+  }
+  if k == T_FOR {
+    // for i in a..b { body }  =>  { let mut i = a; [let end = b;] while i < end { body; i += 1; } }
+    // (`..=` compares with <=; `continue` in the body becomes `{ i += 1; continue; }`)
+    next(); if tk_kind != T_ID { fail("expected loop variable"); }
+    let no = tk_noff; let nl = tk_nlen; next(); expect(T_IN);
+    let mut a = parse_expr();
+    let incl = tk_kind == T_DOTDOTEQ;
+    if tk_kind != T_DOTDOT && !incl { fail("expected `..` or `..=` in a for range"); }
+    next();
+    let mut b = parse_expr();
+    let mut t = TY_I64; if nd[a].ty == TY_U64 || nd[b].ty == TY_U64 { t = TY_U64; }
+    a = conv(a, t); b = conv(b, t);
+    let mark = nvis;
+    let iv = declare(no, nl, true); vars[iv].ty = t; forvar[iv] = true;
+    let init = mk(S_LET); nd[init].var = iv; nd[init].a = a;
+    // the bound is evaluated once: constants, immutable scalars and enclosing for variables
+    // (read-only in this body) are used as they are
+    let mut en = b;
+    if !is_const(b) && !(nd[b].k == N_VAR && (vars[nd[b].var].mutv == 0 || forvar[nd[b].var])) {
+      let ev = hidden(); vars[ev].ty = t;
+      let hl = mk(S_LET); nd[hl].var = ev; nd[hl].a = b; nd[init].next = hl; en = mk_var(ev);
+    }
+    let mut op = O_LT; if incl { op = O_LE; }
+    let c = typed_bin(op, mk_var(iv), en);
+    let body = loop_body(iv);
+    nvis = mark;
+    let inc = for_step(iv);
+    let mut last = nd[body].a;
+    if last < 0 { nd[body].a = inc; } else { while nd[last].next >= 0 { last = nd[last].next; } nd[last].next = inc; }
+    let w = mk_while(c, body);
+    last = init; while nd[last].next >= 0 { last = nd[last].next; } nd[last].next = w;
+    s = mk(S_BLOCK); nd[s].a = init;
     depth -= 1; return s;
   }
   if k == T_RETURN {
@@ -1886,6 +1957,10 @@ fn parse_stmt() -> i64 {
     let mut kk = S_CONT; if k == T_BREAK { kk = S_BRK; }
     if loopdepth == 0 { fail("break/continue outside loop"); }
     next(); expect(';'); s = mk(kk);
+    if kk == S_CONT && loopfor[loopdepth] >= 0 {   // a for loop steps its variable before the next test
+      let st = for_step(loopfor[loopdepth]); nd[st].next = s;
+      s = mk(S_BLOCK); nd[s].a = st;
+    }
     depth -= 1; return s;
   }
   if k == '{' { s = parse_block(); depth -= 1; return s; }
@@ -2001,6 +2076,7 @@ fn parse_stmt() -> i64 {
       depth -= 1; return s;
     }
     if vars[v].mutv == 0 { fail("assignment to immutable variable"); }
+    if forvar[v] { fail("assignment to a for loop variable"); }
     if inpar && v < par_outer_nv { fail("a par block cannot assign variables declared outside it (use a shared array)"); }
     let t = vars[v].ty;
     let mut e = 0;
@@ -2063,6 +2139,15 @@ fn parse_header(f: i64, decl: bool) {
   expect(')');
   if tk_kind == T_ARROW { next(); fns[f].rett = parse_type(); } else { fns[f].rett = TY_UNIT; }
 }
+fn breaks_out(s: i64, d: i64) -> bool {   // a break that leaves the loop whose body holds s
+  if s < 0 { return false; }
+  let k = nd[s].k;
+  if k == S_BRK { return d == 0; }
+  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { if breaks_out(c, d) { return true; } c = nd[c].next; } return false; }
+  if k == S_IF { return breaks_out(nd[s].b, d) || breaks_out(nd[s].c, d); }
+  if k == S_WHILE { return breaks_out(nd[s].b, d + 1); }
+  return false;
+}
 fn parse_function(f: i64) {
   curfn = f; nvis = 0; fns[f].mark = -1;
   parse_header(f, true);
@@ -2074,8 +2159,11 @@ fn parse_function(f: i64) {
   let mut s = nd[fns[f].body].a;
   while s >= 0 { last = s; s = nd[s].next; }
   if last < 0 || nd[last].k != S_RET {
-    if fns[f].rett != TY_UNIT { fail("a function must end with a return statement"); }
+    // a final `loop` with no break never falls through: the return after it is unreachable
+    let spin = last >= 0 && nd[last].k == S_WHILE && is_const(nd[last].a) && nd[nd[last].a].v != 0 && !breaks_out(nd[last].b, 0);
+    if fns[f].rett != TY_UNIT && !spin { fail("a function must end with a return statement"); }
     let r = mk(S_RET); nd[r].a = mkconst(0);
+    if fns[f].rett != TY_UNIT { nd[r].a = mkconst_t(0, fns[f].rett); }
     if last < 0 { nd[fns[f].body].a = r; } else { nd[last].next = r; }
   }
 }
@@ -2135,13 +2223,15 @@ fn static_array(v: i64, et: i64, n: i64) -> i64 {
   vars[v].basev = b; return v;
 }
 fn parse_global() {
-  expect(T_LET);
-  let mut mut_ = false; if tk_kind == T_MUT { mut_ = true; next(); }
+  let isc = tk_kind == T_CONST;
+  if !isc { expect(T_LET); } else { next(); }
+  let mut mut_ = false; if tk_kind == T_MUT { if isc { fail("a const cannot be mut"); } mut_ = true; next(); }
   if tk_kind != T_ID { fail("expected variable name"); }
   let no = tk_noff; let nl = tk_nlen; next();
   let mut ann = TY_NONE; let mut aarr = false;
   if tk_kind == ':' { next(); if tk_kind == '[' { next(); aarr = true; ann = parse_type_s(true); expect(']'); } else { ann = parse_type(); } }
   expect('=');
+  if isc && (aarr || tk_kind == T_STR || (tk_kind == T_ID && eqs(tk_noff, tk_nlen, "alloc"))) { fail("a const is a scalar (use let for arrays)"); }
   if tk_kind == T_ID && eqs(tk_noff, tk_nlen, "alloc") {
     next(); expect('<'); let et = parse_type_s(true); expect('>'); expect('(');
     let n = conv(parse_expr(), TY_I64); expect(')'); expect(';');
@@ -2200,7 +2290,7 @@ fn prescan() {
       if !in_prelude && eqs(fns[f].noff, fns[f].nlen, "main") { mainfn = f; }
       continue;
     }
-    if d == 0 && (tk_kind == T_STRUCT || tk_kind == T_LET) { skip_item(); continue; }
+    if d == 0 && (tk_kind == T_STRUCT || tk_kind == T_LET || tk_kind == T_CONST) { skip_item(); continue; }
     if tk_kind == '{' { d += 1; } else if tk_kind == '}' { d -= 1; }
     next();
   }
@@ -2262,9 +2352,9 @@ fn parse() {
     begin_src(k); curfn = -1; next();
     while tk_kind != T_EOF {
       if tk_kind == T_STRUCT { parse_struct(); }
-      else if tk_kind == T_LET { parse_global(); }
+      else if tk_kind == T_LET || tk_kind == T_CONST { parse_global(); }
       else if tk_kind == T_FN { skip_fn(); }
-      else { fail("expected `fn`, `struct` or `let` at top level"); }
+      else { fail("expected `fn`, `struct`, `let` or `const` at top level"); }
     }
     k += 1;
   }
@@ -3096,12 +3186,12 @@ fn count_assign(s: i64, v: i64) -> i64 {
   if k == S_PAR { c += count_assign(nd[s].c, v); if nd[s].var == v { c += 1; } }
   return c;
 }
-fn invariant(e: i64, loop: i64) -> bool {
+fn invariant(e: i64, lp: i64) -> bool {
   if e < 0 { return true; }
   let k = nd[e].k;
   if k == N_LOAD || k == N_CALL || k == N_ARR { return false; }
-  if k == N_VAR { return count_assign(loop, nd[e].var) == 0; }
-  return invariant(nd[e].a, loop) && invariant(nd[e].b, loop);
+  if k == N_VAR { return count_assign(lp, nd[e].var) == 0; }
+  return invariant(nd[e].a, lp) && invariant(nd[e].b, lp);
 }
 fn is_inc1(s: i64, v: i64) -> bool {
   if nd[s].k != S_ASSIGN || nd[s].var != v { return false; }
@@ -3112,11 +3202,11 @@ let mut nsr: i64 = 0;
 fn mk_assign(v: i64, e: i64) -> i64 { let s = mk(S_ASSIGN); nd[s].var = v; nd[s].a = e; return s; }
 let mut SR_IH: i64 = -1;   // init statements chain (head/tail)
 let mut SR_IT: i64 = -1;
-fn sr_scan(e: i64, loop: i64, ivar: i64, incstmt: i64) {
+fn sr_scan(e: i64, lp: i64, ivar: i64, incstmt: i64) {
   if e < 0 { return; }
   let k = nd[e].k;
-  if k == N_BIN || k == N_UN || k == N_LOAD { sr_scan(nd[e].a, loop, ivar, incstmt); sr_scan(nd[e].b, loop, ivar, incstmt); }
-  if k == N_CALL { let mut a = nd[e].a; while a >= 0 { sr_scan(a, loop, ivar, incstmt); a = nd[a].next; } }
+  if k == N_BIN || k == N_UN || k == N_LOAD { sr_scan(nd[e].a, lp, ivar, incstmt); sr_scan(nd[e].b, lp, ivar, incstmt); }
+  if k == N_CALL { let mut a = nd[e].a; while a >= 0 { sr_scan(a, lp, ivar, incstmt); a = nd[a].next; } }
   if nd[e].k != N_BIN || nd[e].op != O_MOD { return; }
   let d = nd[e].a;
   let mut E = -1;
@@ -3124,11 +3214,11 @@ fn sr_scan(e: i64, loop: i64, ivar: i64, incstmt: i64) {
   else if nd[d].k == N_BIN && nd[d].op == O_ADD && nd[nd[d].a].k == N_VAR && nd[nd[d].a].var == ivar { E = nd[d].b; }
   else { return; }
   let xb = nd[e].b;
-  if !invariant(xb, loop) || (E >= 0 && !invariant(E, loop)) { return; }
+  if !invariant(xb, lp) || (E >= 0 && !invariant(E, lp)) { return; }
   if has_trap(xb) || (E >= 0 && has_trap(E)) { return; }
-  if wentry[loop] == 0 { return; }
-  let en = wentry[loop] - 1;
-  lmap_for(wfn[loop]);
+  if wentry[lp] == 0 { return; }
+  let en = wentry[lp] - 1;
+  lmap_for(wfn[lp]);
   if dead(en) { return; }
   er(d, en);
   let dlo = RLO; let dbot = RBOT;
@@ -3155,16 +3245,16 @@ fn sr_scan(e: i64, loop: i64, ivar: i64, incstmt: i64) {
   nd[e].k = N_VAR; nd[e].var = m; nd[e].a = -1; nd[e].b = -1; vars[m].reads += 1;
   nsr += 1;
 }
-fn sr_stmts(s: i64, loop: i64, ivar: i64, incstmt: i64) {
+fn sr_stmts(s: i64, lp: i64, ivar: i64, incstmt: i64) {
   if s < 0 { return; }
   let k = nd[s].k;
-  if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { sr_stmts(c, loop, ivar, incstmt); c = nd[c].next; } }
-  else if k == S_IRET { sr_scan(nd[s].a, loop, ivar, incstmt); }
-  else if k == S_PAR { sr_scan(nd[s].a, loop, ivar, incstmt); sr_scan(nd[s].b, loop, ivar, incstmt); sr_stmts(nd[s].c, loop, ivar, incstmt); }
-  else if k == S_LET || k == S_ASSIGN || k == S_RET || k == S_PRINT || k == S_PUTC || k == S_EXPR { sr_scan(nd[s].a, loop, ivar, incstmt); }
-  else if k == S_WRITE || k == S_STORE { sr_scan(nd[s].a, loop, ivar, incstmt); sr_scan(nd[s].b, loop, ivar, incstmt); }
-  else if k == S_IF { sr_scan(nd[s].a, loop, ivar, incstmt); sr_stmts(nd[s].b, loop, ivar, incstmt); sr_stmts(nd[s].c, loop, ivar, incstmt); }
-  else if k == S_WHILE { sr_scan(nd[s].a, loop, ivar, incstmt); sr_stmts(nd[s].b, loop, ivar, incstmt); }
+  if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { sr_stmts(c, lp, ivar, incstmt); c = nd[c].next; } }
+  else if k == S_IRET { sr_scan(nd[s].a, lp, ivar, incstmt); }
+  else if k == S_PAR { sr_scan(nd[s].a, lp, ivar, incstmt); sr_scan(nd[s].b, lp, ivar, incstmt); sr_stmts(nd[s].c, lp, ivar, incstmt); }
+  else if k == S_LET || k == S_ASSIGN || k == S_RET || k == S_PRINT || k == S_PUTC || k == S_EXPR { sr_scan(nd[s].a, lp, ivar, incstmt); }
+  else if k == S_WRITE || k == S_STORE { sr_scan(nd[s].a, lp, ivar, incstmt); sr_scan(nd[s].b, lp, ivar, incstmt); }
+  else if k == S_IF { sr_scan(nd[s].a, lp, ivar, incstmt); sr_stmts(nd[s].b, lp, ivar, incstmt); sr_stmts(nd[s].c, lp, ivar, incstmt); }
+  else if k == S_WHILE { sr_scan(nd[s].a, lp, ivar, incstmt); sr_stmts(nd[s].b, lp, ivar, incstmt); }
 }
 fn strength_reduce() {
   let n0 = nn;

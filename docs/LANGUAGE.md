@@ -8,18 +8,15 @@ Everything here is implemented and tested. Planned features live in `DESIGN.md` 
 fn main() {
     let text = file(1);                  // argv[1], mapped read-only: [u8]
     let freq = alloc<u32>(26);           // zero-initialized
-    let mut i = 0;
-    while i < len(text) {
+    for i in 0..len(text) {
         let c = text[i];                 // c: u8
         if c >= 65 && c <= 90 { freq[c - 65] += 1; }
-        i += 1;
     }
-    let mut k = 0;
-    while k < 26 { putc(k + 65); putc(32); print(freq[k]); k += 1; }
+    for k in 0..26 { putc(k + 65); putc(32); print(freq[k]); }
 }
 ```
 
-A program is a set of top-level items in any order: functions, `struct` declarations and global `let`s. New users should start with `TUTORIAL.md`.
+A program is a set of top-level items in any order: functions, `struct` declarations and global `let`s / `const`s. New users should start with `TUTORIAL.md`.
 
 A program's entry point is `main`. `main` takes no parameters and returns `i64` or nothing. If it returns `i64`, the value is printed in decimal on the last line. The process exits with status 0.
 
@@ -36,7 +33,7 @@ Because every value is kept in its canonical 64-bit form, widening is free (no i
 
 ### Literals
 
-- **Integers:** `123`, `1_000_000`, `0xff`, up to u64 max. Above the i64 max, a literal is `u64`.
+- **Integers:** `123`, `1_000_000`, `0xff`, `0b1010`, `0o755` (`_` separators in any base; `0X`/`0B`/`0O` too), up to u64 max. Above the i64 max, a literal is `u64`.
 - **Floats:** `1.5`, `2e10`, `3.0e-7`. `1..n` stays an integer range.
 - **Bool:** `true`, `false`.
 - **Untyped until context fixes the type.** A literal adapts to the type it meets and must fit, or it is a compile error (`let x: u8 = 300;`). An integer literal used as a float must be exactly representable. On their own, literals default to `i64` / `f64`.
@@ -85,6 +82,7 @@ let MAX = 65536;                      // global constant (untyped, no storage)
 let toks = alloc<Tok>(MAX);           // global array: static, zeroed, any element type
 let mut ntok: i64 = 0;                // global scalar
 let LIMIT: u16 = 300;                 // typed global constant
+const FLAGS = 0b0110;                 // `const`: same as an immutable scalar `let`, value must be constant
 
 fn push(k: u8) { toks[ntok].kind = k; ntok += 1; }
 ```
@@ -94,7 +92,7 @@ fn push(k: u8) { toks[ntok].kind = k; ntok += 1; }
   - Fields are laid out in declaration order with natural alignment.
   - Strides that aren't powers of two are fine.
   - There are no whole-struct values yet (copy field by field).
-- **Globals:** top-level `let` is visible in every function.
+- **Globals:** top-level `let` / `const` is visible in every function.
   - An initializer must be a constant, and a global array needs a constant length (up to 1 GiB total).
   - Global arrays and scalars are static memory; nonzero initial values are stored at program start.
   - In a `par` block, each worker has its own copy, as with all non-shared memory.
@@ -107,15 +105,14 @@ fn q4(q: [i16], p: [u8], s: i64) -> i64 {          // [T]: read-only array (by r
     return q[((p[s] * 26 + p[s + 1]) * 26 + p[s + 2]) * 26 + p[s + 3]];
 }
 fn fill(a: mut [f64], v: f64) {                    // mut [T]: writable; no return type: unit
-    let mut i = 0;
-    while i < len(a) { a[i] = v; i += 1; }
+    for i in 0..len(a) { a[i] = v; }
 }
 fn fib(n: i64) -> u64 { if n < 2 { return n as u64; } return fib(n - 1) + fib(n - 2); }
 fn byte_at(t: [u8], i: i64) -> u8 { return (t[i] - 32) as u8; }   // u8 - 32 is i64: narrow it back
 ```
 
 - **Parameters** have any scalar type (`mut x: T` is a mutable local copy) or an array type `[T]` / `mut [T]`. At most 16 parameters. Arguments convert implicitly, as above.
-- **Return type:** a function returns `-> T`, or nothing (unit). A unit function may use `return;` and needn't end with it. A unit call is a statement only. A function with a result must end with `return e;`.
+- **Return type:** a function returns `-> T`, or nothing (unit). A unit function may use `return;` and needn't end with it. A unit call is a statement only. A function with a result must end with `return e;`, or with a `loop` that no `break` leaves.
 - **Arrays** are passed by reference, as base and length. The element type must match exactly. A read-only array can't be passed to a `mut` parameter.
 - **Calls** work anywhere in expressions or as statements. Recursion is supported. Functions may be defined in any order; signatures are collected before bodies are checked.
 - **Inside functions:** `argc()`, `file()` and `alloc` are available in `main` only. Functions get arrays through parameters, so a function can never leak memory.
@@ -176,11 +173,28 @@ par w in 0..ncpu() {              // ncpu() workers, w = 0..ncpu()-1
 |---|---|
 | `let x = e;` / `let x: T = e;` | immutable; constants propagate; `let x = y` (both immutable, same type) is an alias |
 | `let mut x = e;` / `let mut x: T = e;` | mutable; an untyped literal defaults to `i64`/`f64` |
+| `const X = e;` / `const X: T = e;` | an immutable scalar `let` whose value must fold to a compile-time constant (also at top level) |
 | `x = e;` | `e` must convert implicitly to `x`'s type |
 | `x op= e;` | `op` ∈ `+ - * / % & \| ^ << >> >>>`; computed in the promoted type, then **wrapped** to `x`'s type |
 | `if` / `else if` / `else`, `while`, `break`, `continue`, `return`, `{ }` | conditions are `bool` |
+| `for i in a..b { }` / `for i in a..=b { }` | counted loop, see below |
+| `loop { }` | runs until `break` or `return` (same as `while true`) |
 
-Array bindings are immutable, though their elements are not. Shadowing is not allowed. Reserved names (plus keywords `par in as true false`): built-ins, constructors, type names, `fn`, `main`, and anything starting with `__`.
+### Loops: `for` and `loop` are zero-cost
+
+`for i in a..b { body }` is exactly the counter loop you would write by hand:
+
+```text
+{ let mut i = a; let end = b; while i < end { body; i += 1; } }
+```
+
+- `a..b` excludes `b`; `a..=b` includes it (the test is `i <= end`, so `b` must be below the type's maximum). An empty or reversed range runs zero times.
+- `a` and `b` are evaluated once, before the first iteration (`end` is skipped when `b` is a constant, an immutable variable or an enclosing `for` variable). Changing a variable used in `b` inside the body doesn't change the trip count.
+- `i` is an `i64` (a `u64` if either bound is `u64`; narrower integer bounds widen). It is scoped to the body, where it is read-only: assigning it is a compile error.
+- `continue` steps `i` before the next test; `break` leaves the loop.
+- Because the loop is the same tree as the `while` form, unrolling, vectorization, bounds-check proofs and strength reduction apply unchanged: `tests/features/for_form.ck` and `while_form.ck` compile to byte-identical executables.
+
+Array bindings are immutable, though their elements are not. Shadowing is not allowed. Reserved names (plus keywords `par in as true false for loop const`): built-ins, constructors, type names, `fn`, `main`, and anything starting with `__`.
 
 ## Precedence, loosest → tightest
 

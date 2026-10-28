@@ -32,6 +32,7 @@ let n = 10;                 // untyped constant
 let mut total: i64 = 0;     // `mut` = can change
 let small: u8 = 200;
 let ratio: f64 = 0.75;
+const MASK = 0b1111_0000;   // a named constant; 0x.., 0b.. and 0o.. literals take `_` separators
 let ok = small > 100;       // bool
 total += n * small;         // u8 widens to i64 automatically
 print(small as i8);         // -56: conversions are explicit with `as`
@@ -58,6 +59,21 @@ while i <= 15 {
 - **Conditions** must be `bool`: write `x != 0`, not `x`.
 - **Loops:** `break` and `continue` work as usual.
 
+Counting loops are shorter with `for`, and `loop` runs until a `break` or `return`:
+
+```text
+for i in 1..=15 { print(i); }        // 1 to 15; `0..n` would stop before n
+let mut n = 27;
+loop {
+  if n == 1 { break; }
+  if n % 2 == 0 { n /= 2; } else { n = 3 * n + 1; }
+}
+```
+
+- **`for i in a..b`:** `i` counts from `a` up to (not including) `b`, and the bounds are computed once. Use `..=` to include `b`.
+- **Read-only counter:** `i` can't be assigned inside the loop. `continue` still moves to the next `i`.
+- **Free:** a `for` loop compiles to exactly the same machine code as the `while` loop you would write by hand.
+
 ## 4. Functions
 
 ```text
@@ -76,11 +92,9 @@ fn shout(n: i64) { print(n); }     // no `->`: returns nothing
 ```text
 let text = file(1);                  // argv[1] as a byte array: [u8]
 let count = alloc<u32>(26);          // 26 zeroed counters
-let mut i = 0;
-while i < len(text) {
+for i in 0..len(text) {
   let c = text[i];
   if c >= 97 && c <= 122 { count[c - 97] += 1; }
-  i += 1;
 }
 ```
 
