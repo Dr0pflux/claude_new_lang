@@ -128,7 +128,9 @@ def text_program(r):
         return f"({x} {op} {bval(d + 1) if r.random() < 0.5 else const(t)})"
     def cond():
         x, t = load()
-        c = f"({x} {r.choice(['==', '!=', '<', '<=', '>', '>='])} {const(t)})"
+        rhs = const(t)
+        if t == "u8" and r.random() < 0.3: rhs = f"pat[{r.randrange(3)}]"   # loop-invariant pattern byte
+        c = f"({x} {r.choice(['==', '!=', '<', '<=', '>', '>='])} {rhs})"
         if r.random() < 0.3:
             y, u = load()
             if u == t: c = f"({c} {r.choice(['&&', '||'])} ({y} {r.choice(['==', '<', '>='])} {const(u)}))"
@@ -155,11 +157,19 @@ def text_program(r):
     for nm, t in arrs:
         L.append(f"  let {nm} = alloc<{t}>({n + 200});")
         L.append(f"  let mut j{nm} = 0; while j{nm} < {n + 200} {{ {nm}[j{nm}] = ((j{nm} * 1103515245 + 12345 + j{nm} * j{nm} * 97) % 1000003) as {t}; j{nm} += 1; }}")
+    L.append(f'  let pat = "{r.choice(["the", "ab ", "zq.", "aaa"])}";')
     s0 = r.choice([0, 0, 1, 5])
     end = r.choice(["n", "n", "n - 7", "n + 300"])   # n + 300 runs past the arrays: traps
+    head = f"i < {end}"
+    if r.random() < 0.3: head = f"i + {r.choice([1, 2, 3])} <= {end}"
     L.append(f"  let mut i = {s0};")
-    L.append(f"  while i < {end} {{")
+    L.append(f"  while {head} {{")
     for _ in range(r.randrange(1, 4)): L.append("    " + stmt())
+    if r.random() < 0.35:   # small search loop (becomes a conjunction)
+        nm, t = r.choice(arrs)
+        if t == "u8":
+            M = r.choice([2, 3])
+            L.append(f"    let mut jj = 0; while jj < {M} && {nm}[i + jj] == pat[jj] {{ jj += 1; }} if jj == {M} {{ k3 += {r.choice([1, 3])}; }}")
     if r.random() < 0.5:   # 0/1 state flag (first-order recurrence), sometimes in shapes that must stay scalar
         a, b = r.choice([(0, 1), (1, 0)])
         use = f"if st == {r.choice([0, 1])} {{ {stmt(2)} }}"
