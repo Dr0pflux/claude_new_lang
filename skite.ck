@@ -4227,6 +4227,219 @@ fn gi_walk(s: i64) {
   if k == S_IF { gi_walk(nd[s].b); gi_walk(nd[s].c); return; }
   if k == S_WHILE { gi_walk(nd[s].b); return; }
 }
+// ---- paired float lets: two isomorphic f64 lets with a sqrt or division (nbody's
+// mag = dt / (d2 * sqrt(d2)) of two body pairs) are computed in the two lanes of one SSE2 register.
+// The second let's pure dependency chain moves up before the first when nothing it reads is
+// assigned or possibly stored in between (constant indices and fields compared exactly); the pair
+// is then adjacent and vpair marks it. Lane results are the same IEEE operations, bit for bit.
+let vpair = alloc<i64>(1048576);   // let -> the let computed with it (+1)
+let mut PAIR_B: i64 = -1;   // the let just computed with its pair (skipped once)
+let SP_TMP = alloc<i64>(4096);
+let mut SP_BPOS: i64 = 0;
+let SP_L = alloc<i64>(4096);
+let SP_D = alloc<bool>(4096);
+let SP_NEED = alloc<i64>(65536);   // var -> tag
+let mut SP_TAG: i64 = 0;
+fn sp_iso(a: i64, b: i64) -> bool {
+  if nd[a].k != nd[b].k || nd[a].ty != TY_F64 || nd[b].ty != TY_F64 { return false; }
+  let k = nd[a].k;
+  if k == N_CONST { return true; }
+  if k == N_VAR { return vars[nd[a].var].xr >= -1 && vars[nd[a].var].arr == 0 && vars[nd[b].var].arr == 0; }
+  if k == N_UN { return nd[a].op == U_SQRTD && nd[b].op == U_SQRTD && sp_iso(nd[a].a, nd[b].a); }
+  if k == N_BIN { return nd[a].op == nd[b].op && nd[a].op >= O_FADD && nd[a].op <= O_FDIV && sp_iso(nd[a].a, nd[b].a) && sp_iso(nd[a].b, nd[b].b); }
+  return false;
+}
+fn sp_costly(e: i64) -> bool {
+  if e < 0 { return false; }
+  if nd[e].k == N_UN && nd[e].op == U_SQRTD { return true; }
+  if nd[e].k == N_BIN && nd[e].op == O_FDIV { return true; }
+  if nd[e].k == N_CONST || nd[e].k == N_VAR { return false; }
+  return sp_costly(nd[e].a) || sp_costly(nd[e].b);
+}
+fn sp_depth(e: i64) -> i64 {
+  if nd[e].k == N_CONST || nd[e].k == N_VAR { return 1; }
+  if nd[e].k == N_UN { return sp_depth(nd[e].a); }
+  let a = sp_depth(nd[e].a); let b = sp_depth(nd[e].b) + 1;
+  if a > b { return a; } return b;
+}
+fn sp_need_e(e: i64) {   // mark the variables e reads
+  if e < 0 { return; }
+  let k = nd[e].k;
+  if k == N_VAR { SP_NEED[nd[e].var] = SP_TAG; return; }
+  if k == N_CONST || k == N_ARR || k == N_NCPU { return; }
+  if k == N_CALL { let mut a = nd[e].a; while a >= 0 { sp_need_e(a); a = nd[a].next; } return; }
+  sp_need_e(nd[e].a); sp_need_e(nd[e].b);
+}
+fn sp_reads(e: i64, v: i64) -> bool { return ex_reads(e, v) != 0; }
+// may a load in e read memory the statement s writes?
+let mut SP_BAD: bool = false;
+fn sp_ld_vs_st(e: i64, s: i64) {
+  if e < 0 || SP_BAD { return; }
+  let k = nd[e].k;
+  if k == N_CONST || k == N_VAR || k == N_ARR || k == N_NCPU { return; }
+  if k == N_CALL { SP_BAD = true; return; }
+  if k == N_LOAD {
+    sp_ld_vs_st(nd[e].a, s);
+    sp_st_scan(s, nd[e].var, nd[e].a, nd[e].op - 1);
+    return;
+  }
+  sp_ld_vs_st(nd[e].a, s); sp_ld_vs_st(nd[e].b, s);
+}
+fn sp_st_scan(s: i64, a: i64, idx: i64, f: i64) {   // stores in s that may write a[idx].f
+  if s < 0 || SP_BAD { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { sp_st_scan(c, a, idx, f); c = nd[c].next; } return; }
+  if k == S_STORE {
+    let b = nd[s].var;
+    let mut fs = nd[s].c; let mut fl = f; if fl < 0 { fl = -1; }
+    if vars[b].basev != vars[a].basev { if CS_F != mainfn { SP_BAD = true; } return; }
+    if b == a && is_const(idx) && is_const(nd[s].a) && (nd[idx].v != nd[nd[s].a].v || fs != fl) { return; }
+    SP_BAD = true; return;
+  }
+  if k == S_LET || k == S_ASSIGN { if has_call(nd[s].a) { SP_BAD = true; } return; }
+  SP_BAD = true;   // control flow, output, calls: do not move loads across
+}
+fn sp_assigns(s: i64, v: i64) -> bool {   // s (re)assigns v
+  if s < 0 { return false; }
+  let k = nd[s].k;
+  if (k == S_ASSIGN || k == S_LET) && nd[s].var == v { return true; }
+  if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { if sp_assigns(c, v) { return true; } c = nd[c].next; } return false; }
+  return count_assign(s, v) != 0;
+}
+fn sp_list(blk: i64) {
+  let mut m = 0; let mut c = nd[blk].a;
+  while c >= 0 { if m >= 4096 { return; } SP_L[m] = c; m += 1; c = nd[c].next; }
+  let mut i = 0;
+  while i < m {
+    let A = SP_L[i];
+    if nd[A].k == S_LET && vpair[A] == 0 && vars[nd[A].var].ty == TY_F64 && sp_costly(nd[A].a) && sp_depth(nd[A].a) <= 4 {
+      let mut j = i + 1; let mut found = -1;
+      while j < m && j <= i + 40 && found < 0 {
+        let B = SP_L[j];
+        if nd[B].k == S_LET && vpair[B] == 0 && vars[nd[B].var].ty == TY_F64 && sp_iso(nd[A].a, nd[B].a) { found = j; }
+        j += 1;
+      }
+      if found >= 0 && sp_try(i, found, m) { i = SP_BPOS; }   // continue after B
+    }
+    i += 1;
+  }
+  // relink
+  i = 0; let mut prev = -1;
+  while i < m { if prev < 0 { nd[blk].a = SP_L[i]; } else { nd[prev].next = SP_L[i]; } prev = SP_L[i]; i += 1; }
+  if prev >= 0 { nd[prev].next = -1; }
+}
+fn sp_try(ia: i64, ib: i64, m: i64) -> bool {
+  let A = SP_L[ia]; let B = SP_L[ib];
+  // D: lets between A and B that B transitively reads
+  SP_TAG += 1;
+  sp_need_e(nd[B].a);
+  let mut j = ib - 1;
+  while j > ia { SP_D[j] = false; j -= 1; }
+  j = ib - 1;
+  while j > ia {
+    let s = SP_L[j];
+    if nd[s].k == S_LET && SP_NEED[nd[s].var] == SP_TAG { SP_D[j] = true; sp_need_e(nd[s].a); if has_call(nd[s].a) { return false; } }
+    j -= 1;
+  }
+  if SP_NEED[nd[A].var] == SP_TAG { return false; }   // B (or its chain) reads A's result
+  // statements left between may not assign what moves, and moved loads must not see their stores
+  j = ia + 1;
+  while j < ib {
+    if !SP_D[j] {
+      let s = SP_L[j];
+      // a variable the moved chain reads, assigned here
+      let mut qq = ia + 1;
+      while qq <= ib {
+        if qq == ib || SP_D[qq] {
+          let tq = SP_L[qq];
+          SP_BAD = false;
+          if qq > j { sp_ld_vs_st(nd[tq].a, s); }
+          if SP_BAD { return false; }
+          if qq > j && sp_assigns_any(s, nd[tq].a) { return false; }
+        }
+        qq += 1;
+      }
+    }
+    j += 1;
+  }
+  // new order: .. D (in order), A, B, the rest of (A, B) ..
+  let mut n = 0; j = ia + 1;
+  while j < ib { if SP_D[j] { SP_TMP[n] = SP_L[j]; n += 1; } j += 1; }
+  SP_TMP[n] = A; n += 1; SP_TMP[n] = B; n += 1;
+  j = ia + 1;
+  while j < ib { if !SP_D[j] { SP_TMP[n] = SP_L[j]; n += 1; } j += 1; }
+  j = 0; while j < n { SP_L[ia + j] = SP_TMP[j]; j += 1; }
+  vpair[A] = B + 1;
+  j = ia; while SP_L[j] != B { j += 1; }
+  SP_BPOS = j;
+  return true;
+}
+fn sp_assigns_any(s: i64, e: i64) -> bool {   // s assigns a variable e reads
+  if e < 0 { return false; }
+  let k = nd[e].k;
+  if k == N_VAR { return sp_assigns(s, nd[e].var); }
+  if k == N_CONST || k == N_ARR || k == N_NCPU { return false; }
+  if k == N_CALL { return true; }
+  return sp_assigns_any(s, nd[e].a) || sp_assigns_any(s, nd[e].b);
+}
+fn sp_walk(s: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK || k == S_INL { sp_list(s); let mut c = nd[s].a; while c >= 0 { sp_walk(c); c = nd[c].next; } return; }
+  if k == S_IF { sp_walk(nd[s].b); sp_walk(nd[s].c); return; }
+  if k == S_WHILE { sp_walk(nd[s].b); return; }
+}
+// codegen: both lanes of each node in xmm x (x + 1 .. temporaries)
+fn pair_leaf2(b: i64, x: i64, rg: i64, n: i64) {   // second lane of a leaf into x's high half
+  if nd[b].k == N_VAR {
+    loc(nd[b].var);
+    if OK == K_XMM { sse(102, 0, 20, x, K_REG, ORR); return; }   // unpcklpd x, reg
+    if OK == K_MEM { sse(102, 0, 22, x, K_MEM, ORR); return; }   // movhpd x, [slot]
+  }
+  genf(b, x + 1, rg, n); sse(102, 0, 20, x, K_REG, x + 1);
+}
+fn pair_regs(a: i64, b: i64) -> i64 {   // xmm registers from x the pair needs
+  let k = nd[a].k;
+  if k == N_CONST || k == N_VAR {
+    if (k == N_CONST && nd[a].v == nd[b].v) || (k == N_VAR && nd[a].var == nd[b].var) { return 1; }
+    if k == N_VAR && (vars[nd[b].var].xr >= 0 || vars[nd[b].var].reg < 0) { return 1; }
+    return 2;
+  }
+  if k == N_UN { return pair_regs(nd[a].a, nd[b].a); }
+  let l = pair_regs(nd[a].a, nd[b].a); let r = pair_regs(nd[a].b, nd[b].b) + 1;
+  if l > r { return l; } return r;
+}
+fn pair_gen(a: i64, b: i64, x: i64, rg: i64, n: i64) {
+  let k = nd[a].k;
+  if k == N_CONST || k == N_VAR {
+    genf(a, x, rg, n);
+    if (k == N_CONST && nd[a].v == nd[b].v) || (k == N_VAR && nd[a].var == nd[b].var) { sse(102, 0, 20, x, K_REG, x); return; }   // unpcklpd x, x
+    pair_leaf2(b, x, rg, n); return;
+  }
+  if k == N_UN { pair_gen(nd[a].a, nd[b].a, x, rg, n); sse(102, 0, 81, x, K_REG, x); return; }   // sqrtpd
+  pair_gen(nd[a].a, nd[b].a, x, rg, n);
+  pair_gen(nd[a].b, nd[b].b, x + 1, rg, n);
+  sse(102, 0, foc(nd[a].op), x, K_REG, x + 1);   // addpd / subpd / mulpd / divpd
+}
+fn pair_ok(A: i64, B: i64) -> bool {
+  if vpair[A] != B + 1 || nd[A].next != B || vars[nd[A].var].reads == 0 || vars[nd[B].var].reads == 0 { return false; }
+  loc(nd[A].var); if !(OK == K_XMM || OK == K_MEM) { return false; }
+  loc(nd[B].var); if !(OK == K_XMM || OK == K_MEM) { return false; }
+  return xtop + pair_regs(nd[A].a, nd[B].a) <= XSTACK_TOP + 1;
+}
+fn pair_put(v: i64, x: i64, hi: bool) {   // lane of x into v
+  loc(v);
+  if OK == K_XMM { if hi { sse(102, 0, 21, x, K_REG, x); } movx(ORR, x); return; }   // unpckhpd x, x
+  if hi { sse(102, 0, 23, x, K_MEM, ORR); } else { sse(242, 0, 17, x, K_MEM, ORR); }  // movhpd / movsd [slot], x
+}
+fn pair_emit(A: i64, rg: i64, n: i64) {
+  let B = vpair[A] - 1;
+  let x = xtop;
+  pair_gen(nd[A].a, nd[B].a, x, rg, n);
+  pair_put(nd[A].var, x, false);
+  pair_put(nd[B].var, x, true);
+  PAIR_B = B;
+}
 fn cs_walk(s: i64) {
   if s < 0 { return; }
   let k = nd[s].k;
@@ -4250,7 +4463,7 @@ fn allocate() {
   mark_used();
   simplify();
   f = 0;
-  while f < nfn { if fns[f].used != 0 { CS_F = f; gi_walk(fns[f].body); sm_walk(fns[f].body); ss_walk(fns[f].body, false); cs_walk(fns[f].body); lh_walk(fns[f].body); bv_walk(fns[f].body); mm_walk(fns[f].body, false); dm_walk(fns[f].body); } f += 1; }
+  while f < nfn { if fns[f].used != 0 { CS_F = f; gi_walk(fns[f].body); sm_walk(fns[f].body); ss_walk(fns[f].body, false); cs_walk(fns[f].body); lh_walk(fns[f].body); bv_walk(fns[f].body); sp_walk(fns[f].body); mm_walk(fns[f].body, false); dm_walk(fns[f].body); } f += 1; }
   let mut v = 0;
   while v < nv { if vars[v].owner >= 0 && fns[vars[v].owner].used == 0 { vars[v].reads = 0; } v += 1; }
   analyze();
@@ -7595,6 +7808,9 @@ fn ifconv(s: i64, rg: i64, n: i64) {
 }
 fn gen_stmt_body(s: i64, is_final: bool, rg: i64, n: i64) {
   let k = nd[s].k;
+  if s == PAIR_B { PAIR_B = -1; return; }   // computed with its pair, just before
+  PAIR_B = -1;
+  if k == S_LET && vpair[s] != 0 && pair_ok(s, vpair[s] - 1) { pair_emit(s, rg, n); return; }
   if k == S_LET || k == S_ASSIGN {
     if vars[nd[s].var].reads == 0 { if has_trap(nd[s].a) { gen(nd[s].a, rg, n); } return; }
     assign(nd[s].var, nd[s].a, rg, n); return;
