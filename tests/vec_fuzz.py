@@ -22,9 +22,12 @@ class Gen:
             if c < 0.45 and ints: return r.choice(ints)
             if c < 0.6: return str(r.choice([0, 1, 2, 3, 7, 100, 1000003, -5, -128, 255, 65535]))
             if c < 0.75: return f"ia[{r.randrange(16)}]"
+            uni = [v for v in ints if v == "u" or v.startswith("t")]
+            if c < 0.82 and uni: return f"ib[({r.choice(uni)}) & 15]"   # bounds-checked, often uniform
             return r.choice(ints) if ints else "1"
-        op = r.choice(["+", "-", "*", "&", "|", "^", "<<", ">>", ">>>", "/", "%", "cast", "neg", "not", "f2i"])
+        op = r.choice(["+", "-", "*", "&", "|", "^", "<<", ">>", ">>>", "/", "%", "cast", "neg", "not", "f2i", "same"])
         a = self.iexpr(ints, d + 1)
+        if op == "same": return f"({a} {r.choice(['+', '-', '*', '^'])} ({a} + {r.choice(['0', '1', 'u'])}))"   # repeated subexpression
         if op in ("<<", ">>", ">>>"): return f"({a} {op} {r.randrange(64)})"
         if op in ("/", "%"): return f"({a} {op} {r.choice([1, 2, 4, 8, 16, 1024])})"
         if op == "cast": return f"(({a}) as {r.choice(['i8', 'i16', 'i32', 'u8', 'u16', 'u32'])} as i64)"
@@ -40,9 +43,13 @@ class Gen:
             if c < 0.5 and fls: return r.choice(fls)
             if c < 0.7: return r.choice(["0.0", "1.0", "2.0", "0.5", "-3.25", "1e300", "1e-300", "0.1"])
             if c < 0.85: return f"fa[{r.randrange(16)}]"
+            uni = [v for v in ints if v == "u" or v.startswith("t")]
+            if c < 0.92 and uni: return f"fb[({r.choice(uni)}) & 15]"
             return f"({self.iexpr(ints, d + 1)} as f64)"
-        op = r.choice(["+", "-", "*", "/", "sqrt", "neg", "i2d"])
+        op = r.choice(["+", "-", "*", "/", "sqrt", "neg", "i2d", "same", "recip"])
+        if op == "recip": return f"(1.0 / ({self.iexpr(ints, d + 1)} as f64))"
         a = self.fexpr(fls, ints, d + 1)
+        if op == "same": return f"({a} {r.choice(['+', '-', '*', '/'])} ({a} * {r.choice(['1.0', '0.5', 'uf'])}))"
         if op == "sqrt": return f"sqrt({a})"
         if op == "neg": return f"(-{a})"
         if op == "i2d": return f"({self.iexpr(ints, d + 1)} as f64)"
@@ -86,8 +93,9 @@ class Gen:
         L = []
         L.append("fn main() {")
         L.append("  let ia = alloc<i64>(16); let fa = alloc<f64>(16);")
+        L.append("  let ib = alloc<i64>(15 + argc()); let fb = alloc<f64>(15 + argc());")
         L.append("  let mut k = 0;")
-        L.append("  while k < 16 { ia[k] = k * 7919 - 50000 + argc(); fa[k] = (k as f64) * 0.37 - 2.5; k += 1; }")
+        L.append("  while k < 16 { ia[k] = k * 7919 - 50000 + argc(); fa[k] = (k as f64) * 0.37 - 2.5; ib[k] = ia[k] * 3 + 1; fb[k] = fa[k] * 1.5 + 0.25; k += 1; }")
         L.append(f"  let n = {n} + argc() - 1;")
         L.append("  let u = argc() * 3;")
         L.append("  let uf = 1.5 + (argc() as f64);")
