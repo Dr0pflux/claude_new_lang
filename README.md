@@ -76,7 +76,9 @@ What makes skite fast (all bit-exact: strict IEEE floats, wrapping integers, tra
 - **If-conversion**: small integer `if`/`else` bodies in loops become branch-free `cmov` selects.
 - **Loop-carried stores**: `a[i] += a[i - 1]` (prefix sums, DP rows) keeps the previous value in a register.
 - Floats in XMM registers, magic-number division by constants, fast 32-bit division when
-  operands fit, periodic-index strength reduction.
+  operands fit, paired `/` and `%` when both are unconditionally evaluated, and
+  periodic-index strength reduction. Paired division does not cross short-circuit `&&` or `||`;
+  a skipped division keeps its original trap behavior.
 
 ## Layout
 
