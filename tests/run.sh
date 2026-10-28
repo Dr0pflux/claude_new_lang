@@ -248,4 +248,36 @@ for t in structs heap; do
 done
 [[ "$(cat "$T/heap.saved")" == "hi" ]] || { echo "FAIL: save()" >&2; exit 1; }
 echo 'PASS: structs, globals, scoped heap, save()'
+"$SKITE" tests/features/features.ck "$T/features" > /dev/null
+"$T/features" | cmp -s - tests/features/features.expected || { echo "FAIL: for/loop/const/literals" >&2; "$T/features" | diff - tests/features/features.expected >&2; exit 1; }
+"$SKITE" tests/features/for_form.ck "$T/for_form" > /dev/null
+"$SKITE" tests/features/while_form.ck "$T/while_form" > /dev/null
+cmp -s "$T/for_form" "$T/while_form" || { echo "FAIL: for loops must compile to the same machine code as their while form" >&2; exit 1; }
+while IFS='|' read -r msg bad; do
+  printf '%s\n' "$bad" > "$T/bad.ck"
+  if "$SKITE" "$T/bad.ck" "$T/prog" 2> "$T/error" > /dev/null; then echo "FAIL: accepted [$bad]" >&2; exit 1; fi
+  grep -qF "$msg" "$T/error" || { echo "FAIL: [$bad]: expected [$msg], got: $(cat "$T/error")" >&2; exit 1; }
+done <<'BAD'
+for loop variable|fn main() { for i in 0..3 { i = 5; } }
+for loop variable|fn main() { for i in 0..3 { i += 1; } }
+compile-time constant|fn main() { const x = argc(); }
+cannot be mut|fn main() { const mut x = 1; }
+cannot be mut|const mut X = 1; fn main() { }
+scalar|const S = "hi"; fn main() { }
+scalar|fn main() { const a = alloc<u8>(4); }
+malformed number|fn main() { let a = 0b102; }
+malformed number|fn main() { let a = 0b; }
+malformed number|fn main() { let a = 0o8; }
+exceeds u64|fn main() { let a = 0b1_0000000000000000000000000000000000000000000000000000000000000000; }
+exceeds u64|fn main() { let a = 0o2000000000000000000000; }
+type mismatch|fn main() { for i in 0.0..3.0 { } }
+type mismatch|fn main() { let a: u64 = 1; let b: i64 = 2; for i in a..b { } }
+unknown variable|fn main() { for i in 0..3 { } print(i); }
+expected `..`|fn main() { for i in 0, 3 { } }
+expected variable name|fn main() { let loop = 1; }
+must end with a return|fn f() -> i64 { loop { break; } } fn main() { }
+must end with a return|fn f(n: i64) -> i64 { loop { if n > 1 { break; } } } fn main() { }
+break/continue outside loop|fn main() { for i in 0..2 { } break; }
+BAD
+echo 'PASS: for/loop/const, 0b/0o literals (for compiles to the same machine code as while)'
 echo 'All tests passed'
