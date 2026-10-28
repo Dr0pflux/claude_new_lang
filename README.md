@@ -41,14 +41,12 @@ Arithmetic and text kernels (`bench/kernels`, `run.py 3`):
 
 | kernel | ratio | kernel | ratio | kernel | ratio |
 |---|---|---|---|---|---|
-| textscan | **0.54** | nqueens | 1.02 | ngramhash | 1.23 |
-| wordcount | **0.66** | histogram | 1.05 | gcdsum | 1.27 |
-| collatz | **0.81** | polyeval | 1.10 | intsort | 1.48 |
-| caseconv | **0.84** | hashmix | 1.12 | divmod | 1.99 |
-| sieve | **0.90** | | | editdist | 2.05 |
-| | | | | strsearch | 2.34 |
-| | | | | matmul | 3.13 |
-| | | | | prefixsum | 5.59 |
+| textscan | **0.54** | nqueens | 1.02 | gcdsum | 1.27 |
+| wordcount | **0.66** | histogram | 1.05 | matmul | 1.29 |
+| collatz | **0.81** | polyeval | 1.10 | intsort | 1.62 |
+| caseconv | **0.84** | hashmix | 1.12 | editdist | 1.71 |
+| sieve | **0.90** | prefixsum | 1.12 | divmod | 2.02 |
+| | | ngramhash | 1.23 | strsearch | 2.17 |
 
 The goal is to lead on every arithmetic and text workload; the slower rows are open work
 (see [`docs/HANDOFF.md`](docs/HANDOFF.md)). Full history, other hosts (including a Ryzen host
@@ -59,7 +57,7 @@ What makes skite fast (all bit-exact: strict IEEE floats, wrapping integers, tra
 - **AVX-512 vectorization** with run-time dispatch (CPUs without AVX-512 F/DQ/BW/VL run scalar):
   - *lane-parallel loops*: outer loops whose bodies contain inner loops with data-dependent exits;
   - *element-wise loops and reductions*: `b[i] = b[i] * k + a[i]`, fills, copies, masked `if`/`else`,
-    integer `+ - & | ^` reductions, max/min, narrow `u8`..`u32` elements;
+    integer `+ - & | ^` reductions, max/min, narrow `u8`..`u32` elements, 2-D indexing `a[i * n + j]`;
   - *byte lanes*: `u8`/`i8` loops (text scanning, character classes, counts, case conversion,
     word-boundary state machines) run 64 characters per instruction: counts via mask popcount,
     byte sums via `vpsadbw`, a 0/1 state flag carried between characters by shifting its mask.
@@ -69,6 +67,7 @@ What makes skite fast (all bit-exact: strict IEEE floats, wrapping integers, tra
 - **Calls**: bounded inlining (including recursive), callee-saved registers, tail recursion with
   accumulators turned into loops, register coalescing.
 - **If-conversion**: small integer `if`/`else` bodies in loops become branch-free `cmov` selects.
+- **Loop-carried stores**: `a[i] += a[i - 1]` (prefix sums, DP rows) keeps the previous value in a register.
 - Floats in XMM registers, magic-number division by constants, fast 32-bit division when
   operands fit, periodic-index strength reduction.
 

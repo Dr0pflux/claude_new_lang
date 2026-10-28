@@ -10,6 +10,8 @@
   `valias*.ck`, `stream_mixed_width.ck`. New kernel `bench/kernels/textscan`.
 - **Division:** run-time divisors use a 32-bit `div` when both operands fit in 32 unsigned bits.
 - **If-conversion:** small integer `if`/`else` bodies in loops become `cmov` selects.
+- **Loop-carried stores:** `a[i - 1]` after a store `a[i]` reads a register (prefixsum 994 → 204 ms).
+- **2-D vector indexing:** loads/stores at `i + U` (loop-invariant `U`) vectorize (matmul 654 → 264 ms).
 - **Byte-lane recurrences:** a 0/1 state flag (word boundaries) is carried between lanes by mask
   shifts; wordcount kernel 249 → 45 ms (clang 72). 16 new kernels in `bench/kernels` (GAPS.md).
 - **Calls/recursion (Claude agent):** dominating bounds-check reuse, dead-at-call save elision,
