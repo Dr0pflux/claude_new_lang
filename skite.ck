@@ -3888,7 +3888,7 @@ fn lh_find(e: i64, w: i64) -> i64 {   // an unconditionally evaluated invariant 
   if k == N_CONST || k == N_VAR { return -1; }
   if k == N_LOAD {
     let a = nd[e].var;
-    if nd[e].op <= 0 && vars[a].arr != 0 && invariant(nd[e].a, w) && ic_pure(nd[e].a) {
+    if nd[e].op <= 0 && vars[a].arr != 0 && !(vars[a].ro != 0 && vars[a].lenv < 0) && invariant(nd[e].a, w) && ic_pure(nd[e].a) {   // not string literals (constant data, byte-lane patterns)
       let mut ok = true; let mut i = 0;
       while i < LH_NST { if vars[LH_ST[i]].basev == vars[a].basev { ok = false; } i += 1; }
       if ok { return e; }
