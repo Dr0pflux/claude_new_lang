@@ -3810,6 +3810,730 @@ fn cond_jump(e: i64, sense: bool, list0: i64, rg: i64, n: i64) -> i64 {
   return list;
 }
 
+// ---------------------------------------------------------------- AVX-512 encoder (EVEX / VEX for mask registers)
+// Memory operand for vector instructions (set before calling evx with rmk = 1):
+//   VM_KIND 0: [VM_B + VM_I * 2^VM_S + VM_D] (VM_I < 0: no index), 1: [rip + constant pool offset VM_D], 2: [absolute VM_D]
+let mut VM_KIND: i64 = 0;
+let mut VM_B: i64 = 0;
+let mut VM_I: i64 = -1;
+let mut VM_S: i64 = 0;
+let mut VM_D: i64 = 0;
+let mut VM_TAIL: i64 = 0;          // bytes that follow the displacement (imm8): RIP-relative fixups need it
+let cp_at = alloc<i64>(262144);    // constant-pool references: disp32 position, pool offset, tail bytes
+let cp_off = alloc<i64>(262144);
+let cp_tail = alloc<i64>(262144);
+let mut ncp: i64 = 0;
+let cpool = alloc<u8>(1048576);
+let mut cplen: i64 = 0;
+fn vm_mem(b: i64, i: i64, sc: i64, d: i64) { VM_KIND = 0; VM_B = b; VM_I = i; VM_S = sc; VM_D = d; }
+fn vm_pool(off: i64) { VM_KIND = 1; VM_D = off; }
+fn vm_abs(a: i64) { VM_KIND = 2; VM_D = a; }
+// EVEX: map mm (1 0F, 2 0F38, 3 0F3A), pp (0, 1 66, 2 F3, 3 F2), W, ll (0 128, 1 256, 2 512)
+fn evx(mm: i64, pp: i64, w: i64, ll: i64, op: i64, reg: i64, vv: i64, rmk: i64, rm: i64, aaa: i64, z: bool, bc: bool) {
+  let mut xb = 0; let mut bb = 0;
+  if rmk == 0 { bb = (rm >> 3) & 1; xb = (rm >> 4) & 1; }
+  else if VM_KIND == 0 { bb = (VM_B >> 3) & 1; if VM_I >= 0 { xb = (VM_I >> 3) & 1; } }
+  byte(98);
+  byte(((1 - ((reg >> 3) & 1)) << 7) | ((1 - xb) << 6) | ((1 - bb) << 5) | ((1 - ((reg >> 4) & 1)) << 4) | mm);
+  byte((w << 7) | (((~vv) & 15) << 3) | 4 | pp);
+  byte(((z as i64) << 7) | (ll << 5) | ((bc as i64) << 4) | ((1 - ((vv >> 4) & 1)) << 3) | aaa);
+  byte(op);
+  if rmk == 0 { byte(192 | ((reg & 7) << 3) | (rm & 7)); return; }
+  if VM_KIND == 1 {
+    byte(5 | ((reg & 7) << 3));
+    cp_at[ncp] = clen; cp_off[ncp] = VM_D; cp_tail[ncp] = VM_TAIL; ncp += 1; if ncp >= 262144 { fail("too many vector constants"); }
+    u32_(0); return;
+  }
+  if VM_KIND == 2 { byte(4 | ((reg & 7) << 3)); byte(37); u32_(VM_D); return; }
+  byte(132 | ((reg & 7) << 3));
+  let mut ix = 4; if VM_I >= 0 { ix = VM_I & 7; }
+  byte((VM_S << 6) | (ix << 3) | (VM_B & 7));
+  u32_(VM_D);
+}
+// VEX (3-byte) for mask-register instructions
+fn vex3(mm: i64, pp: i64, w: i64, l: i64, op: i64, reg: i64, vv: i64, rm: i64) {
+  byte(196);
+  byte(((1 - ((reg >> 3) & 1)) << 7) | 64 | ((1 - ((rm >> 3) & 1)) << 5) | mm);
+  byte((w << 7) | (((~vv) & 15) << 3) | (l << 2) | pp);
+  byte(op); byte(192 | ((reg & 7) << 3) | (rm & 7));
+}
+fn kmov_kr(k: i64, r: i64) { vex3(1, 0, 0, 0, 146, k, 0, r); }        // kmovw k, r32
+fn kmov_rk(r: i64, k: i64) { vex3(1, 0, 0, 0, 147, r, 0, k); }        // kmovw r32, k
+fn kand(d: i64, a: i64, b: i64) { vex3(1, 0, 0, 1, 65, d, a, b); }    // kandw
+fn kandn(d: i64, a: i64, b: i64) { vex3(1, 0, 0, 1, 66, d, a, b); }   // kandnw: ~a & b
+fn kor(d: i64, a: i64, b: i64) { vex3(1, 0, 0, 1, 69, d, a, b); }     // korw
+fn kortest(a: i64, b: i64) { vex3(1, 0, 0, 0, 152, a, 0, b); }        // kortestw: ZF = (a|b) == 0
+fn kmovk(d: i64, a: i64) { vex3(1, 0, 0, 0, 144, d, 0, a); }          // kmovw k, k
+// constant pool (emitted after the code, read RIP-relative); 8-byte aligned entries
+fn cp_find(v: u64) -> i64 {
+  let mut i = 0;
+  while i + 8 <= cplen {
+    let mut x: u64 = 0; let mut j = 7;
+    while j >= 0 { x = (x << 8) | (cpool[i + j] as u64); j -= 1; }
+    if x == v { return i; }
+    i += 8;
+  }
+  return -1;
+}
+fn cp_u64(v: u64) -> i64 {
+  let f = cp_find(v); if f >= 0 { return f; }
+  let at = cplen; let mut j: u64 = 0;
+  while j < 8 { cpool[cplen] = ((v >> (8 * j)) & 255) as u8; cplen += 1; j += 1; }
+  return at;
+}
+fn cp_iota(base: i64) -> i64 {   // 8 lanes base, base+1, ...
+  while (cplen & 63) != 0 { cpool[cplen] = 0; cplen += 1; }
+  let at = cplen; let mut k = 0;
+  while k < 8 { let v = (base + k) as u64; let mut j: u64 = 0; while j < 8 { cpool[cplen] = ((v >> (8 * j)) & 255) as u8; cplen += 1; j += 1; } k += 1; }
+  return at;
+}
+// ---------------------------------------------------------------- SIMD: lane-parallel loops
+// A loop `while i < E { PRE; POST }` (i += 1 once, in POST) runs PRE for L consecutive
+// values of i at once in zmm16..zmm31: varying values sit in vector lanes, uniform ones stay
+// scalar, varying branches and inner loops run under k-masks. Every lane performs exactly the
+// scalar operations (IEEE-exact, wrapping integers), so results are bit-identical. POST then
+// runs as ordinary scalar code once per lane, in order, reading PRE's results lane by lane.
+// PRE has no side effects and no lane-dependent traps, so the reordering is unobservable.
+let MAX_PLANS = 4096;
+let vplan = alloc<i64>(1048576);     // while node -> plan + 1
+let mut nplans: i64 = 0;
+let mut simd_off: bool = false;
+let vp_loop = alloc<i64>(4096);
+let vp_iv = alloc<i64>(4096);
+let vp_npre = alloc<i64>(4096);
+let vp_u = alloc<i64>(4096);
+let vp_nv = alloc<i64>(4096);        // varying variables with registers
+let vp_need0 = alloc<i64>(4096);     // extracted variables: vp_need[vp_need0 .. vp_need0 + vp_nneed)
+let vp_nneed = alloc<i64>(4096);
+let vp_scr = alloc<i64>(4096);       // scratch offset in the vector area
+let vp_tag = alloc<i64>(4096);
+let vp_need = alloc<i64>(65536);
+let mut nvneed: i64 = 0;
+let mut vec_bytes: i64 = 64;         // vector scratch area (after the globals); 0..7: lane counter
+let vmark = alloc<i64>(65536);       // == tag: varying in the plan being built/emitted
+let vdecl = alloc<i64>(65536);       // == tag: declared inside PRE
+let vprw = alloc<i64>(65536);        // == tag: assigned in PRE
+let vprr = alloc<i64>(65536);        // == tag: read in PRE
+let vpow = alloc<i64>(65536);        // == tag: assigned in POST
+let vpor = alloc<i64>(65536);        // == tag: read in POST
+let vald = alloc<i64>(65536);        // == tag: array (leader) loaded in PRE
+let vast = alloc<i64>(65536);        // == tag: array (leader) stored in POST
+let VREG = alloc<i64>(65536);        // varying variable -> first zmm of its group
+let mut vtag: i64 = 0;
+let mut VK_OK: bool = true;          // legality accumulator
+let mut VK_LOOPS: i64 = 0;           // loops inside PRE
+let mut VK_DEPTH: i64 = 0;           // deepest mask level needed
+let mut VK_TMP: i64 = 0;             // deepest vector temporary needed
+fn is_v(v: i64) -> bool { return vmark[v] == vtag; }
+fn refs_v(e: i64) -> bool {
+  if e < 0 { return false; }
+  let k = nd[e].k;
+  if k == N_VAR { return is_v(nd[e].var); }
+  if k == N_CONST || k == N_ARR || k == N_NCPU { return false; }
+  if k == N_CALL { let mut a = nd[e].a; while a >= 0 { if refs_v(a) { return true; } a = nd[a].next; } return false; }
+  return refs_v(nd[e].a) || refs_v(nd[e].b);
+}
+// varying set: the induction variable, anything computed from a varying value or under varying control
+fn vclass(s: i64, ctl: bool) -> bool {
+  if s < 0 { return false; }
+  let k = nd[s].k;
+  let mut ch = false;
+  if k == S_LET || k == S_ASSIGN || k == S_IRET {
+    if (ctl || refs_v(nd[s].a)) && !is_v(nd[s].var) { vmark[nd[s].var] = vtag; ch = true; }
+    return ch;
+  }
+  if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { if vclass(c, ctl) { ch = true; } c = nd[c].next; } return ch; }
+  if k == S_IF { let c2 = ctl || refs_v(nd[s].a); if vclass(nd[s].b, c2) { ch = true; } if vclass(nd[s].c, c2) { ch = true; } return ch; }
+  if k == S_WHILE { return vclass(nd[s].b, ctl || refs_v(nd[s].a)); }
+  return false;
+}
+fn vrec_reads(e: i64, post: bool) {
+  if e < 0 { return; }
+  let k = nd[e].k;
+  if k == N_VAR { if post { vpor[nd[e].var] = vtag; } else { vprr[nd[e].var] = vtag; } return; }
+  if k == N_LOAD {
+    if !post { vald[arr_leader[nd[e].var]] = vtag; }
+    vrec_reads(nd[e].a, post); return;
+  }
+  if k == N_CALL { let mut a = nd[e].a; while a >= 0 { vrec_reads(a, post); a = nd[a].next; } return; }
+  if k == N_CONST || k == N_ARR || k == N_NCPU { return; }
+  vrec_reads(nd[e].a, post); vrec_reads(nd[e].b, post);
+}
+fn is_pow2(v: u64) -> bool { return v != 0 && (v & (v - 1)) == 0; }
+fn f64_type(t: i64) -> bool { return t == TY_F64; }
+fn int8_type(t: i64) -> bool { return ty_int(t) && t != TY_ILIT; }
+// can e be evaluated with all lanes active (no side effects, no lane-dependent trap)? t: temps in use
+fn vexpr_ok(e: i64, t: i64, iv: i64) -> bool {
+  if t + 1 > VK_TMP { VK_TMP = t + 1; }
+  let k = nd[e].k;
+  if k == N_CALL || k == N_NCPU || k == N_ARR { return false; }
+  if !refs_v(e) {   // uniform: scalar code, then broadcast
+    if has_call(e) { return false; }
+    return f64_type(nd[e].ty) || int8_type(nd[e].ty) || k == N_CONST;
+  }
+  if k == N_VAR { let t2 = vars[nd[e].var].ty; return f64_type(t2) || int8_type(t2); }
+  if k == N_LOAD {   // varying: contiguous a[i + c], 8-byte elements, check proven
+    if nd[e].chk != 0 || nd[e].op > 0 || vars[nd[e].var].arr != 8 { return false; }
+    if !(f64_type(nd[e].ty) || nd[e].ty == TY_I64 || nd[e].ty == TY_U64) { return false; }
+    let x = nd[e].a;
+    if nd[x].k == N_VAR && nd[x].var == iv { return true; }
+    if nd[x].k == N_BIN && (nd[x].op == O_ADD || nd[x].op == O_SUB) && nd[nd[x].a].k == N_VAR && nd[nd[x].a].var == iv && !refs_v(nd[x].b) && !has_call(nd[x].b) { return true; }
+    return false;
+  }
+  if k == N_UN {
+    let op = nd[e].op;
+    let a = nd[e].a;
+    if !vexpr_ok(a, t, iv) { return false; }
+    if op == U_NEG || op == U_NOT { return int8_type(nd[e].ty); }
+    if op == U_I2D { return int8_type(nd[a].ty) && nd[a].ty != TY_U64; }
+    if op == U_FNEG || op == U_SQRTD { return true; }
+    if op >= U_SX8 && op <= U_ZX32 { return true; }
+    return false;
+  }
+  if k == N_BIN {
+    let op = nd[e].op;
+    let a = nd[e].a; let b = nd[e].b;
+    if is_cmp_op(op) || is_fcmp(op) || op == O_LAND || op == O_LOR { return false; }   // booleans only as conditions
+    if op == O_FADD || op == O_FSUB || op == O_FMUL || op == O_FDIV {
+      return vexpr_ok(a, t, iv) && vexpr_ok(b, t + 1, iv);
+    }
+    if is_fop(op) { return false; }   // f32
+    if op == O_ADD || op == O_SUB || op == O_MUL || op == O_AND || op == O_OR || op == O_XOR {
+      return vexpr_ok(a, t, iv) && vexpr_ok(b, t + 1, iv);
+    }
+    if op == O_SHL || op == O_SHR || op == O_SAR { return is_const(b) && vexpr_ok(a, t, iv); }
+    if op == O_DIV || op == O_MOD || op == O_DIVU || op == O_MODU {
+      if !is_const(b) || !is_pow2(nd[b].v) { return false; }
+      if (op == O_DIV || op == O_MOD) && (nd[b].v as i64) <= 0 { return false; }
+      return vexpr_ok(a, t, iv);
+    }
+    return false;
+  }
+  return false;
+}
+// a condition evaluated into mask level lvl (|| needs lvl + 1)
+fn vcond_ok(e: i64, lvl: i64, iv: i64) -> bool {
+  if lvl + 1 > VK_DEPTH { VK_DEPTH = lvl + 1; }
+  let k = nd[e].k;
+  if !refs_v(e) { return !has_call(e); }
+  if k == N_UN && nd[e].op == U_LNOT { return vcond_ok(nd[e].a, lvl, iv); }
+  if k != N_BIN { return false; }
+  let op = nd[e].op;
+  if op == O_LAND { return vcond_ok(nd[e].a, lvl, iv) && vcond_ok(nd[e].b, lvl, iv); }
+  if op == O_LOR { return vcond_ok(nd[e].a, lvl, iv) && vcond_ok(nd[e].b, lvl + 1, iv); }
+  if is_cmp_op(op) { return vexpr_ok(nd[e].a, 0, iv) && vexpr_ok(nd[e].b, 1, iv) && int8_type(nd[nd[e].a].ty); }
+  if op >= O_FEQ && op <= O_FGE { return vexpr_ok(nd[e].a, 0, iv) && vexpr_ok(nd[e].b, 1, iv); }
+  return false;
+}
+// PRE statement check. lvl: current mask level (-1: all lanes, uniform control); ld: loops entered
+fn vpre_ok(s: i64, lvl: i64, ld: i64, iv: i64) -> bool {
+  if s < 0 { return true; }
+  let k = nd[s].k;
+  if k == S_LET || k == S_ASSIGN || k == S_IRET {
+    let v = nd[s].var;
+    if k == S_LET { vdecl[v] = vtag; }
+    if vdecl[v] != vtag { return false; }   // PRE writes only variables it declares
+    vprw[v] = vtag; vrec_reads(nd[s].a, false);
+    if has_call(nd[s].a) || (lvl >= 0 && has_trap(nd[s].a)) { return false; }
+    if vars[v].reads == 0 { return !has_trap(nd[s].a); }
+    if is_v(v) {
+      let t = vars[v].ty;
+      if !(f64_type(t) || int8_type(t)) { return false; }
+      return vexpr_ok(nd[s].a, 0, iv);
+    }
+    if lvl >= 0 { return false; }
+    return !has_call(nd[s].a);
+  }
+  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { if !vpre_ok(c, lvl, ld, iv) { return false; } c = nd[c].next; } return true; }
+  if k == S_INL {
+    vdecl[nd[s].var] = vtag;
+    let mut c = nd[s].a;
+    while c >= 0 {
+      if nd[c].k == S_IRET && nd[c].next >= 0 && lvl >= 0 { return false; }   // early return under a mask
+      if !vpre_ok(c, lvl, ld, iv) { return false; }
+      c = nd[c].next;
+    }
+    return true;
+  }
+  if k == S_IF {
+    vrec_reads(nd[s].a, false);
+    if lvl >= 0 && has_trap(nd[s].a) { return false; }
+    if lvl < 0 && !refs_v(nd[s].a) {
+      if has_call(nd[s].a) { return false; }
+      return vpre_ok(nd[s].b, -1, ld, iv) && vpre_ok(nd[s].c, -1, ld, iv);
+    }
+    let nl = lvl + 1;
+    if !vcond_ok(nd[s].a, nl, iv) { return false; }
+    return vpre_ok(nd[s].b, nl, ld, iv) && vpre_ok(nd[s].c, nl, ld, iv);
+  }
+  if k == S_WHILE {
+    if nd[s].c >= 0 { return false; }
+    VK_LOOPS += 1;
+    vrec_reads(nd[s].a, false);
+    if lvl < 0 && !refs_v(nd[s].a) {
+      if has_call(nd[s].a) { return false; }
+      return vpre_ok(nd[s].b, -1, ld + 1, iv);
+    }
+    if has_trap(nd[s].a) { return false; }   // re-evaluated under the loop's own mask
+    let nl = lvl + 1;
+    if !vcond_ok(nd[s].a, nl, iv) { return false; }
+    return vpre_ok(nd[s].b, nl, ld + 1, iv);
+  }
+  if k == S_BRK || k == S_CONT { return lvl < 0 && ld > 0; }
+  return false;
+}
+// POST: scalar per lane; no calls, returns, par, or jumps out of the vectorized loop
+fn vpost_ok(s: i64, ld: i64) -> bool {
+  if s < 0 { return true; }
+  let k = nd[s].k;
+  if k == S_RET || k == S_PAR || k == S_ARR || k == S_SAVE { return false; }
+  if (k == S_BRK || k == S_CONT) && ld == 0 { return false; }
+  if k == S_LET || k == S_ASSIGN || k == S_IRET { vpow[nd[s].var] = vtag; }
+  if k == S_STORE { vast[arr_leader[nd[s].var]] = vtag; }
+  if k == S_EXPR || has_call(nd[s].a) || ((k == S_STORE || k == S_WRITE) && has_call(nd[s].b)) { return false; }
+  if k <= N_ARR { return false; }
+  vrec_reads(nd[s].a, true);
+  if k == S_STORE || k == S_WRITE { vrec_reads(nd[s].b, true); }
+  if k == S_STORE || k == S_WRITE { if nd[s].var >= 0 { vpor[vars[nd[s].var].basev] = vtag; } }
+  if k == S_IF { return vpost_ok(nd[s].b, ld) && vpost_ok(nd[s].c, ld); }
+  if k == S_WHILE { if nd[s].c >= 0 { return false; } return vpost_ok(nd[s].b, ld + 1); }
+  if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { if !vpost_ok(c, ld) { return false; } c = nd[c].next; } }
+  return true;
+}
+let vp_v0 = alloc<i64>(4096);         // varying variables of plan p: vp_vlist[vp_v0 .. vp_v0 + vp_nv)
+let vp_vlist = alloc<i64>(65536);
+let vp_vreg = alloc<i64>(65536);
+let mut nvlist: i64 = 0;
+fn pre_classify(body: i64, k: i64, iv: i64) {
+  vtag += 1;
+  vmark[iv] = vtag;
+  let mut changed = true;
+  while changed {
+    changed = false;
+    let mut c = nd[body].a; let mut i = 0;
+    while c >= 0 && i < k { if vclass(c, false) { changed = true; } c = nd[c].next; i += 1; }
+  }
+}
+fn pre_check(body: i64, k: i64, iv: i64) -> bool {
+  VK_LOOPS = 0; VK_DEPTH = 0; VK_TMP = 0;
+  let mut c = nd[body].a; let mut i = 0;
+  while c >= 0 && i < k { if !vpre_ok(c, -1, 0, iv) { return false; } c = nd[c].next; i += 1; }
+  return true;
+}
+fn plan_loop(s: i64) {
+  if simd_off || nplans >= MAX_PLANS || nd[s].c >= 0 { return; }
+  let cnd = nd[s].a;
+  if nd[cnd].k != N_BIN || (nd[cnd].op != O_LT && nd[cnd].op != O_LE) { return; }
+  let ivn = nd[cnd].a; let en = nd[cnd].b;
+  if nd[ivn].k != N_VAR { return; }
+  let iv = nd[ivn].var;
+  if vars[iv].ty != TY_I64 || vars[iv].xr >= 0 { return; }
+  if !(is_const(en) || (nd[en].k == N_VAR && nd[en].var != iv && vars[nd[en].var].xr < 0)) { return; }
+  if count_assign(s, iv) != 1 { return; }
+  if nd[en].k == N_VAR && count_assign(nd[s].b, nd[en].var) != 0 { return; }
+  let body = nd[s].b;
+  if nd[body].k != S_BLOCK { return; }
+  let mut inc = -1;
+  let mut nbefore = 0;
+  let mut c = nd[body].a;
+  while c >= 0 { if nd[c].k == S_ASSIGN && is_inc1(c, iv) { inc = c; break; } nbefore += 1; c = nd[c].next; }
+  if inc < 0 { return; }
+  // PRE: the longest prefix of statements (before the increment) that can run lane-parallel
+  let mut npre = 0;
+  while npre < nbefore {
+    pre_classify(body, npre + 1, iv);
+    if !pre_check(body, npre + 1, iv) { break; }
+    npre += 1;
+  }
+  if npre == 0 { return; }
+  pre_classify(body, npre, iv);
+  if !pre_check(body, npre, iv) || VK_LOOPS == 0 { return; }
+  let t0 = vtag;
+  c = nd[body].a;
+  let mut i = 0;
+  while i < npre { c = nd[c].next; i += 1; }
+  while c >= 0 { if !vpost_ok(c, 0) { return; } c = nd[c].next; }
+  // cross checks
+  let mut vv = 0;
+  let mut nvar = 0;
+  while vv < nv {
+    if vprw[vv] == t0 && vdecl[vv] != t0 { return; }                       // PRE writes only its own variables
+    if vprr[vv] == t0 && vdecl[vv] != t0 && vv != iv && vpow[vv] == t0 { return; }   // loop-carried input
+    if vpow[vv] == t0 && vv != iv && (vprr[vv] == t0 || vprw[vv] == t0) { return; }
+    if vald[vv] == t0 && vast[vv] == t0 { return; }                        // POST stores what PRE loads
+    if is_v(vv) && vv != iv && vdecl[vv] != t0 { return; }
+    if is_v(vv) { let t = vars[vv].ty; if !(f64_type(t) || int8_type(t)) { return; } nvar += 1; }
+    vv += 1;
+  }
+  // registers: groups of U zmm registers among zmm16..zmm31; masks k1..k6 (k7 = all lanes)
+  let mut u = 2;
+  if (nvar + VK_TMP + 1) * 2 > 16 || (VK_DEPTH + 1) * 2 > 6 { u = 1; }
+  if (nvar + VK_TMP + 1) * u > 16 || VK_DEPTH * u > 6 { return; }
+  if nvlist + nvar > 65536 || nvneed + nvar > 65536 { return; }
+  let p = nplans; nplans += 1;
+  vplan[s] = p + 1;
+  vp_loop[p] = s; vp_iv[p] = iv; vp_npre[p] = npre; vp_u[p] = u; vp_nv[p] = nvar;
+  vp_need0[p] = nvneed; vp_v0[p] = nvlist;
+  let mut g = 0;
+  vv = 0;
+  while vv < nv {
+    if is_v(vv) {
+      vp_vlist[nvlist] = vv; vp_vreg[nvlist] = 16 + g * u; nvlist += 1; g += 1;
+      if vpor[vv] == t0 && vv != iv { vp_need[nvneed] = vv; nvneed += 1; }
+    }
+    vv += 1;
+  }
+  vp_nneed[p] = nvneed - vp_need0[p];
+  vp_scr[p] = vec_bytes;
+  vec_bytes += vp_nneed[p] * 64 * u;
+}
+// make plan p's varying set current (marks and registers)
+fn plan_enter(p: i64) {
+  vtag += 1;
+  let mut i = 0;
+  while i < vp_nv[p] { let v = vp_vlist[vp_v0[p] + i]; vmark[v] = vtag; VREG[v] = vp_vreg[vp_v0[p] + i]; i += 1; }
+}
+fn plan_all() {
+  let mut s = 0;
+  while s < nn { if nd[s].k == S_WHILE { plan_loop(s); } s += 1; }
+}
+// ---- vector code generation (current plan: VP, U zmm registers per value)
+let mut VP: i64 = 0;
+let mut VU: i64 = 1;
+let mut VRG: i64 = 0;       // scalar temporaries of the statement being generated
+let mut VN: i64 = 0;
+let HAS_AVX = 6291496;      // BSS byte: AVX-512F+DQ usable (set at start)
+fn vec_base() -> i64 { return GLOB_BASE + ((glob_bytes + 63) & ~63); }
+fn vr(t: i64) -> i64 { return 16 + (vp_nv[VP] + t) * VU; }
+fn kreg(lvl: i64, h: i64) -> i64 { if lvl < 0 { return 0; } return 1 + lvl * VU + h; }
+fn kpar(lvl: i64, h: i64) -> i64 { if lvl < 0 { return 7; } return 1 + lvl * VU + h; }
+// operand: kind 0 register group, 1 constant-pool broadcast
+let mut VOK: i64 = 0;
+let mut VOR: i64 = 0;
+// dst{mask} = a OP b over every half. b: register group or broadcast constant
+fn vop3(mm: i64, pp: i64, opc: i64, d: i64, a: i64, bk: i64, b: i64, lvl: i64) {
+  let mut h = 0;
+  while h < VU {
+    if bk == 0 { evx(mm, pp, 1, 2, opc, d + h, a + h, 0, b + h, kreg(lvl, h), false, false); }
+    else { VM_TAIL = 0; vm_pool(b); evx(mm, pp, 1, 2, opc, d + h, a + h, 1, 0, kreg(lvl, h), false, true); }
+    h += 1;
+  }
+}
+fn vshift(dig: i64, opc: i64, d: i64, a: i64, k: i64, lvl: i64) {   // vpsllq/vpsrlq (73 /6, /2), vpsraq (72 /4)
+  let mut h = 0;
+  while h < VU { evx(1, 1, 1, 2, opc, dig, d + h, 0, a + h, kreg(lvl, h), false, false); byte(k & 63); h += 1; }
+}
+fn vmov(d: i64, a: i64, lvl: i64) {   // vmovdqa64 d{k}, a
+  if d == a && lvl < 0 { return; }
+  let mut h = 0;
+  while h < VU { evx(1, 1, 1, 2, 111, d + h, 0, 0, a + h, kreg(lvl, h), false, false); h += 1; }
+}
+fn vbc_pool(d: i64, off: i64, lvl: i64) {   // vpbroadcastq d{k}, [pool]
+  let mut h = 0;
+  while h < VU { VM_TAIL = 0; vm_pool(off); evx(2, 1, 1, 2, 89, d + h, 0, 1, 0, kreg(lvl, h), false, false); h += 1; }
+}
+fn vbc_gpr(d: i64, r: i64, lvl: i64) {      // vpbroadcastq d{k}, r64
+  let mut h = 0;
+  while h < VU { evx(2, 1, 1, 2, 124, d + h, 0, 0, r, kreg(lvl, h), false, false); h += 1; }
+}
+// broadcast a uniform scalar expression
+fn vbcast(e: i64, d: i64, lvl: i64) {
+  let k = nd[e].k;
+  if k == N_CONST { vbc_pool(d, cp_u64(nd[e].v), lvl); return; }
+  if k == N_VAR {
+    loc(nd[e].var);
+    if OK == K_REG { vbc_gpr(d, ORR, lvl); return; }
+    if OK == K_XMM { let mut h = 0; while h < VU { evx(2, 1, 1, 2, 25, d + h, 0, 0, ORR, kreg(lvl, h), false, false); h += 1; } return; }
+    if OK == K_MEM { let mut h = 0; while h < VU { vm_mem(RSP, -1, 0, ORR * 8 + sp_adj); evx(2, 1, 1, 2, 89, d + h, 0, 1, 0, kreg(lvl, h), false, false); h += 1; } return; }
+  }
+  gen(e, VRG, VN); vbc_gpr(d, RGS[VRG], lvl);
+}
+fn fp_nan(v: u64) -> bool { return (v & 9218868437227405312) == 9218868437227405312 && (v & 4503599627370495) != 0; }
+// operand for e: a register group (computed into vr(t) if needed) or a pool constant
+fn vopnd(e: i64, t: i64) {
+  if nd[e].k == N_CONST { VOK = 1; VOR = cp_u64(nd[e].v); return; }
+  if nd[e].k == N_VAR && is_v(nd[e].var) { VOK = 0; VOR = VREG[nd[e].var]; return; }
+  vgen_into(e, vr(t), -1, t); VOK = 0; VOR = vr(t);
+}
+fn vfop(op: i64) -> i64 { if op == O_FADD { return 88; } if op == O_FSUB { return 92; } if op == O_FMUL { return 89; } return 94; }
+fn viop(op: i64) -> i64 { if op == O_ADD { return 212; } if op == O_SUB { return 251; } if op == O_AND { return 219; } if op == O_OR { return 235; } return 239; }
+// e into register group d under mask level lvl (merge: inactive lanes keep d), temporaries from t
+fn vgen_into(e: i64, d: i64, lvl: i64, t: i64) {
+  let k = nd[e].k;
+  if !refs_v(e) { vbcast(e, d, lvl); return; }
+  if k == N_VAR { vmov(d, VREG[nd[e].var], lvl); return; }
+  if k == N_LOAD {
+    let a = nd[e].var;
+    gen(nd[e].a, VRG, VN);
+    let ri = RGS[VRG];
+    let b = base_reg(a);
+    let mut h = 0;
+    while h < VU { vm_mem(b, ri, 3, 64 * h); evx(1, 2, 1, 2, 111, d + h, 0, 1, 0, kreg(lvl, h), false, false); h += 1; }   // vmovdqu64
+    return;
+  }
+  if k == N_UN {
+    let op = nd[e].op;
+    vopnd(nd[e].a, t);
+    let ak = VOK; let mut ar = VOR;
+    if ak == 1 { vbc_pool(vr(t), ar, -1); ar = vr(t); }
+    if op == U_FNEG { vop3(1, 1, 239, d, ar, 1, cp_u64(9223372036854775808), lvl); return; }
+    if op == U_NOT { vop3(1, 1, 239, d, ar, 1, cp_u64(18446744073709551615), lvl); return; }
+    if op == U_NEG { let z = vr(t + 1); vop3(1, 1, 239, z, z, 0, z, -1); vop3(1, 1, 251, d, z, 0, ar, lvl); return; }
+    if op == U_SQRTD { let mut h = 0; while h < VU { evx(1, 1, 1, 2, 81, d + h, 0, 0, ar + h, kreg(lvl, h), false, false); h += 1; } return; }
+    if op == U_I2D { let mut h = 0; while h < VU { evx(1, 2, 1, 2, 230, d + h, 0, 0, ar + h, kreg(lvl, h), false, false); h += 1; } return; }
+    if op == U_ZX8 { vop3(1, 1, 219, d, ar, 1, cp_u64(255), lvl); return; }
+    if op == U_ZX16 { vop3(1, 1, 219, d, ar, 1, cp_u64(65535), lvl); return; }
+    if op == U_ZX32 { vop3(1, 1, 219, d, ar, 1, cp_u64(4294967295), lvl); return; }
+    let mut sh = 32; if op == U_SX8 { sh = 56; } else if op == U_SX16 { sh = 48; }
+    let tt = vr(t + 1);
+    vshift(6, 115, tt, ar, sh, -1); vshift(4, 114, d, tt, sh, lvl); return;
+  }
+  let op = nd[e].op;
+  let a = nd[e].a; let b = nd[e].b;
+  if op == O_SHL || op == O_SHR || op == O_SAR {
+    vopnd(a, t); let mut ar = VOR; if VOK == 1 { vbc_pool(vr(t), ar, -1); ar = vr(t); }
+    let c = (nd[b].v & 63) as i64;
+    if op == O_SHL { vshift(6, 115, d, ar, c, lvl); } else if op == O_SHR { vshift(2, 115, d, ar, c, lvl); } else { vshift(4, 114, d, ar, c, lvl); }
+    return;
+  }
+  if op == O_DIV || op == O_MOD || op == O_DIVU || op == O_MODU {
+    vopnd(a, t); let mut ar = VOR; if VOK == 1 { vbc_pool(vr(t), ar, -1); ar = vr(t); }
+    let dv = nd[b].v;
+    let mut kk = 0; while ((1 as u64) << (kk as u64)) != dv { kk += 1; }
+    if op == O_DIVU || (op == O_DIV && nd[e].nn != 0) {
+      if op == O_DIVU { vshift(2, 115, d, ar, kk, lvl); } else { vshift(4, 114, d, ar, kk, lvl); }
+      return;
+    }
+    if op == O_MODU || nd[e].nn != 0 { vop3(1, 1, 219, d, ar, 1, cp_u64(dv - 1), lvl); return; }
+    let tt = vr(t + 1);
+    vshift(4, 114, tt, ar, 63, -1);
+    if kk > 0 { vshift(2, 115, tt, tt, 64 - kk, -1); } else { vop3(1, 1, 239, tt, tt, 0, tt, -1); }
+    vop3(1, 1, 212, tt, ar, 0, tt, -1);                    // x + bias
+    if op == O_DIV { vshift(4, 114, d, tt, kk, lvl); return; }
+    vop3(1, 1, 219, tt, tt, 1, cp_u64(0 - dv), -1);        // & -2^k
+    vop3(1, 1, 251, d, ar, 0, tt, lvl);                    // x - that
+    return;
+  }
+  vopnd(a, t);
+  let mut ak = VOK; let mut ar = VOR;
+  vopnd(b, t + 1);
+  let mut bk = VOK; let mut br = VOR;
+  let fp = op == O_FADD || op == O_FSUB || op == O_FMUL || op == O_FDIV;
+  let comm = op == O_FADD || op == O_FMUL || op == O_ADD || op == O_MUL || op == O_AND || op == O_OR || op == O_XOR;
+  if ak == 1 {
+    if comm && bk == 0 && !(fp && fp_nan(nd[a].v)) { let tk = ak; let tr2 = ar; ak = bk; ar = br; bk = tk; br = tr2; }
+    else { vbc_pool(vr(t), ar, -1); ak = 0; ar = vr(t); }
+  }
+  if fp { vop3(1, 1, vfop(op), d, ar, bk, br, lvl); return; }
+  if op == O_MUL { vop3(2, 1, 64, d, ar, bk, br, lvl); return; }
+  vop3(1, 1, viop(op), d, ar, bk, br, lvl);
+}
+// condition -> mask level lvl, restricted to mask level pm (-1: all lanes)
+fn vcmp_pred(op: i64) -> i64 {
+  if op == O_EQ || op == O_FEQ { return 0; } if op == O_LT || op == O_LTU || op == O_FLT { return 1; }
+  if op == O_LE || op == O_LEU || op == O_FLE { return 2; } if op == O_NE || op == O_FNE { return 4; }
+  if op == O_FGT { return 14; } if op == O_FGE { return 13; }
+  if op == O_GE || op == O_GEU { return 5; } return 6;
+}
+fn vcond(e: i64, lvl: i64, pm: i64) {
+  let k = nd[e].k;
+  if !refs_v(e) {
+    gen(e, VRG, VN); let r = RGS[VRG];
+    unop(3, K_REG, r);
+    let mut h = 0;
+    while h < VU { kmov_kr(kreg(lvl, h), r); if pm >= 0 { kand(kreg(lvl, h), kreg(lvl, h), kreg(pm, h)); } h += 1; }
+    return;
+  }
+  if k == N_UN { vcond(nd[e].a, lvl, pm); let mut h = 0; while h < VU { kandn(kreg(lvl, h), kreg(lvl, h), kpar(pm, h)); h += 1; } return; }
+  let op = nd[e].op;
+  if op == O_LAND { vcond(nd[e].a, lvl, pm); vcond(nd[e].b, lvl, lvl); return; }
+  if op == O_LOR {
+    vcond(nd[e].a, lvl, pm); vcond(nd[e].b, lvl + 1, pm);
+    let mut h = 0; while h < VU { kor(kreg(lvl, h), kreg(lvl, h), kreg(lvl + 1, h)); h += 1; }
+    return;
+  }
+  let a = nd[e].a; let b = nd[e].b;
+  vopnd(a, 0); let mut ak = VOK; let mut ar = VOR;
+  vopnd(b, 1); let mut bk = VOK; let mut br = VOR;
+  let mut o = op;
+  if ak == 1 {
+    if bk == 0 { let tk = ak; let tr2 = ar; ak = bk; ar = br; bk = tk; br = tr2; o = swap_cmp(op); }
+    else { vbc_pool(vr(0), ar, -1); ak = 0; ar = vr(0); }
+  }
+  let fl = op >= O_FEQ && op <= O_FGE;
+  let uns = op == O_LTU || op == O_LEU || op == O_GTU || op == O_GEU;
+  let mut h = 0;
+  while h < VU {
+    VM_TAIL = 1;
+    if bk == 1 { vm_pool(br); }
+    let rr = if_sel(bk == 0, br + h, 0);
+    if fl { evx(1, 1, 1, 2, 194, kreg(lvl, h), ar + h, bk, rr, kreg(pm, h), false, bk == 1); }
+    else if uns { evx(3, 1, 1, 2, 30, kreg(lvl, h), ar + h, bk, rr, kreg(pm, h), false, bk == 1); }
+    else { evx(3, 1, 1, 2, 31, kreg(lvl, h), ar + h, bk, rr, kreg(pm, h), false, bk == 1); }
+    byte(vcmp_pred(o));
+    VM_TAIL = 0;
+    h += 1;
+  }
+}
+fn if_sel(c: bool, a: i64, b: i64) -> i64 { if c { return a; } return b; }
+fn vtemps(s: i64) {
+  VRG = rgs_top; VN = temps_at(nd[s].pos);
+  let mut i = 0;
+  while i < VN { RGS[VRG + i] = TMPS[i]; i += 1; }
+}
+fn vstmt(s: i64, lvl: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  let sv_rg = rgs_top; let sv_pos = cur_pos;
+  if k != S_BLOCK && k != S_INL && k != S_BRK && k != S_CONT { vtemps(s); rgs_top += 12; cur_pos = nd[s].pos; }
+  vstmt_body(s, lvl);
+  rgs_top = sv_rg; cur_pos = sv_pos;
+}
+fn vstmt_body(s: i64, lvl: i64) {
+  let k = nd[s].k;
+  if k == S_LET || k == S_ASSIGN || k == S_IRET {
+    let v = nd[s].var;
+    if vars[v].reads != 0 {
+      if is_v(v) { vgen_into(nd[s].a, VREG[v], lvl, 0); }
+      else { assign(v, nd[s].a, VRG, VN); }
+    } else if has_trap(nd[s].a) { gen(nd[s].a, VRG, VN); }
+    if k == S_IRET && nd[s].next >= 0 { inl_list[ninlctx - 1] = pl_add(inl_list[ninlctx - 1], jmp()); }
+    return;
+  }
+  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { vstmt(c, lvl); c = nd[c].next; } return; }
+  if k == S_INL {
+    let L = ninlctx; ninlctx += 1; inl_list[L] = -1;
+    let mut c = nd[s].a;
+    while c >= 0 { vstmt(c, lvl); c = nd[c].next; }
+    pl_patch(inl_list[L], clen); ninlctx -= 1;
+    return;
+  }
+  if k == S_BRK { brk_list[nloopctx - 1] = pl_add(brk_list[nloopctx - 1], jmp()); return; }
+  if k == S_CONT { cont_list[nloopctx - 1] = pl_add(cont_list[nloopctx - 1], jmp()); return; }
+  if k == S_IF {
+    if lvl < 0 && !refs_v(nd[s].a) {
+      if is_const(nd[s].a) { if nd[nd[s].a].v != 0 { vstmt(nd[s].b, -1); } else { vstmt(nd[s].c, -1); } return; }
+      let mut f = -1; let mut en = -1;
+      f = cond_jump(nd[s].a, false, f, VRG, VN); vstmt(nd[s].b, -1);
+      if nd[s].c >= 0 { if !terminates(nd[s].b) { en = pl_add(en, jmp()); } pl_patch(f, clen); vstmt(nd[s].c, -1); pl_patch(en, clen); }
+      else { pl_patch(f, clen); }
+      return;
+    }
+    let nl = lvl + 1;
+    vcond(nd[s].a, nl, lvl);
+    let mut h = 0;
+    kortest(kreg(nl, 0), kreg(nl, VU - 1));
+    let sk = jcc(CC_E);
+    vstmt(nd[s].b, nl);
+    rel32(sk, clen);
+    if nd[s].c >= 0 {
+      h = 0; while h < VU { kandn(kreg(nl, h), kreg(nl, h), kpar(lvl, h)); h += 1; }
+      kortest(kreg(nl, 0), kreg(nl, VU - 1));
+      let sk2 = jcc(CC_E);
+      vstmt(nd[s].c, nl);
+      rel32(sk2, clen);
+    }
+    return;
+  }
+  if k == S_WHILE {
+    if lvl < 0 && !refs_v(nd[s].a) {
+      if is_const(nd[s].a) && nd[nd[s].a].v == 0 { return; }
+      let mut entry = -1; let mut back = -1;
+      if !is_const(nd[s].a) { entry = pl_add(entry, jmp()); }
+      let top = clen;
+      let L = nloopctx; nloopctx += 1; brk_list[L] = -1; cont_list[L] = -1;
+      vstmt(nd[s].b, -1);
+      pl_patch(cont_list[L], clen); pl_patch(entry, clen);
+      vtemps(s);
+      back = cond_jump(nd[s].a, true, back, VRG, VN); pl_patch(back, top);
+      pl_patch(brk_list[L], clen); nloopctx -= 1;
+      return;
+    }
+    let nl = lvl + 1;
+    vcond(nd[s].a, nl, lvl);
+    kortest(kreg(nl, 0), kreg(nl, VU - 1));
+    let ex = jcc(CC_E);
+    let top = clen;
+    vstmt(nd[s].b, nl);
+    vtemps(s);
+    vcond(nd[s].a, nl, nl);
+    kortest(kreg(nl, 0), kreg(nl, VU - 1));
+    rel32(jcc(CC_NE), top);
+    rel32(ex, clen);
+    return;
+  }
+  fail("internal: statement in a vector region");
+}
+// mov r64 / movsd xmm  <- [lane * 8 + abs] (lane index in rax)
+fn lane_load(dst: i64, x: bool, abs: i64) {
+  if x { byte(242); if (dst & 8) != 0 { byte(68); } byte(15); byte(16); }
+  else { if (dst & 8) != 0 { byte(76); } else { byte(72); } byte(139); }
+  byte(4 | ((dst & 7) << 3)); byte(197); u32_(abs);
+}
+// the vectorized form of loop s (plan p), placed before the ordinary scalar loop; returns the
+// patch list of jumps to the scalar loop
+fn gen_vloop(s: i64, p: i64) -> i64 {
+  VP = p; VU = vp_u[p];
+  plan_enter(p);
+  let L = 8 * VU;
+  let iv = vp_iv[p];
+  let mut to_scalar = -1;
+  emh("803c25"); u32_(HAS_AVX); byte(0); to_scalar = pl_add(to_scalar, jcc(CC_E));
+  let vtop = clen;
+  // all L lanes run: i + L - 1 (no overflow) < E  (or <= E)
+  loc(iv); load(RAX, OK, ORR, OI);
+  alui(A_ADD, RAX, (L - 1) as u64); to_scalar = pl_add(to_scalar, jcc(0));
+  let cnd = nd[s].a; let en = nd[cnd].b;
+  if is_const(en) { alu(A_CMP, K_REG, RAX, K_IMM, 0, nd[en].v); }
+  else { loc(nd[en].var); alu(A_CMP, K_REG, RAX, OK, ORR, OI); }
+  if nd[cnd].op == O_LT { to_scalar = pl_add(to_scalar, jcc(CC_GE)); } else { to_scalar = pl_add(to_scalar, jcc(CC_G)); }
+  vex3(1, 0, 0, 1, 70, 7, 7, 7);   // kxnorw k7, k7, k7
+  // lanes of the induction variable: i + (0, 1, ..)
+  loc(iv); load(RAX, OK, ORR, OI);
+  let R = VREG[iv];
+  let mut h = 0;
+  while h < VU {
+    evx(2, 1, 1, 2, 124, R + h, 0, 0, RAX, 0, false, false);
+    VM_TAIL = 0; vm_pool(cp_iota(8 * h)); evx(1, 1, 1, 2, 212, R + h, R + h, 1, 0, 0, false, false);
+    h += 1;
+  }
+  let body = nd[s].b;
+  let mut c = nd[body].a;
+  let mut i = 0;
+  while i < vp_npre[p] { vstmt(c, -1); c = nd[c].next; i += 1; }
+  let post0 = c;
+  // PRE results needed by POST go to the scratch area, lane by lane
+  let scr = vec_base() + vp_scr[p];
+  i = 0;
+  while i < vp_nneed[p] {
+    let v = vp_need[vp_need0[p] + i];
+    h = 0;
+    while h < VU { vm_abs(scr + i * 64 * VU + 64 * h); evx(1, 2, 1, 2, 127, VREG[v] + h, 0, 1, 0, 0, false, false); h += 1; }   // vmovdqu64 [..], zmm
+    i += 1;
+  }
+  let lane = vec_base();
+  emh("48c70425"); u32_(lane); u32_(0);
+  let ltop = clen;
+  if vp_nneed[p] > 0 {
+    abs_op(139, RAX, lane);
+    i = 0;
+    while i < vp_nneed[p] {
+      let v = vp_need[vp_need0[p] + i];
+      let a = scr + i * 64 * VU;
+      loc(v);
+      if OK == K_REG { lane_load(ORR, false, a); }
+      else if OK == K_XMM { lane_load(ORR, true, a); }
+      else { lane_load(RCX, false, a); store(OK, ORR, RCX); }
+      i += 1;
+    }
+  }
+  c = post0;
+  while c >= 0 { gen_stmt(c, false); c = nd[c].next; }
+  abs_op(139, RAX, lane); alui(A_ADD, RAX, 1); abs_op(137, RAX, lane); alui(A_CMP, RAX, L as u64);
+  rel32(jcc(CC_L), ltop);
+  rel32(jmp(), vtop);
+  return to_scalar;
+}
 // ---------------------------------------------------------------- statement codegen
 let brk_list = alloc<i64>(65536);
 let cont_list = alloc<i64>(65536);
@@ -4078,6 +4802,7 @@ fn gen_stmt_body(s: i64, is_final: bool, rg: i64, n: i64) {
     }
     let m = nd[s].c;
     if m >= 0 { abs_op(139, RAX, ARENA_TOP); loc(m); store(OK, ORR, RAX); }
+    if vplan[s] != 0 { let ts = gen_vloop(s, vplan[s] - 1); pl_patch(ts, clen); }
     if !is_const(nd[s].a) { entry = pl_add(entry, jmp()); }
     let top = clen;
     let L = nloopctx; nloopctx += 1; brk_list[L] = -1; cont_list[L] = -1;
@@ -4362,11 +5087,22 @@ fn emit_runtime() {
 let fsites = alloc<i64>(8192);
 fn generate() {
   allocate();
+  plan_all();
   let mut i = 0;
   while i < nn { if nd[i].k == S_PRINT || (nd[i].k == S_PUTC && nd[i].op != 1) || (nd[i].k == S_WRITE && nd[i].op == 0) { use_out = true; } i += 1; }
   use_bss = use_out || use_arena || glob_bytes > 0;
   i = 0;
   while i < nn { if nd[i].k == S_PAR { use_bss = true; } i += 1; }
+  if nplans > 0 {
+    use_bss = true;
+    // AVX-512F+DQ usable? (cpuid.1:ecx.OSXSAVE, xgetbv: opmask/zmm state enabled, cpuid.7:ebx bits 16, 17)
+    emh("53"); emh("b80100000031c90fa2"); emh("0fbae11b"); let n1 = j8(115);
+    emh("31c90f01d0"); emh("25e6000000"); emh("3de6000000"); let n2 = j8(117);
+    emh("b80700000031c90fa2"); emh("81e300000300"); emh("81fb00000300"); let n3 = j8(117);
+    emh("c60425"); u32_(HAS_AVX); byte(1);
+    p8(n1, clen); p8(n2, clen); p8(n3, clen);
+    emh("5b");
+  }
   if use_arena {
     emh("31ff48be"); u64_(17179869184);
     emh("ba0300000041ba2240000049c7c0ffffffff4531c9b8090000000f05");
@@ -4456,6 +5192,18 @@ fn generate() {
   if handler_off > frame_at { handler_off -= shift; }
   i = 0;
   while i < nss { if ss_at[i] > frame_at { ss_at[i] -= shift; } i += 1; }
+  if cplen > 0 {
+    while (clen & 63) != 0 { byte(204); }
+    let pool_at = clen;
+    i = 0;
+    while i < cplen { byte(cpool[i] as i64); i += 1; }
+    i = 0;
+    while i < ncp {
+      let mut at = cp_at[i]; if at > frame_at { at -= shift; }
+      patch32(at, pool_at + cp_off[i] - (at + 4 + cp_tail[i]));
+      i += 1;
+    }
+  }
   let data_at = clen;
   i = 0;
   while i < sdlen { byte(sdata[i] as i64); i += 1; }
@@ -4486,7 +5234,8 @@ fn build_elf() -> i64 {
   ph = 120; at32(ph, 1685382481); at32(ph + 4, 6); at64(ph + 48, 16);
   if use_bss {
     ph = 176; at32(ph, 1); at32(ph + 4, 6); at64(ph + 8, 0); at64(ph + 16, BSS); at64(ph + 24, BSS);
-    at64(ph + 32, 0); at64(ph + 40, BSS_FIXED + glob_bytes); at64(ph + 48, 4096);
+    let mut vb = 0; if nplans > 0 { vb = ((glob_bytes + 63) & ~63) - glob_bytes + vec_bytes; }
+    at64(ph + 32, 0); at64(ph + 40, BSS_FIXED + glob_bytes + vb); at64(ph + 48, 4096);
   }
   i = 0;
   while i < clen { outb[offset + i] = code[i]; i += 1; }
@@ -4495,11 +5244,12 @@ fn build_elf() -> i64 {
 fn report(total: i64, out: [u8]) {
   write("skite: wrote "); write(out); write(" ("); putnum(total); write(" bytes, "); putnum(clen); write(" machine-code bytes, ");
   putnum(nv - 2); write(" vars, "); putnum(spilled); write(" spills, "); putnum(peak_active); write(" peak registers, "); putnum(xpeak); write(" xmm, ");
-  putnum(nelided); putc('/'); putnum(nchecks); write(" bounds checks elided, "); putnum(nsr); write(" modulo reduced, ");
+  putnum(nelided); putc('/'); putnum(nchecks); write(" bounds checks elided, "); putnum(nsr); write(" modulo reduced, "); putnum(nplans); write(" loops vectorized, ");
   putnum(ninlined + ninl_stmt); write(" calls inlined)\n");
 }
 fn main() {
-  if argc() != 3 { ewrite("usage: skite input.cock output-executable\n"); exit(2); }
+  if argc() != 3 && argc() != 4 { ewrite("usage: skite input.cock output-executable [--scalar]\n"); exit(2); }
+  if argc() == 4 { let o = argv(3); if len(o) == 8 && o[2] == 's' && o[3] == 'c' { simd_off = true; } else { ewrite("skite: unknown option\n"); exit(2); } }
   let input = file(1);
   let nm = argv(1);
   srcname_len = len(nm); if srcname_len > 4000 { srcname_len = 4000; }
