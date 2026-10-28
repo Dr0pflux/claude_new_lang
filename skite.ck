@@ -2224,11 +2224,11 @@ fn stmt_outputs(s: i64) -> bool {
   let k = nd[s].k;
   if k <= N_ARR || k == N_NCPU { return expr_outputs(s); }
   if k == S_PRINT || k == S_PUTC || k == S_WRITE || k == S_SAVE { return true; }
+  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { if stmt_outputs(c) { return true; } c = nd[c].next; } return false; }   // .a is a statement list, not an expression
   if expr_outputs(nd[s].a) { return true; }
   if k == S_STORE && expr_outputs(nd[s].b) { return true; }
   if k == S_IF && (stmt_outputs(nd[s].b) || stmt_outputs(nd[s].c)) { return true; }
   if k == S_WHILE && stmt_outputs(nd[s].b) { return true; }
-  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { if stmt_outputs(c) { return true; } c = nd[c].next; } }
   return false;
 }
 fn fn_outputs(f: i64) -> bool {
@@ -2540,11 +2540,14 @@ fn calls_reach(s: i64, target: i64, dep: i64) -> bool {
   if s < 0 || dep > MAX_FUNCS { return false; }
   let k = nd[s].k;
   if k <= N_ARR { return expr_reach(s, target, dep); }
+  if k == S_BLOCK || k == S_INL {   // .a is the first child, not an expression: visiting it here as well made nested blocks exponential
+    let mut c = nd[s].a; while c >= 0 { if calls_reach(c, target, dep) { return true; } c = nd[c].next; }
+    return false;
+  }
   if expr_reach(nd[s].a, target, dep) { return true; }
   if (k == S_STORE || k == S_WRITE || k == S_SAVE) && expr_reach(nd[s].b, target, dep) { return true; }
   if k == S_IF && (calls_reach(nd[s].b, target, dep) || calls_reach(nd[s].c, target, dep)) { return true; }
   if k == S_WHILE && calls_reach(nd[s].b, target, dep) { return true; }
-  if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { if calls_reach(c, target, dep) { return true; } c = nd[c].next; } }
   return false;
 }
 fn recursive(f: i64) -> bool {
