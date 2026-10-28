@@ -12,6 +12,8 @@
 - **If-conversion:** small integer `if`/`else` bodies in loops become `cmov` selects; branches that
   store to the same element become one store of a selected value, with all values computed before
   one compare and `+= 1` taken from `setcc` (intsort merge 1.51x → 1.18x clang).
+  Deep `&&`/`||` conditions now spill intermediate values when the available temporary
+  registers run out, avoiding silent register clobbering. Regression: `tests/ifconv_depth.py`.
 - **Loop-carried stores:** `a[i - 1]` after a store `a[i]` reads a register (prefixsum 994 → 204 ms).
 - **String matching:** small search loops become conjunctions vectorized in byte lanes (strsearch 334 → 43 ms, clang 172).
 - **Paired division:** `a / b` and `a % b` share one divide when both are unconditionally evaluated (divmod 390 → 201 ms). The transformation stops at short-circuit `&&`/`||`, so skipped branches cannot introduce division traps.
