@@ -1,5 +1,26 @@
 # Changelog
 
+### Unreleased (2026-10-28)
+
+- **Correctness and tooling fixes:** reject invalid `view<S>` element layouts (PR #2), bound fuzz
+  runs and preserve artifacts on failure (PR #5), reject failed or unknown benchmark runs (PR #6),
+  and align scoped buffers to 64 bytes (PR #8).
+- **Calls and recursion:** avoid saving caller registers that are dead after a call and reuse
+  already-passed bounds checks (`e872829`); add bounded tail-recursion modulo addition, copy
+  coalescing, and one additional inline level for tiny recursive functions (`027a8d9`).
+- **Compiler build time:** PR #10 skips redundant zeroing before full range-analysis environment
+  copies. On a Ryzen 7 5700U, median self-compilation fell from 2.520167 s to 2.221176 s (11.9%)
+  across three paired runs after warmup. The compiler executable is 1,836 bytes smaller; generated
+  binaries for the six Game programs remain byte-identical. This change affects compile time, not
+  program runtime. See [`BENCHMARKS.md`](BENCHMARKS.md) for host, flags, versions, and measurements.
+- Performance comparisons are hardware-specific; the historical Xeon and current Ryzen tables are
+  reported separately. No global bit-exact guarantee is claimed for all programs. Issue #9 records
+  an unresolved alias-proof gap in experimental stream-vectorization work.
+
+
+Entries below are historical release snapshots. Their measurements, limitations
+and future-work lists describe those versions; see [LIMITATIONS.md](LIMITATIONS.md)
+and [HANDOFF.md](HANDOFF.md) for current status.
 
 ### v0.9
 

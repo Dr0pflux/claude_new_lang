@@ -1,18 +1,28 @@
-# Claude handoff: state, open work, next steps
+# Project handoff: verified state and pending work
 
 Read this with [TEAM_HANDOFF.md](TEAM_HANDOFF.md) (protocol) and the ledger issue
-(https://github.com/Dr0pflux/skite.ck/issues/3, live state). Updated 2026-10-28 11:55 UTC.
+(https://github.com/Dr0pflux/skite.ck/issues/3, live state). Updated 2026-10-28 after PR #10. Fetch the ledger and remote branches before acting.
 
 ## Integration branch
 
-`claude/optimize-benchmark-gcc-clang-dyjp4k` at `eb6b2a7`: PRs #1, #2, #4, #5, #6, #8 plus the
-`for` / `loop` / `const` / `0b` / `0o` front-end sugar (merge `4d2e3fc`). Gate run on `eb6b2a7`:
-build from `bootstrap/skite-seed`, stage B == stage C (fixed point), `make test` (18 s on an idle
-4-vCPU host), `bench/game/run.py 1 --quick` with all outputs identical to C.
+`claude/optimize-benchmark-gcc-clang-dyjp4k` at
+`c4837cf83e284b588b30daaaa2d66824fffc4e8f` (PR #10). Its source tree matches reviewed,
+tested head `5e86b4b06154452e3d517de4dabf828bffe96a6c`. Integrated work includes
+PRs #1/#2/#4/#5/#6/#8, front-end sugar, `e872829` call/bounds reuse, `027a8d9`
+integer tail-recursion/copy coalescing, and PR #10 analysis-copy initialization.
+
+Exact PR #10 head: clean seed bootstrap, byte-identical self-hosting fixed point,
+full `make test`, independent Luna/parent review and
+[CI](https://github.com/Dr0pflux/skite.ck/actions/runs/40690963952) passed.
+The merge tree was checked against the tested head. All six Game programs and
+the unchanged compiler source compile byte-identically with baseline `027a8d9`
+and the optimized compiler. Self-source compile median fell 2.520167 → 2.221176 s
+on Ryzen 7 5700U (three paired runs after warmup); this is compile-time evidence,
+not a generated-program runtime gain. See [BENCHMARKS.md](BENCHMARKS.md).
 
 `for`, `loop` and `const` are reserved words now: never use them as identifiers in `skite.ck`.
 
-### Verify before and after any change
+### Validate compiler changes
 
 ```bash
 ./bootstrap/skite-seed skite.ck /tmp/A && /tmp/A skite.ck /tmp/B && /tmp/B skite.ck /tmp/C && cmp /tmp/B /tmp/C
@@ -26,21 +36,19 @@ make clean && make test
 python3 bench/game/run.py 1 --quick
 ```
 
+For documentation-only changes, check content/links and require CI; avoid redundant
+local compiler rebuilds when source is unchanged.
+
 Run fuzzers against a frozen copy (`cp skite /tmp/frozen; SKITE=/tmp/frozen ./tests/run_cf_fuzz.sh ...`)
 so a rebuild never races a running test.
 
-### Quick-size results at `eb6b2a7` (Xeon 2.1 GHz, AVX-512, idle, median of 3, ms)
+### Performance snapshots
 
-| benchmark | skite | gcc | clang | rust | skite vs best |
-|---|---|---|---|---|---|
-| nbody 5000000 | 404 | 289 | 297 | 268 | 1.51x slower (rust) |
-| spectralnorm 3000 | 274 | 266 | 551 | 549 | 1.03x slower (gcc) |
-| mandelbrot 4000 | 318 | 1200 | 1200 | 1256 | 3.78x faster |
-| fannkuchredux 11 | 2943 | 2833 | 3232 | 2812 | 1.05x slower (rust) |
-| fasta 2500000 | 380 | 403 | 389 | 408 | 1.02x faster |
-| binarytrees 19 | 971 | 383 | 820 | 968 | 2.53x slower (gcc) |
-
-Timings on a loaded host are meaningless; compare ratios from one run on an idle machine.
+Use [BENCHMARKS.md](BENCHMARKS.md) as the canonical measurement record. It separates
+the verified `027a8d9` Ryzen quick-size results from historical Xeon measurements
+and identifies the recording/measurement provenance. The older Xeon table formerly
+in this handoff was a different snapshot; recover it from Git history if needed,
+not by mixing its timings with the canonical tables. The Ryzen host lacks AVX-512.
 
 ## Cross-audit of outside PRs (Claude, against the merged diffs)
 
@@ -52,31 +60,40 @@ Timings on a loaded host are meaningless; compare ratios from one run on an idle
 - #8 scoped arena buffers aligned to 64: correct (`rcx = (ARENA_TOP + 63) & -64`, zeroing and
   `ARENA_TOP` update use the aligned base; at most 63 extra bytes per scoped allocation).
 
-## Known problems (not fixed on the integration branch)
+## Pending correctness and review
 
-1. **Vectorizer aliasing through parameters.** Leaders (`arr_leader`) group arrays that share a
-   base variable, so two parameters of a non-inlined function are "different" even when called
-   as `f(x, x)`. A PRE load `a[i - 1]` plus a POST store `b[i]` would then read stale lanes.
-   Not yet reachable in practice (needs proven bounds in a non-inlined function); becomes
-   reachable once bounds guards land. Codex has a reject-based prototype (ledger 08:18);
-   `wip/claude-vector-stream` instead compares base pointers at run time outside `main`.
-2. **No element-wise / reduction vectorization.** `plan_loop` only vectorizes loops whose PRE
-   contains an inner loop (`VK_LOOPS > 0`); plain `b[i] = b[i] * k + a[i]`, fills, copies and
-   integer reductions (`s += a[i]`) stay scalar (gcc is about 2x faster on such loops).
-3. binarytrees repeats the bounds check of `rgt[t]` after the recursive call
-   (`wip/claude-calls-binarytrees` has a fix).
+1. **Vectorizer aliasing.** Parameter leaders can differ even for `f(x, x)`.
+   WIP `wip/claude-vector-stream` adds runtime base guards, but mixed-width
+   overlapping views need further dependence checks even for exact `a[i]`
+   accesses. [Issue #9](https://github.com/Dr0pflux/skite.ck/issues/9) contains
+   a reproducer and native AVX-512 acceptance criteria. No native mismatch or fix
+   has been verified on the Codex Ryzen host; scalar dispatch is insufficient.
+2. **Stream/reduction extension remains WIP.** `eed833b` has codegen and reaches
+   a fixed point. The test-only `codex/stream-cross-audit-tests` branch (`39137d5`)
+   supplies 120 reduction/tail/wrapping oracle cases and a mixed-width fixture.
+   Local scalar dispatch passes the reduction cases; native vector coverage is pending.
+3. **Provider review.** Claude genuinely cross-audited merged PRs #1/#2/#4/#5/#6/#8.
+   Codex reviewed `e872829` and `027a8d9`. Claude review of PR #10 is pending;
+   one normal CLI request returned a cap resetting at 11:40 a.m. America/Chicago
+   on 2026-10-28. Read the ledger for newer retry metadata, and retry only after capacity returns
+   and the latest provider-reported retry time has passed. Do not label pending review approved.
+   Separate Claude cloud sessions coordinate through the ledger, not the local CLI.
 
-## WIP branches (pushed; none of them gated, all need review + the gate above)
+The binarytrees dominating-check reuse and recursion work are already integrated;
+do not recreate them from old WIP descriptions. Owner goals beyond the implemented
+features remain open in [issue #7](https://github.com/Dr0pflux/skite.ck/issues/7).
+
+## Branch inventory (historical WIP; fetch exact heads before reuse)
 
 | branch | base | what | state / next step |
 |---|---|---|---|
-| `wip/claude-vector-stream` | 4d2e3fc | bounds guards for unproven `a[i+c]` loads, runtime alias guards, stream loops (element-wise stores + integer reductions) | planner written; **codegen missing** (`gen_vloop` must handle `vp_stream`: alias guards before the loop, hoisted bounds guards, reduction init / horizontal reduce, vector stores, `i += L`). Do not build for use until done. |
-| `wip/claude-calls-binarytrees` | 154cccc | dominating bounds check reuse (`lft[t]` proof covers `rgt[t]`), call overhead | first increment passed selfcheck, run.sh, cf fuzz (func mode); finish gate, measure |
-| `wip/claude-nbody-slp` | 154cccc | packed codegen for the unrolled nbody step (field cells in registers, xyz in 3-lane ymm, scalar sqrt/div in order) | design only + 30 lines; target ~200 ms |
-| `wip/claude-scalar-int-fannkuch` | 154cccc | scalar integer codegen for fannkuch/fasta | unfinished, unknown quality |
+| `wip/claude-vector-stream` | 4d2e3fc | bounds guards for unproven `a[i+c]` loads, runtime alias guards, stream loops (element-wise stores + integer reductions) | `eed833b`: codegen/fixed point exist; issue #9 and native tail/reduction validation remain blockers. Claude owns implementation; Codex supplies review/tests. |
+| `wip/claude-calls-binarytrees` | 154cccc | dominating bounds check reuse (`lft[t]` proof covers `rgt[t]`), call overhead | Call/bounds reuse integrated at `e872829`; subsequent recursion/coalescing at `027a8d9` passed Codex review, full suite and CI. Do not duplicate. |
+| `wip/claude-nbody-slp` | 154cccc | packed codegen for the unrolled nbody step (field cells in registers, xyz in 3-lane ymm, scalar sqrt/div in order) | `f45d219`: inspected unique diff adds AST diagnostics only; no SLP optimization. Excluded from performance integration. |
+| `wip/claude-scalar-int-fannkuch` | 154cccc | static array placement and reversal specialization | Inspected unique diff is not a general scalar-int optimization; not selected for integration. |
 | `wip/claude-memory-idioms` | 979317a | addressing modes, displacement folding, fill/copy idioms | unfinished |
 | `wip/claude-tail-calls` | 979317a | self tail calls to jumps, leaf frames; `tests/tc_fuzz.py` | unfinished |
-| `wip/claude-compile-speed` | 979317a | range analysis (`as_stmt`, 83% of compile time) env copy/join | unfinished |
+| `wip/claude-compile-speed` | 979317a | range-analysis prototypes | Only narrow immediate-copy initialization optimization ported/merged as PR #10. Hoist-index prototype rejected for no measured gain; other caching changes remain unreviewed. |
 | `wip/claude-vector-codegen` | 154cccc | AVX-512 codegen quality; `proto/markstein.py` checks an FMA reciprocal-refinement idea for spectralnorm | experimental; any reciprocal trick needs a proof of correct rounding for every input |
 | `wip/claude-more-benchmarks` | 154cccc | adds revcomp, knucleotide, nsieve, pidigits (skite/C/Rust) + run.py | committed by its agent; needs a merge with the new run.py |
 | `wip/claude-fast-tests` | 979317a | parallel test runner (`tests/par.sh`, `tests/quick.sh`) | conflicts with #5 fuzz scripts; rebase |
@@ -98,7 +115,18 @@ Timings on a loaded host are meaningless; compare ratios from one run on an idle
 
 ## Priorities
 
-1. Finish `wip/claude-vector-stream` codegen + tests (vector vs `--scalar`, alias, guards, n = 0..20).
-2. binarytrees (2.5x): check reuse, call/return overhead, recursion unrolling.
-3. nbody (1.5x): `wip/claude-nbody-slp`.
-4. fannkuchredux, spectralnorm (within 5%).
+1. Resolve stream issue #9 and execute exact-head vector alias/tail/reduction
+   checks on AVX-512 hardware. Preserve default floating/trap semantics.
+2. Complete genuine Claude cross-audit of PR #10 after capacity returns.
+3. Improve compiler bottlenecks in matched regular Game workloads. Latest Ryzen
+   ratios versus best comparator: nbody 2.02x, binarytrees 1.86x, fannkuchredux
+   1.26x, fasta 1.10x, mandelbrot 1.04x, spectralnorm 1.01x slower. These are
+   quick-size measurements, not universal rankings; see [BENCHMARKS.md](BENCHMARKS.md).
+4. Pursue the owner roadmap with measurable acceptance evidence: multicore,
+   safe SIMD/lookup optimization, modules, exact AVX-512/NEON modular math,
+   enforced owned-memory non-aliasing, SoA, bounded precomputation and host tuning.
+
+Luna/low is the main scoped implementation worker; at most three non-overlapping
+workers run concurrently, with extra tasks/checkpoints queued durably. Reject
+changes without correctness evidence or a measured benefit. Update README and
+relevant Markdown when implementation, measured results or open risks change.

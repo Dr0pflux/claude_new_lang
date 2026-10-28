@@ -1,49 +1,55 @@
-# Agent audit handoff
+# Compiler audit and validation status
 
-Audited 2026-10-28 at merge ff44dc6 (PR #1).
+Updated 2026-10-28. Verified integration: `c4837cf83e284b588b30daaaa2d66824fffc4e8f`
+(PR #10); its tree matches tested head `5e86b4b06154452e3d517de4dabf828bffe96a6c`.
+The [team ledger](https://github.com/Dr0pflux/skite.ck/issues/3) records newer work.
 
-## Confirmed results
+## Integrated fixes and evidence
 
-- Git object integrity and whitespace checks passed.
-- Clean `make test` passed before and after the struct fix merged.
-- The struct-size regression fails on 979317a and passes after PR #1.
-- Control-flow seed 23: 300 runs passed, including 119 expected traps.
-- Constant-divisor oracle: 137 programs / 1,089 divisors passed.
+- PR #1 fixes allocation/view strides for struct widths of 16 bytes and above.
+- PR #2 rejects views of structs containing bool fields, preventing invalid bool
+  representations; it also adds propagated-zero division/remainder regressions and CI.
+- PR #5 bounds fuzz compilation/execution, retains failure artifacts and fixes
+  false passes. Injected-hang tests cover the harnesses.
+- PR #6 makes the Game runner reject failed/timed-out executions and invalid
+  selections; optional compiler availability is reported explicitly.
+- PR #8 aligns owned scoped buffers to 64 bytes. Allocation regressions and a
+  local debugger probe verified alignment; borrowed buffers keep their original alignment.
+- `e872829` reuses dominating bounds checks and avoids saving registers that die
+  at calls. `027a8d9` adds integer tail-recursion accumulation and copy coalescing.
+  Clean suites and targeted call/order/wrapping regressions passed.
+- PR #10 removes redundant initialization before full analysis-state copies.
+  Independent review, clean bootstrap, byte-identical self-hosting fixed point,
+  regressions and fuzz smoke tests passed on its exact head. Additional control-flow
+  and constant-divisor oracles passed in [CI](https://github.com/Dr0pflux/skite.ck/actions/runs/40690963952).
+  All six Game executables and the unchanged compiler source compiled byte-identically
+  with the baseline and optimized compilers. See [BENCHMARKS.md](BENCHMARKS.md).
 
-## Confirmed bug fixed in this PR
-
-`view<Flag>(bytes)` accepted a struct with a `bool` field even though direct
-`view<bool>` was rejected. A byte value of 2 made the field truthy but unequal
-to `true`. Struct views containing bool fields now receive a compile diagnostic;
-regressions cover one-byte and mixed sixteen-byte layouts. Normal struct
-allocation remains supported.
+Claude's genuine ledger cross-audit found no defects in merged PRs #1/#2/#4/#5/#6/#8.
+Codex independently reviewed `e872829` and `027a8d9`. PR #10 received independent
+Luna and parent Codex review; Claude review remains pending after its CLI-reported
+2026-10-28 11:40 a.m. America/Chicago reset. Do not describe pending review as approval.
 
 ## Open findings
 
-1. Both remote branches were unprotected and no CI checks existed at audit time.
-   This PR adds CI; after its first successful run, require the
-   `Build and regression tests` check and pull requests on the default branch.
-   Adding the workflow alone does not enforce branch protection.
-2. Recent optimization commits bundle independent changes and sometimes lack
-   focused regressions. Add a deterministic reproducer with each compiler fix.
-   This PR covers propagated-zero division/remainder for signed and unsigned
-   values, including unused results, with compile and execution timeouts.
-3. The control-flow, typed and vector fuzz harnesses do not bound compilation
-   time per input. CI has a job timeout; per-input limits remain follow-up work.
-4. Hosted CI may exercise the scalar fallback on CPUs without AVX-512. Keep
-   vector-capable validation for changes to vector code generation.
+1. [Issue #9](https://github.com/Dr0pflux/skite.ck/issues/9) tracks mixed-width
+   overlapping views accepted by the WIP stream vectorizer. Native AVX-512
+   differential execution and a verified fix remain pending. Parameter aliasing
+   is also an outstanding dependence-analysis concern; do not assume noalias for views.
+2. The Codex Ryzen host has AVX2 but lacks AVX-512 and ARM. A vector plan plus
+   passing scalar fallback does not validate vector execution. Claude reported
+   native AVX-512 coverage on its Xeon; identify the exact head/cases covered.
+3. CI exists, but workflow presence alone does not enforce branch protection.
+   Current protection requirements have not been independently verified.
+4. Independent oracles and fixed points are bounded evidence, not an exhaustive
+   proof of optimizer correctness. Keep reproductions with fixes and performance
+   changes small enough to review independently.
 
-## Coordination with Claude
+## Before integration
 
-Use a separate branch per agent and PRs into the integration branch. Fetch the
-latest integration tip before starting or updating a change. Keep unrelated
-optimizations separate so failures can be bisected and reverted independently.
-Do not force-push shared branches or overwrite another agent's commits.
-
-For each PR, record the base and tested commit, behavior changed, reproducer,
-commands run and results. Run `make clean && make test`; changes to division
-lowering should also run `./tests/run_divconst.sh`, and control-flow changes
-should exercise the seed that exposed the bug. A self-hosting fixed point is
-necessary but does not replace regression tests and independent oracles.
-
-Review audit findings in this PR and link follow-up fixes back to the finding.
+Follow [TEAM_HANDOFF.md](TEAM_HANDOFF.md). Freeze compiler binaries during tests;
+run a clean build, fixed point and relevant regressions, require successful CI,
+and merge only the reviewed head after checking newer remote changes. Division
+changes additionally require `tests/run_divconst.sh`. Record actual tests, SHA,
+hardware limits and provider verdicts. Update the README, relevant reference docs
+and changelog when behavior, supported features or verified performance changes.
