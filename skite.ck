@@ -2781,7 +2781,7 @@ fn try_inline_stmt(s: i64) -> bool {
   let csz = stmt_size(src_body);
   // tiny recursive bodies (tree builders and walkers) get one more level
   let mut rmax = MAX_REC_INLINE; let mut rbud = INLINE_REC_BUDGET;
-  if csz <= INLINE_REC_TINY { rmax += 1; rbud = 8 * rbud; }
+  if csz <= INLINE_REC_TINY { rmax += 2; rbud = 16 * rbud; }
   if rec && rec_depth >= rmax { return false; }
   if csz > INLINE_MAX_STMTS || nn > INLINE_NODE_BUDGET { return false; }
   if rec && (csz > INLINE_REC_STMTS || rec_growth + csz > rbud) { return false; }
