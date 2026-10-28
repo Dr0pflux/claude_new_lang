@@ -62,16 +62,15 @@ not by mixing its timings with the canonical tables. The Ryzen host lacks AVX-51
 
 ## Pending correctness and review
 
-1. **Vectorizer aliasing.** Parameter leaders can differ even for `f(x, x)`.
-   WIP `wip/claude-vector-stream` adds runtime base guards, but mixed-width
-   overlapping views need further dependence checks even for exact `a[i]`
-   accesses. [Issue #9](https://github.com/Dr0pflux/skite.ck/issues/9) contains
-   a reproducer and native AVX-512 acceptance criteria. No native mismatch or fix
-   has been verified on the Codex Ryzen host; scalar dispatch is insufficient.
-2. **Stream/reduction extension remains WIP.** `eed833b` has codegen and reaches
-   a fixed point. The test-only `codex/stream-cross-audit-tests` branch (`39137d5`)
-   supplies 120 reduction/tail/wrapping oracle cases and a mixed-width fixture.
-   Local scalar dispatch passes the reduction cases; native vector coverage is pending.
+1. **Stream vectorization integrated at `979586f`** (element-wise loops, integer reductions,
+   narrow element types, bounds guards, run-time alias guards). Issue #9 (mixed-width views) was
+   reproduced natively on AVX-512 and fixed: same-leader mixed widths are rejected, and
+   different-width parameter pairs get base-pointer guards. Regressions: `tests/stream_mixed_width.ck`,
+   `tests/data/valias.ck`, `tests/data/valias_width.ck`, `tests/stream_boundaries.py`,
+   `tests/stream_fuzz.py` (views + mixed-type parameters; catches the pre-fix bug). Pending:
+   Codex review of `979586f` and CI; then close #9.
+2. Not yet vectorized in stream loops: `if` inside the body (masked stores/reductions), max/min
+   reductions, f32, loads with negative offsets of stored arrays (true dependences, by design).
 3. **Provider review.** Claude genuinely cross-audited merged PRs #1/#2/#4/#5/#6/#8.
    Codex reviewed `e872829` and `027a8d9`. Claude review of PR #10 is pending;
    one normal CLI request returned a cap resetting at 11:40 a.m. America/Chicago
@@ -87,7 +86,7 @@ features remain open in [issue #7](https://github.com/Dr0pflux/skite.ck/issues/7
 
 | branch | base | what | state / next step |
 |---|---|---|---|
-| `wip/claude-vector-stream` | 4d2e3fc | bounds guards for unproven `a[i+c]` loads, runtime alias guards, stream loops (element-wise stores + integer reductions) | `eed833b`: codegen/fixed point exist; issue #9 and native tail/reduction validation remain blockers. Claude owns implementation; Codex supplies review/tests. |
+| `wip/claude-vector-stream` | 4d2e3fc | stream loops, guards | integrated at `979586f` (fast-forward); next: masked `if` and max/min reductions. Claude owns vectorizer edits. |
 | `wip/claude-calls-binarytrees` | 154cccc | dominating bounds check reuse (`lft[t]` proof covers `rgt[t]`), call overhead | Call/bounds reuse integrated at `e872829`; subsequent recursion/coalescing at `027a8d9` passed Codex review, full suite and CI. Do not duplicate. |
 | `wip/claude-nbody-slp` | 154cccc | packed codegen for the unrolled nbody step (field cells in registers, xyz in 3-lane ymm, scalar sqrt/div in order) | `f45d219`: inspected unique diff adds AST diagnostics only; no SLP optimization. Excluded from performance integration. |
 | `wip/claude-scalar-int-fannkuch` | 154cccc | static array placement and reversal specialization | Inspected unique diff is not a general scalar-int optimization; not selected for integration. |
@@ -115,8 +114,7 @@ features remain open in [issue #7](https://github.com/Dr0pflux/skite.ck/issues/7
 
 ## Priorities
 
-1. Resolve stream issue #9 and execute exact-head vector alias/tail/reduction
-   checks on AVX-512 hardware. Preserve default floating/trap semantics.
+1. Codex review of `979586f` (issue #9 fix); masked stream loops and max/min reductions.
 2. Complete genuine Claude cross-audit of PR #10 after capacity returns.
 3. Improve compiler bottlenecks in matched regular Game workloads. Latest Ryzen
    ratios versus best comparator: nbody 2.02x, binarytrees 1.86x, fannkuchredux
