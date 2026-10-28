@@ -4833,7 +4833,7 @@ fn pre_classify(body: i64, k: i64, iv: i64) {
   }
 }
 fn pre_check(body: i64, k: i64, iv: i64) -> bool {
-  VK_LOOPS = 0; VK_DEPTH = 0; VK_TMP = 0;
+  VK_LOOPS = 0; VK_DEPTH = 0; VK_TMP = 0; VK_NG = 0;
   let mut c = nd[body].a; let mut i = 0;
   while c >= 0 && i < k { if !vpre_ok(c, -1, 0, iv) { return false; } c = nd[c].next; i += 1; }
   return true;
@@ -5054,7 +5054,7 @@ fn sst_ok(s: i64, iv: i64) -> bool {
   }
   if k == S_ASSIGN && vdecl[nd[s].var] != vtag {
     let v = nd[s].var; let e = nd[s].a;
-    if (vars[v].ty != TY_I64 && vars[v].ty != TY_U64) || vars[v].xr >= 0 || v == iv { return false; }
+    if (vars[v].ty != TY_I64 && vars[v].ty != TY_U64) || vars[v].xr >= 0 || v == iv || vars[v].glob != 0 { return false; }
     if nd[e].k != N_BIN || !is_alu_op(nd[e].op) || nd[nd[e].a].k != N_VAR || nd[nd[e].a].var != v { return false; }
     if vred[v] == vtag || refs(nd[e].b, v) || has_call(nd[e].b) { return false; }
     vred[v] = vtag; vredop[v] = nd[e].op; vmark[v] = vtag;   // the accumulator is a lane vector
@@ -5066,9 +5066,18 @@ fn sst_ok(s: i64, iv: i64) -> bool {
     VK_SNO += 1;
     vscan_loads(nd[s].a, iv);
     // an unused varying value: its only possible traps are loads, which the guards cover
-    if k == S_LET && vars[nd[s].var].reads == 0 && refs_v(nd[s].a) && !has_call(nd[s].a) { vdecl[nd[s].var] = vtag; vprw[nd[s].var] = vtag; return vexpr_ok(nd[s].a, 0, iv); }
+    if k == S_LET && vars[nd[s].var].reads == 0 && refs_v(nd[s].a) && !has_call(nd[s].a) && vdead_ok(nd[s].a) { vdecl[nd[s].var] = vtag; vprw[nd[s].var] = vtag; return vexpr_ok(nd[s].a, 0, iv); }
     return vpre_ok(s, -1, 0, iv);
   }
+  return false;
+}
+// an unused varying value can be skipped: uniform parts cannot trap, varying loads are guarded
+fn vdead_ok(e: i64) -> bool {
+  if !refs_v(e) { return !has_trap(e); }
+  let k = nd[e].k;
+  if k == N_VAR || k == N_LOAD { return true; }
+  if k == N_UN { return vdead_ok(nd[e].a); }
+  if k == N_BIN { return vdead_ok(nd[e].a) && vdead_ok(nd[e].b); }
   return false;
 }
 // loops without inner loops: every statement before the final i += 1 runs on L lanes at once
