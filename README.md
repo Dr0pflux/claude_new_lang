@@ -23,18 +23,32 @@ Contributors (people and AI agents): read [`AGENTS.md`](AGENTS.md),
 
 Matched implementations (same algorithm in skite, C and Rust, byte-identical output required);
 gcc/clang `-O3 -march=native`, rustc `-C opt-level=3 -C target-cpu=native`. Quick sizes, Xeon
-(AVX-512, shared 4-vCPU cloud host, so expect noise), integration head of 2026-10-28.
+(AVX-512, shared 4-vCPU cloud host, so expect ±10% noise), 2026-10-28.
 Ratio = skite time / fastest other; below 1 means skite is faster.
+
+Benchmarks Game (`bench/game`):
 
 | workload | skite ms | best other | ratio |
 |---|---|---|---|
-| mandelbrot (Game) | 334 | clang 989 | **0.34** |
-| textscan (text statistics kernel) | 119 | rust 142 | **0.84** |
-| fasta (Game) | 360 | clang 316 | 1.14 |
-| fannkuchredux (Game) | 2565 | rust 2338 | 1.10 |
-| spectralnorm (Game) | 253 | gcc 228 | 1.11 |
-| nbody (Game) | 312 | rust 224 | 1.39 |
-| binarytrees (Game) | 531 | gcc 327 | 1.63 |
+| mandelbrot | 340 | gcc 947 | **0.36** |
+| fasta | 320 | rust 305 | 1.05 |
+| spectralnorm | 284 | gcc 240 | 1.19 |
+| fannkuchredux | 2874 | rust 2268 | 1.27 |
+| nbody | 309 | rust 204 | 1.51 |
+| binarytrees | 537 | gcc 328 | 1.64 |
+
+Arithmetic and text kernels (`bench/kernels`, `run.py 3`):
+
+| kernel | ratio | kernel | ratio | kernel | ratio |
+|---|---|---|---|---|---|
+| textscan | **0.54** | nqueens | 1.02 | ngramhash | 1.23 |
+| wordcount | **0.66** | histogram | 1.05 | gcdsum | 1.27 |
+| collatz | **0.81** | polyeval | 1.10 | intsort | 1.48 |
+| caseconv | **0.84** | hashmix | 1.12 | divmod | 1.99 |
+| sieve | **0.90** | | | editdist | 2.05 |
+| | | | | strsearch | 2.34 |
+| | | | | matmul | 3.13 |
+| | | | | prefixsum | 5.59 |
 
 The goal is to lead on every arithmetic and text workload; the slower rows are open work
 (see [`docs/HANDOFF.md`](docs/HANDOFF.md)). Full history, other hosts (including a Ryzen host
@@ -46,13 +60,15 @@ What makes skite fast (all bit-exact: strict IEEE floats, wrapping integers, tra
   - *lane-parallel loops*: outer loops whose bodies contain inner loops with data-dependent exits;
   - *element-wise loops and reductions*: `b[i] = b[i] * k + a[i]`, fills, copies, masked `if`/`else`,
     integer `+ - & | ^` reductions, max/min, narrow `u8`..`u32` elements;
-  - *byte lanes*: `u8`/`i8` loops (text scanning, character classes, counts, case conversion)
-    run 64 characters per instruction, counts via mask popcount, byte sums via `vpsadbw`.
+  - *byte lanes*: `u8`/`i8` loops (text scanning, character classes, counts, case conversion,
+    word-boundary state machines) run 64 characters per instruction: counts via mask popcount,
+    byte sums via `vpsadbw`, a 0/1 state flag carried between characters by shifting its mask.
   Unproven bounds and possibly-aliased arrays are checked once before the vector loop; on failure
   the ordinary loop runs and traps exactly where scalar code would.
 - **Range analysis** removes bounds checks it can prove, including checks dominated by an earlier one.
 - **Calls**: bounded inlining (including recursive), callee-saved registers, tail recursion with
   accumulators turned into loops, register coalescing.
+- **If-conversion**: small integer `if`/`else` bodies in loops become branch-free `cmov` selects.
 - Floats in XMM registers, magic-number division by constants, fast 32-bit division when
   operands fit, periodic-index strength reduction.
 

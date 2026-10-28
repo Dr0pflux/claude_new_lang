@@ -9,6 +9,9 @@
   Runtime check now requires AVX-512 BW and VL. Tests: `stream_fuzz.py`, `stream_boundaries.py`,
   `valias*.ck`, `stream_mixed_width.ck`. New kernel `bench/kernels/textscan`.
 - **Division:** run-time divisors use a 32-bit `div` when both operands fit in 32 unsigned bits.
+- **If-conversion:** small integer `if`/`else` bodies in loops become `cmov` selects.
+- **Byte-lane recurrences:** a 0/1 state flag (word boundaries) is carried between lanes by mask
+  shifts; wordcount kernel 249 → 45 ms (clang 72). 16 new kernels in `bench/kernels` (GAPS.md).
 - **Calls/recursion (Claude agent):** dominating bounds-check reuse, dead-at-call save elision,
   tail recursion modulo `+`, register coalescing, deeper inlining of tiny recursive bodies
   (binarytrees 945 → ~600 ms on Xeon).
