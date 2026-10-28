@@ -114,8 +114,11 @@ def program(r, fn_mode):
     lines.append("fn main() {")
     lines.append(f"  let n = {LEN} - 4 + argc();")   # 45: not a multiple of the vector width
     lines.append("  let k1 = argc() + 2; let k2 = 0 - argc() * 3; let kf = (argc() as f64) * 0.5;")
+    views = not fn_mode and r.random() < 0.3   # arrays share one byte buffer through views of different widths
+    if views: lines.append(f"  let buf = alloc<u8>({LEN * 8});")
     for nm, t in arrs:
-        lines.append(f"  let {nm} = alloc<{t}>({LEN});")
+        if views: lines.append(f"  let {nm} = view<{t}>(buf);")
+        else: lines.append(f"  let {nm} = alloc<{t}>({LEN});")
         if t == "f64": lines.append(f"  let mut j = 0; while j < {LEN} {{ {nm}[j] = ((j * 37 + 11) % 23) as f64 * 0.75 - 4.0; j += 1; }}")
         elif t == "i64": lines.append(f"  let mut j = 0; while j < {LEN} {{ {nm}[j] = j * 1000003 - 99991 * (j % 7); j += 1; }}")
         else: lines.append(f"  let mut j = 0; while j < {LEN} {{ {nm}[j] = ((j * 1103515245 + 12345 + j * j * 97) % 1000003) as {t}; j += 1; }}")

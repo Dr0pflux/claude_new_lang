@@ -348,4 +348,8 @@ must end with a return|fn f(n: i64) -> i64 { loop { if n > 1 { break; } } } fn m
 break/continue outside loop|fn main() { for i in 0..2 { } break; }
 BAD
 echo 'PASS: for/loop/const, 0b/0o literals (for compiles to the same machine code as while)'
+# stores through a view<u64> of bytes read by a later lane (issue #9): vector == scalar
+"$SKITE" tests/stream_mixed_width.ck "$T/mw" > /dev/null && "$SKITE" tests/stream_mixed_width.ck "$T/mws" --scalar > /dev/null
+"$T/mw" | cmp -s - <("$T/mws") || { echo 'FAIL: mixed-width view store/load' >&2; exit 1; }
+echo 'PASS: element-wise vector loops through views of different widths'
 echo 'All tests passed'
