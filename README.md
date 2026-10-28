@@ -45,7 +45,7 @@ Arithmetic and text kernels (`bench/kernels`, `run.py 3`):
 | textscan | **0.40** | divmod | 1.00 | matmul | 1.24 |
 | wordcount | **0.64** | polyeval | 1.03 | prefixsum | 1.28 |
 | collatz | **0.70** | nqueens | 1.08 | ngramhash | 1.11 |
-| caseconv | **0.82** | hashmix | 1.08 | intsort | 1.18 |
+| caseconv | **0.82** | hashmix | **0.97** | intsort | 1.18 |
 | | | gcdsum | 1.18 | editdist | 1.45 |
 
 The compiler fixes rare decimal-to-`f32` double rounding (issue #14)

@@ -5124,6 +5124,16 @@ fn gen(e: i64, rg: i64, n: i64) {
   let op = nd[e].op; let mut a = nd[e].a; let mut b = nd[e].b;
   // constant-first commutative integer op: put the constant on the right (immediate / lea forms)
   if commutes(op) && nd[a].k == N_CONST && nd[b].k != N_CONST && hoisted(a) < 0 { let t = a; a = b; b = t; }
+  // (x << c) | (x >> (64 - c)) on 64-bit x: one rotate
+  if (op == O_OR || op == O_XOR) && (nd[e].ty == TY_U64 || nd[e].ty == TY_I64) && nd[a].k == N_BIN && nd[b].k == N_BIN {
+    let mut l = a; let mut r = b;
+    if nd[l].op == O_SHR && nd[r].op == O_SHL { l = b; r = a; }
+    if nd[l].op == O_SHL && nd[r].op == O_SHR && is_const(nd[l].b) && is_const(nd[r].b) && expr_same(nd[l].a, nd[r].a) && ic_pure(nd[l].a)
+       && (nd[nd[l].a].ty == TY_U64 || nd[nd[l].a].ty == TY_I64) {
+      let c1 = nd[nd[l].b].v as i64; let c2 = nd[nd[r].b].v as i64;
+      if c1 > 0 && c2 > 0 && c1 + c2 == 64 { gen(nd[l].a, rg, n); shift_ri(0, r0, c1); return; }
+    }
+  }
   if op == O_LAND || op == O_LOR {
     let mut f = -1; let mut en = -1;
     f = cond_jump(e, false, f, rg, n);
@@ -7108,7 +7118,8 @@ fn assign(v: i64, e: i64, rg: i64, n: i64) {
   if k == N_BIN && (is_alu_op(op) || op == O_MUL || op == O_SHL || op == O_SHR || op == O_SAR) {
     let mut a = nd[e].a; let mut b = nd[e].b;
     if commutes(op) && !(nd[a].k == N_VAR && nd[a].var == v) && nd[b].k == N_VAR && nd[b].var == v { let t = a; a = b; b = t; }
-    if nd[a].k == N_VAR && nd[a].var == v && !refs(b, v) {
+    // b is computed (into a temporary) before v changes, so b may read v
+    if nd[a].k == N_VAR && nd[a].var == v && (!refs(b, v) || !has_call(b)) {
       if Lk == K_REG {
         if simple(b) { opnd(b); apply(op, Lr, OK, ORR, OI); } else { gen(b, rg, n); apply(op, Lr, K_REG, RGS[rg], 0); }
         return;
