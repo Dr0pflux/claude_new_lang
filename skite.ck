@@ -955,6 +955,7 @@ fn er(e: i64, env: i64) { // range of expression e -> R*
     let rlo = RLO; let rhi = RHI; let rbot = RBOT;
     if an_annot { if proven(nd[e].var, nd[e].a, rlo, rhi, rbot, env) { nd[e].chk = 0; } else { nd[e].chk = 1; } }
     if an_annot { nd[e].dlo = rlo; nd[e].dhi = rhi; }
+    chk_refine(nd[e].var, nd[e].a, env);
     if nd[e].op > 0 { type_rg(nd[e].ty); return; }
     let L = arr_leader[nd[e].var];
     let clo = arr_lo[L]; let chi = arr_hi[L]; let cbot = arr_bot[L];
@@ -996,6 +997,21 @@ fn er(e: i64, env: i64) { // range of expression e -> R*
   let blo = RLO; let bhi = RHI; let bbot = RBOT;
   if an_annot && (op == O_DIV || op == O_MOD) { nd[e].nn = (!abot && alo >= 0) as i64; }
   rbin(op, alo, ahi, abot, blo, bhi, bbot, is_const(nd[e].b), nd[nd[e].b].v as i64);
+}
+// after a[v] executes, 0 <= v < len(a) on every path that continues (a failed check traps)
+let mut er_refine: bool = false;
+fn chk_refine(a: i64, idx: i64, env: i64) {
+  if !er_refine || nd[idx].k != N_VAR || dead(env) { return; }
+  let x = env + LV(nd[idx].var);
+  if envp[x].bot { return; }
+  if envp[x].lo < 0 { envp[x].lo = 0; }
+  if vars[a].lenv < 0 { if envp[x].hi > vars[a].alen - 1 { envp[x].hi = vars[a].alen - 1; } }
+  else {
+    let L = env + LV(vars[a].lenv);
+    if !envp[L].bot && envp[L].hi < INT64_MAX && envp[x].hi > envp[L].hi - 1 { envp[x].hi = envp[L].hi - 1; }
+    if vars[a].aid >= 0 { envp[x].lt = envp[x].lt | ((1 as u64) << (vars[a].aid as u64)); }
+  }
+  if envp[x].lo > envp[x].hi { set_dead(env); }
 }
 fn refine_var(env: i64, v: i64, op: i64, other: i64) {
   er(other, env);
@@ -1095,7 +1111,9 @@ fn as_stmt(s: i64, env: i64) {
       nd[s].dlo = rlo; nd[s].dhi = rhi;
     }
     er(nd[s].b, env);
-    if nd[s].op < 0 { arr_store(nd[s].var, RLO, RHI, RBOT); }
+    let vlo = RLO; let vhi = RHI; let vbot = RBOT;
+    chk_refine(nd[s].var, nd[s].a, env);   // the index check runs after the value is computed
+    if nd[s].op < 0 { arr_store(nd[s].var, vlo, vhi, vbot); }
     else { type_rg(vars[nd[s].var].et); arr_store(nd[s].var, RLO, RHI, RBOT); }
     return;
   }
@@ -1205,7 +1223,9 @@ fn fn_env(env: i64, f: i64) {
 }
 fn analyze_fn(f: i64) {
   lmap_for(f); an_fn = f;
+  er_refine = true;
   let env = env_new(); fn_env(env, f); as_stmt(fns[f].body, env); env_free(env);
+  er_refine = false;
   wcache_free();
 }
 fn analyze() {
@@ -2463,11 +2483,18 @@ fn walk_stmt(s: i64) {
     let v = nd[s].var;
     if vars[v].reads != 0 { vars[v].start = pc; vars[v].end = pc; }
   }
-  else if k == S_ASSIGN || k == S_IRET { pc += 1; nd[s].pos = pc; walk_expr(nd[s].a); touch(nd[s].var); }
-  else if k == S_INL { // the inlined call's result variable is born here
+  else if k == S_ASSIGN || k == S_IRET {
+    pc += 1; nd[s].pos = pc; walk_expr(nd[s].a);
+    if k == S_IRET && vars[nd[s].var].start > pc { vars[nd[s].var].start = pc; }
+    touch(nd[s].var);
+  }
+  else if k == S_INL { // the inlined call's result variable is born at its first return (not live across the body's calls)
     let rv = nd[s].var;
-    if rv >= 0 && vars[rv].reads != 0 { vars[rv].start = pc + 1; vars[rv].end = pc + 1; }
+    let live = rv >= 0 && vars[rv].reads != 0;
+    if live { vars[rv].start = INT64_MAX; vars[rv].end = pc + 1; }
+    let p0 = pc + 1;
     let mut c = nd[s].a; while c >= 0 { walk_stmt(c); c = nd[c].next; }
+    if live && vars[rv].start > vars[rv].end { vars[rv].start = p0; }
   }
   else if k == S_PAR {
     pc += 1; nd[s].pos = pc; walk_expr(nd[s].a); walk_expr(nd[s].b);
@@ -3377,6 +3404,7 @@ fn nop_fill(at0: i64, n0: i64) {   // multi-byte NOPs over code[at0 .. at0 + n0)
   }
 }
 fn callee_saved(r: i64) -> bool { return r == RBX || r == RBP || r >= 12; }
+let lext = alloc<bool>(65536);   // interval stretched to a loop's end (live around its back edge)
 let callpc = alloc<i64>(1048576);   // pcs of statements containing a real call (non-decreasing)
 let mut ncallpc: i64 = 0;
 fn crosses_call(v: i64) -> bool {
@@ -3430,6 +3458,11 @@ fn allocate() {
   while i < npairs { if loop_end[pair_l[i]] > vars[pair_v[i]].end { vars[pair_v[i]].end = loop_end[pair_l[i]]; } i += 1; }
   v = 0;
   while v < nv { if vars[v].hoist != 0 { vars[v].end = loop_end[vars[v].hoist - 1]; } v += 1; }
+  // an interval that ends at a loop's end is live across the back edge, not dead after its last statement
+  v = 0;
+  while v < nv { lext[v] = vars[v].hoist != 0; v += 1; }
+  i = 0;
+  while i < npairs { if loop_end[pair_l[i]] == vars[pair_v[i]].end { lext[pair_v[i]] = true; } i += 1; }
   let mut no = 0;
   let mut na = 0;
   v = 0;
@@ -3502,6 +3535,8 @@ fn allocate() {
 let busy = alloc<i64>(4194304);
 let xbusy = alloc<i64>(4194304);   // xmm registers held by float variables, per pc
 let busyd = alloc<i32>(4194305);   // per-register difference array, reused
+let livem = alloc<i64>(4194304);   // general registers whose variable is still needed after the statement at this pc
+let lived = alloc<i32>(4194305);
 let mut busy_n: i64 = 0;
 let mut busy_built: bool = false;
 // register index: 0..11 general (allregs order), 12.. xmm8..xmm15
@@ -3515,7 +3550,7 @@ fn build_busy() {
   let mut i = 0;
   while i < 12 + NXREG {
     let mut p = 0;
-    while p < busy_n { busyd[p] = 0; p += 1; }
+    while p < busy_n { busyd[p] = 0; lived[p] = 0; p += 1; }
     let mut any = false;
     let mut v = 0;
     while v < nv {
@@ -3523,15 +3558,18 @@ fn build_busy() {
         let mut a = vars[v].start; if a < 0 { a = 0; }
         let mut b = vars[v].end + 1; if b > busy_n - 1 { b = busy_n - 1; }
         busyd[a] += 1; busyd[b] -= 1; any = true;
+        if !lext[v] { b -= 1; }
+        if a < b { lived[a] += 1; lived[b] -= 1; }
       }
       v += 1;
     }
     if any {
-      let mut c = 0;
+      let mut c = 0; let mut cl = 0;
       p = 0;
       while p < busy_n {
-        c += busyd[p] as i64;
+        c += busyd[p] as i64; cl += lived[p] as i64;
         if c > 0 { if i < 12 { busy[p] = busy[p] | (1 << i); } else { xbusy[p] = xbusy[p] | (1 << (i - 12)); } }
+        if cl > 0 && i < 12 { livem[p] = livem[p] | (1 << i); }
         p += 1;
       }
     }
@@ -4095,6 +4133,38 @@ fn regconv(f: i64) -> bool {
   while i < fns[f].np { if fpw[f * 16 + i] != 0 { return false; } i += 1; }
   return true;
 }
+let mut cur_stmt: i64 = -1;  // statement whose call sites may skip saving registers that die there
+fn rbit(v: i64) -> i64 {
+  if v < 0 || vars[v].reg < 0 { return 0; }
+  let mut i = 0;
+  while i < 12 { if allregs[i] == vars[v].reg { return 1 << i; } i += 1; }
+  return 0;
+}
+fn arr_bits(a: i64) -> i64 { let mut m = rbit(vars[a].basev); if vars[a].lenv >= 0 { m = m | rbit(vars[a].lenv); } return m; }
+// registers of variables read by e outside the subtree `skip`
+fn refs_bits(e: i64, skip: i64) -> i64 {
+  if e < 0 || e == skip { return 0; }
+  let k = nd[e].k;
+  if k == N_VAR { return rbit(nd[e].var); }
+  if k == N_CONST { if nd[e].c >= 0 { return rbit(nd[e].c); } return 0; }
+  if k == N_ARR { return arr_bits(nd[e].var); }
+  if k == N_CALL { let mut m = 0; let mut a = nd[e].a; while a >= 0 { m = m | refs_bits(a, skip); a = nd[a].next; } return m; }
+  let mut m = 0;
+  if k == N_LOAD { m = arr_bits(nd[e].var); }
+  return m | refs_bits(nd[e].a, skip) | refs_bits(nd[e].b, skip);
+}
+// caller-saved registers whose variables are dead once call e (in statement cur_stmt) returns
+fn dead_at_call(e: i64) -> i64 {
+  let s = cur_stmt;
+  if s < 0 || cur_pos != nd[s].pos || cur_pos < 0 || cur_pos >= busy_n { return 0; }
+  let mut m = busy[cur_pos] & ~livem[cur_pos];
+  if m == 0 { return 0; }
+  let k = nd[s].k;
+  let mut r = refs_bits(nd[s].a, e);
+  if k == S_LET || k == S_ASSIGN || k == S_IRET { r = r | rbit(nd[s].var); }
+  if k == S_STORE { r = r | refs_bits(nd[s].b, e) | arr_bits(nd[s].var); }
+  return m & ~r;
+}
 fn gen_call(e: i64, rg: i64, n: i64) {
   let f = nd[e].var;
   let rc = regconv(f);
@@ -4114,10 +4184,11 @@ fn gen_call(e: i64, rg: i64, n: i64) {
   }
   let svr = alloc<i64>(12);
   let mut ns = 0;
+  let dm = dead_at_call(e);
   let mut i = 0;
   while i < 12 {
     let r = allregs[i];
-    let mut fr = callee_saved(r);
+    let mut fr = callee_saved(r) || ((dm >> i) & 1) != 0;
     let mut j = 0;
     while j < n { if RGS[rg + j] == r { fr = true; } j += 1; }
     if !fr { svr[ns] = r; ns += 1; }
@@ -4294,7 +4365,9 @@ fn gen(e: i64, rg: i64, n: i64) {
     return;
   }
   if k == N_UN { gen(nd[e].a, rg, n); if !(nd[e].nn != 0 && is_narrow(nd[e].op)) { apply_un(nd[e].op, r0); } return; }
-  let op = nd[e].op; let a = nd[e].a; let b = nd[e].b;
+  let op = nd[e].op; let mut a = nd[e].a; let mut b = nd[e].b;
+  // constant-first commutative integer op: put the constant on the right (immediate / lea forms)
+  if commutes(op) && nd[a].k == N_CONST && nd[b].k != N_CONST && hoisted(a) < 0 { let t = a; a = b; b = t; }
   if op == O_LAND || op == O_LOR {
     let mut f = -1; let mut en = -1;
     f = cond_jump(e, false, f, rg, n);
@@ -4988,10 +5061,10 @@ fn vtemps(s: i64) {
 fn vstmt(s: i64, lvl: i64) {
   if s < 0 { return; }
   let k = nd[s].k;
-  let sv_rg = rgs_top; let sv_pos = cur_pos;
-  if k != S_BLOCK && k != S_INL && k != S_BRK && k != S_CONT { vtemps(s); rgs_top += 12; cur_pos = nd[s].pos; }
+  let sv_rg = rgs_top; let sv_pos = cur_pos; let sv_st = cur_stmt;
+  if k != S_BLOCK && k != S_INL && k != S_BRK && k != S_CONT { vtemps(s); rgs_top += 12; cur_pos = nd[s].pos; cur_stmt = -1; }
   vstmt_body(s, lvl);
-  rgs_top = sv_rg; cur_pos = sv_pos;
+  rgs_top = sv_rg; cur_pos = sv_pos; cur_stmt = sv_st;
 }
 fn vstmt_body(s: i64, lvl: i64) {
   let k = nd[s].k;
@@ -5372,15 +5445,17 @@ fn gen_stmt(s: i64, is_final: bool) {
   let rg = rgs_top;
   rgs_top += 12;
   let mut n = 0;
-  let sv_pos = cur_pos;
+  let sv_pos = cur_pos; let sv_st = cur_stmt;
   if k != S_BLOCK && k != S_BRK && k != S_CONT && k != S_INL {
     n = temps_at(nd[s].pos);
     let mut i = 0;
     while i < n { RGS[rg + i] = TMPS[i]; i += 1; }
     cur_pos = nd[s].pos;
+    cur_stmt = -1;
+    if k == S_LET || k == S_ASSIGN || k == S_IRET || k == S_RET || k == S_EXPR || k == S_STORE || k == S_IF || k == S_PRINT || k == S_PUTC { cur_stmt = s; }
   }
   gen_stmt_body(s, is_final, rg, n);
-  cur_pos = sv_pos;
+  cur_pos = sv_pos; cur_stmt = sv_st;
   rgs_top -= 12;
 }
 fn gen_stmt_body(s: i64, is_final: bool, rg: i64, n: i64) {
