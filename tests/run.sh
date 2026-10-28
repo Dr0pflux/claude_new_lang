@@ -356,4 +356,9 @@ echo 'PASS: element-wise vector loops through views of different widths'
 if "$T/carry" > "$T/carry.out" 2>/dev/null; then echo 'FAIL: carry trap' >&2; exit 1; fi
 cmp -s tests/data/carry.trap "$T/carry.out" || { echo 'FAIL: carry trap output' >&2; exit 1; }
 echo 'PASS: loop-carried stores keep traps and outputs'
+# a / b + a % b computed once: same values, MIN / -1 still traps with SIGFPE (exit 136)
+"$SKITE" tests/data/divmod_pair.ck "$T/dmp" > /dev/null
+rc=0; "$T/dmp" > "$T/dmp.out" || rc=$?
+[[ $rc -eq 136 && "$(cat "$T/dmp.out")" == "-3094914550737416739" ]] || { echo "FAIL: divmod pair (rc=$rc)" >&2; exit 1; }
+echo 'PASS: paired division and remainder'
 echo 'All tests passed'

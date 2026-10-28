@@ -3606,6 +3606,64 @@ fn cs_loop(w: i64) {
   let l1 = mk(S_LET); nd[l1].var = t; nd[l1].a = mkconst_t(0, et); nd[l1].next = l2;
   set_block(w, l1, nd[w].next);
 }
+// ---- one division for a / b and a % b: when a statement computes both on the same load-free,
+// call-free operands and nothing else in it can trap, q = a / b is computed first and
+// a % b becomes a - q * b (exact: |q * b| <= |a|; the only traps are this division's own)
+let mut DM_DIV: i64 = -1;
+fn dm_find(e: i64, op: i64) -> i64 {   // a node a op b (op DIV or DIVU) somewhere in e
+  if e < 0 { return -1; }
+  let k = nd[e].k;
+  if k == N_CONST || k == N_VAR || k == N_ARR || k == N_LOAD || k == N_CALL || k == N_NCPU { return -1; }
+  if k == N_BIN && nd[e].op == op && !is_const(nd[e].b) && ic_pure(nd[e].a) && ic_pure(nd[e].b) { return e; }
+  let x = dm_find(nd[e].a, op); if x >= 0 { return x; }
+  return dm_find(nd[e].b, op);
+}
+fn dm_other_trap(e: i64, d: i64, m: i64) -> bool {   // a trap anywhere but the division pair
+  if e < 0 || e == d || e == m { return false; }
+  let k = nd[e].k;
+  if k == N_CONST || k == N_VAR || k == N_ARR { return false; }
+  if k == N_CALL || k == N_LOAD { return true; }
+  if k == N_BIN && (nd[e].op == O_DIV || nd[e].op == O_MOD || nd[e].op == O_DIVU || nd[e].op == O_MODU) && has_trap(e) { return true; }
+  return dm_other_trap(nd[e].a, d, m) || dm_other_trap(nd[e].b, d, m);
+}
+fn dm_mod(e: i64, d: i64, mop: i64) -> i64 {   // the matching a % b node
+  if e < 0 { return -1; }
+  let k = nd[e].k;
+  if k == N_CONST || k == N_VAR || k == N_ARR || k == N_LOAD || k == N_CALL || k == N_NCPU { return -1; }
+  if k == N_BIN && nd[e].op == mop && expr_same(nd[e].a, nd[d].a) && expr_same(nd[e].b, nd[d].b) { return e; }
+  let x = dm_mod(nd[e].a, d, mop); if x >= 0 { return x; }
+  return dm_mod(nd[e].b, d, mop);
+}
+fn dm_stmt(s: i64) {
+  let k = nd[s].k;
+  if !(k == S_LET || k == S_ASSIGN || k == S_PRINT) { return; }
+  let e = nd[s].a;
+  let mut op = O_DIV; let mut d = dm_find(e, O_DIV);
+  if d < 0 { op = O_DIVU; d = dm_find(e, O_DIVU); }
+  if d < 0 { return; }
+  let mut mop = O_MOD; if op == O_DIVU { mop = O_MODU; }
+  let m = dm_mod(e, d, mop);
+  if m < 0 || dm_other_trap(e, d, m) || !ty_int(nd[d].ty) { return; }
+  let q = hidden(); vars[q].ty = nd[d].ty; vars[q].owner = CS_F;
+  // q = a / b, before the statement (s itself becomes the block {let q; s'})
+  let qd = mk(N_BIN); copy_node(qd, d); nd[qd].a = clone_expr(nd[d].a); nd[qd].b = clone_expr(nd[d].b);
+  let s2 = mk(nd[s].k); copy_node(s2, s); nd[s2].next = -1;
+  let lq = mk(S_LET); nd[lq].var = q; nd[lq].a = qd; nd[lq].next = s2;
+  // a % b -> a - q * b; a / b -> q
+  let pr = mk_bin(O_MUL, mk_var(q), clone_expr(nd[m].b)); nd[pr].ty = nd[m].ty;
+  let df = mk_bin(O_SUB, clone_expr(nd[m].a), pr); nd[df].ty = nd[m].ty;
+  copy_node(m, df);
+  let qv = mk_var(q); nd[qv].ty = nd[d].ty; copy_node(d, qv);
+  set_block(s, lq, nd[s].next);
+}
+fn dm_walk(s: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { let nx = nd[c].next; dm_walk(c); c = nx; } return; }
+  if k == S_IF { dm_walk(nd[s].b); dm_walk(nd[s].c); return; }
+  if k == S_WHILE { dm_walk(nd[s].b); return; }
+  dm_stmt(s);
+}
 fn cs_walk(s: i64) {
   if s < 0 { return; }
   let k = nd[s].k;
@@ -3629,7 +3687,7 @@ fn allocate() {
   mark_used();
   simplify();
   f = 0;
-  while f < nfn { if fns[f].used != 0 { CS_F = f; cs_walk(fns[f].body); } f += 1; }
+  while f < nfn { if fns[f].used != 0 { CS_F = f; cs_walk(fns[f].body); dm_walk(fns[f].body); } f += 1; }
   let mut v = 0;
   while v < nv { if vars[v].owner >= 0 && fns[vars[v].owner].used == 0 { vars[v].reads = 0; } v += 1; }
   analyze();
