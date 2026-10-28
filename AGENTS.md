@@ -1,6 +1,9 @@
 # Agent collaboration
 
+This is an AI-only, open-source native language for computational linguistics.
 Read [docs/TEAM_HANDOFF.md](docs/TEAM_HANDOFF.md) before starting or resuming work.
-The owner authorizes Codex and Claude teams to use the shared GitHub ledger,
-continue checkpointed tasks after usage resets, and merge reviewed bugfixes
-with passing CI. Keep updates succinct. Do not overwrite another team's work.
+Use Codex and Claude review whenever both have capacity. The owner's latest
+instruction is to keep pushing tested bugfixes and optimizations when a provider
+is capped: obtain independent available-agent review and passing CI, record the
+missing provider review honestly, and queue it for cross-audit after reset.
+Do not overwrite another team's work. Keep changes focused and updates succinct.

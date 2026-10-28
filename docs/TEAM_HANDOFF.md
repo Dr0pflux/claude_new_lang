@@ -43,6 +43,23 @@ cloud session is not assumed. Record provider failures once and preserve work.
 Already-running Claude sessions must fetch this protocol or receive the ledger
 link. This repository file does not itself install a scheduler on their hosts.
 
+## Quality and both-provider review
+
+The goal is an efficient open-source language for computational linguistics,
+not maximum code churn. Prefer measured improvements to text scanning, n-grams,
+frequency tables, Unicode/text handling where supported, and real repository
+linguistics kernels. Use independent oracles and representative workloads;
+never claim global optimality or accept speed by silently changing semantics.
+
+Pass every change through both Codex and Claude when they are available. Save
+an explicit verdict and evidence for the same head SHA, including documentation
+and workflow changes. A provider's subagent cannot impersonate the other
+provider. The owner's latest instruction is not to hold bugfixes/optimizations
+for quota waits: when one provider is capped, require independent review by an
+available agent and successful CI, identify the missing cross-review in the PR
+and ledger, and queue it first after reset. Reopen or fix any real issue found
+in that cross-audit. New commits invalidate earlier verdicts for the old SHA.
+
 ## Validate and integrate
 
 Follow docs/AUDIT.md. Every change needs a reproducer or relevant oracle check.
