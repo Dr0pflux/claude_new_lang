@@ -242,12 +242,12 @@ let a = alloc<f64>(2); let i = a[1.0];
 while 1 < 2 && 3 { }
 BAD
 echo 'PASS: ill-typed programs rejected'
-for t in structs heap; do
+for t in structs heap structsz; do
   "$SKITE" tests/data/$t.ck "$T/$t" > /dev/null
   "$T/$t" "$T/$t.saved" | cmp -s - tests/data/$t.expected || { echo "FAIL: $t" >&2; exit 1; }
 done
 [[ "$(cat "$T/heap.saved")" == "hi" ]] || { echo "FAIL: save()" >&2; exit 1; }
-echo 'PASS: structs, globals, scoped heap, save()'
+echo 'PASS: structs, globals, scoped heap, save(), 16/32/64-byte struct alloc and view'
 "$SKITE" tests/features/features.ck "$T/features" > /dev/null
 "$T/features" | cmp -s - tests/features/features.expected || { echo "FAIL: for/loop/const/literals" >&2; "$T/features" | diff - tests/features/features.expected >&2; exit 1; }
 "$SKITE" tests/features/for_form.ck "$T/for_form" > /dev/null

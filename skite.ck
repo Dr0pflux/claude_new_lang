@@ -3659,7 +3659,7 @@ fn memop(w: i64, p66: bool, force_rex: bool, nop: i64, o1: i64, o2: i64, regf: i
   byte((scale << 6) | (ix << 3) | (base & 7));
   if md == 1 { byte(d & 255); } else if md == 2 { u32_(d); }
 }
-fn lg(w: i64) -> i64 { if w == 1 { return 0; } if w == 2 { return 1; } if w == 4 { return 2; } return 3; }
+fn lg(w: i64) -> i64 { let mut k = 0; while (1 << k) < w { k += 1; } return k; }
 fn load_elem(t: i64, d: i64, base: i64, idx: i64, sc: i64) {
   if t == TY_U8 || t == TY_BOOL { memop(0, false, false, 2, 15, 182, d, base, idx, sc); }
   else if t == TY_I8 { memop(1, false, false, 2, 15, 190, d, base, idx, sc); }
