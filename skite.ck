@@ -4291,6 +4291,35 @@ fn bi_walk(s: i64) {
   if k == S_IF { bi_walk(nd[s].b); bi_walk(nd[s].c); return; }
   if k == S_WHILE { bi_walk(nd[s].b); return; }
 }
+// ---- rotations: `let t = E; a = b; b = t` (t read only there) becomes `let s = b; b = E; a = s`:
+// E still sees the old a and b, and the copy of b moves off the E -> b dependency (Euclid's loop)
+fn sw_walk(s: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK || k == S_INL {
+    let mut c = nd[s].a;
+    while c >= 0 {
+      let x = nd[c].next;
+      if x >= 0 && nd[x].next >= 0 && nd[c].k == S_LET && nd[x].k == S_ASSIGN && nd[nd[x].next].k == S_ASSIGN {
+        let y = nd[x].next;
+        let t = nd[c].var; let a = nd[x].var; let e1 = nd[x].a; let e2 = nd[y].a;
+        if nd[e1].k == N_VAR && nd[e2].k == N_VAR && nd[e2].var == t && nd[y].var == nd[e1].var && a != nd[e1].var && a != t
+           && vars[t].reads == 1 && vars[t].ty == vars[nd[y].var].ty && vars[a].ty == vars[nd[y].var].ty && ty_int(vars[a].ty) {
+          let b = nd[y].var; let E = nd[c].a;
+          let sv = hidden(); vars[sv].ty = vars[b].ty; vars[sv].owner = CS_F;
+          nd[c].var = sv; nd[c].a = mk_var(b);
+          nd[x].var = b; nd[x].a = E;
+          nd[y].var = a; nd[y].a = mk_var(sv);
+          vars[t].reads = 0; vars[b].reads -= 1;
+        }
+      }
+      sw_walk(c); c = x;
+    }
+    return;
+  }
+  if k == S_IF { sw_walk(nd[s].b); sw_walk(nd[s].c); return; }
+  if k == S_WHILE { sw_walk(nd[s].b); return; }
+}
 fn cs_walk(s: i64) {
   if s < 0 { return; }
   let k = nd[s].k;
@@ -4314,7 +4343,7 @@ fn allocate() {
   mark_used();
   simplify();
   f = 0;
-  while f < nfn { if fns[f].used != 0 { CS_F = f; gi_walk(fns[f].body); bi_walk(fns[f].body); sm_walk(fns[f].body); su_walk(fns[f].body); ss_walk(fns[f].body, false); cs_walk(fns[f].body); lh_walk(fns[f].body); bv_walk(fns[f].body); mm_walk(fns[f].body, false); dm_walk(fns[f].body); } f += 1; }
+  while f < nfn { if fns[f].used != 0 { CS_F = f; gi_walk(fns[f].body); bi_walk(fns[f].body); sw_walk(fns[f].body); sm_walk(fns[f].body); su_walk(fns[f].body); ss_walk(fns[f].body, false); cs_walk(fns[f].body); lh_walk(fns[f].body); bv_walk(fns[f].body); mm_walk(fns[f].body, false); dm_walk(fns[f].body); } f += 1; }
   let mut v = 0;
   while v < nv { if vars[v].owner >= 0 && fns[vars[v].owner].used == 0 { vars[v].reads = 0; } v += 1; }
   analyze();
@@ -4643,14 +4672,39 @@ fn cqo() { emh("4899"); }
 // rax / rcx -> rax, rdx. When both fit in 32 unsigned bits (so a signed operand is non-negative),
 // the 32-bit divide gives the same quotient and remainder several times faster; a zero divisor
 // still raises #DE (SIGFPE) on either path, and i64::MIN / -1 takes the 64-bit idiv.
-fn div32_fast(signed: bool) {
-  emh("4889c2"); emh("4809ca"); emh("48c1ea20");   // rdx = (rax | rcx) >> 32
+fn div32_fast(signed: bool) { div32_by(signed, RCX); }
+// the 64-bit divide is an out-of-line stub (emitted with the runtime) that jumps back: the 32-bit
+// fast path falls through without a taken branch
+let DS_AT = alloc<i64>(65536);
+let DS_RET = alloc<i64>(65536);
+let DS_SG = alloc<bool>(65536);
+let DS_D = alloc<i64>(65536);
+let mut NDS: i64 = 0;
+fn div32_by(signed: bool, d: i64) {   // rax / d (d not rax, rdx)
+  emh("4889c2"); alur(A_OR, RDX, d); emh("48c1ea20");   // rdx = (rax | d) >> 32
+  if NDS < 65536 {
+    let slow = jcc(CC_NE);
+    encr(0, false, 1, 247, 0, 6, d);               // div d32 (edx = 0)
+    DS_AT[NDS] = slow; DS_RET[NDS] = clen; DS_SG[NDS] = signed; DS_D[NDS] = d; NDS += 1;
+    return;
+  }
   let slow = j8(117);                              // jnz
-  emh("f7f1");                                     // div ecx (edx = 0)
+  encr(0, false, 1, 247, 0, 6, d);                 // div d32 (edx = 0)
   let done = j8(235);
   p8(slow, clen);
-  if signed { cqo(); emh("48f7f9"); } else { emh("31d2"); emh("48f7f1"); }   // idiv / div rcx
+  if signed { cqo(); encr(1, false, 1, 247, 0, 7, d); } else { emh("31d2"); encr(1, false, 1, 247, 0, 6, d); }   // idiv / div d
   p8(done, clen);
+}
+fn emit_div_stubs() {
+  let mut i = 0;
+  while i < NDS {
+    rel32(DS_AT[i], clen);
+    let d = DS_D[i];
+    if DS_SG[i] { cqo(); encr(1, false, 1, 247, 0, 7, d); } else { emh("31d2"); encr(1, false, 1, 247, 0, 6, d); }
+    rel32(jmp(), DS_RET[i]);
+    i += 1;
+  }
+  NDS = 0;
 }
 fn setcc_zx(cc: i64, r: i64) { encr(0, true, 2, 15, 144 | cc, 0, r); encr(1, false, 2, 15, 182, r, r); }
 fn test_rr(r: i64) { encr(1, false, 1, 133, 0, r, r); }
@@ -5293,6 +5347,16 @@ fn gen(e: i64, rg: i64, n: i64) {
   let op = nd[e].op; let mut a = nd[e].a; let mut b = nd[e].b;
   // constant-first commutative integer op: put the constant on the right (immediate / lea forms)
   if commutes(op) && nd[a].k == N_CONST && nd[b].k != N_CONST && hoisted(a) < 0 { let t = a; a = b; b = t; }
+  // a / b, a % b on plain variables: operands straight into rax / rcx (no copy through r0)
+  if div_simple(e) {
+    opnd(b);
+    let mut d = RCX;
+    if OK == K_REG && ORR != RAX && ORR != RDX { d = ORR; } else { load(RCX, OK, ORR, OI); }   // a register divisor is used in place
+    gen_simple_to(a, RAX);
+    div32_by(op == O_DIV || op == O_MOD, d);
+    if op == O_DIV || op == O_DIVU { mov_rr(r0, RAX); } else { mov_rr(r0, RDX); }
+    return;
+  }
   // (x << c) | (x >> (64 - c)) on 64-bit x: one rotate
   if (op == O_OR || op == O_XOR) && (nd[e].ty == TY_U64 || nd[e].ty == TY_I64) && nd[a].k == N_BIN && nd[b].k == N_BIN {
     let mut l = a; let mut r = b;
@@ -7329,7 +7393,7 @@ fn assign(v: i64, e: i64, rg: i64, n: i64) {
     if Lk == K_REG { load(Lr, sk, sr, 0); } else if sk == K_REG { store(Lk, Lr, sr); } else { load(RAX, sk, sr, 0); store(Lk, Lr, RAX); }
     return;
   }
-  if Lk == K_REG && (!refs(e, v) || ld_idx_only(e, v)) {
+  if Lk == K_REG && (!refs(e, v) || ld_idx_only(e, v) || div_simple(e)) {
     let r2 = rgs_top; rgs_top += n + 1;
     RGS[r2] = Lr;
     let mut i = 0;
@@ -7342,6 +7406,12 @@ fn assign(v: i64, e: i64, rg: i64, n: i64) {
 }
 // e is (conversions of) a load a[v]: v is read only as the index register, before the load
 // writes the destination, so the result can go straight into v's register (t = rgt[t])
+// a / b or a % b on plain integer variables: gen reads both into rax / the divisor first
+fn div_simple(e: i64) -> bool {
+  if nd[e].k != N_BIN { return false; }
+  let op = nd[e].op; let a = nd[e].a; let b = nd[e].b;
+  return (op == O_DIV || op == O_MOD || op == O_DIVU || op == O_MODU) && simple(a) && simple(b) && !is_const(b) && !xvar_node(a) && !xvar_node(b) && ty_int(nd[e].ty);
+}
 fn ld_idx_only(e: i64, v: i64) -> bool {
   let mut x = e;
   while nd[x].k == N_UN && (nd[x].op >= U_SX8 && nd[x].op <= U_ZX32) { x = nd[x].a; }
@@ -7939,6 +8009,7 @@ fn emit_print(list: i64, uns: bool) {
   emh("4883c43041595f5e5bc3");
 }
 fn emit_runtime() {
+  emit_div_stubs();
   emit_ncpu();
   emit_convert();
   if ewrite_calls >= 0 { // rax = bytes, rcx = length: unbuffered write(2, ...)
