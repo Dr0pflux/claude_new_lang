@@ -3606,6 +3606,54 @@ fn cs_loop(w: i64) {
   let l1 = mk(S_LET); nd[l1].var = t; nd[l1].a = mkconst_t(0, et); nd[l1].next = l2;
   set_block(w, l1, nd[w].next);
 }
+// ---- small matches: `let mut j = 0; while j < M && C(j) { j += 1; } if j == M { S }` with a constant
+// M <= 8 and j unused elsewhere becomes `if C(0) && C(1) && .. && C(M - 1) { S }`: the same tests in the
+// same short-circuit order (so the same traps), without the loop
+fn sm_subst(e: i64, v: i64, k: i64) {   // in place: N_VAR v -> constant k
+  if e < 0 { return; }
+  let kk = nd[e].k;
+  if kk == N_VAR { if nd[e].var == v { let ty = nd[e].ty; nd[e].k = N_CONST; nd[e].v = k as u64; nd[e].ty = ty; nd[e].var = -1; nd[e].c = -1; vars[v].reads -= 1; } return; }
+  if kk == N_CONST || kk == N_ARR || kk == N_NCPU { return; }
+  if kk == N_CALL { let mut a = nd[e].a; while a >= 0 { sm_subst(a, v, k); a = nd[a].next; } return; }
+  sm_subst(nd[e].a, v, k); sm_subst(nd[e].b, v, k);
+}
+fn sm_try(l: i64) -> bool {   // l: the let; rewrites l, its next (while) and the if after it
+  if nd[l].k != S_LET || !is_const(nd[l].a) || nd[nd[l].a].v != 0 { return false; }
+  let j = nd[l].var;
+  let w = nd[l].next; if w < 0 || nd[w].k != S_WHILE || nd[w].c >= 0 { return false; }
+  let f = nd[w].next; if f < 0 || nd[f].k != S_IF || nd[f].c >= 0 { return false; }
+  let cnd = nd[w].a;
+  if nd[cnd].k != N_BIN || nd[cnd].op != O_LAND { return false; }
+  let lim = nd[cnd].a; let C = nd[cnd].b;
+  if nd[lim].k != N_BIN || nd[lim].op != O_LT || nd[nd[lim].a].k != N_VAR || nd[nd[lim].a].var != j || !is_const(nd[lim].b) { return false; }
+  let M = nd[nd[lim].b].v as i64;
+  if M < 1 || M > 8 || has_call(C) { return false; }
+  let mut b = nd[w].b; if nd[b].k == S_BLOCK { b = nd[b].a; if b < 0 || nd[b].next >= 0 { return false; } }
+  if !is_inc1(b, j) { return false; }
+  let fc = nd[f].a;
+  if nd[fc].k != N_BIN || nd[fc].op != O_EQ || nd[nd[fc].a].k != N_VAR || nd[nd[fc].a].var != j || !is_const(nd[fc].b) || (nd[nd[fc].b].v as i64) != M { return false; }
+  // j is read only by the loop test, the increment and the final test
+  if vars[j].reads != ex_reads(cnd, j) + 1 + 1 || st_reads(nd[f].b, j) != 0 { return false; }
+  let mut conj = -1;
+  let mut k = M - 1;
+  while k >= 0 {
+    let ck = clone_expr(C); sm_subst(ck, j, k);
+    if conj < 0 { conj = ck; } else { let a2 = mk(N_BIN); nd[a2].op = O_LAND; nd[a2].a = ck; nd[a2].b = conj; nd[a2].ty = TY_BOOL; conj = a2; }
+    k -= 1;
+  }
+  nd[f].a = conj;
+  // drop the let and the loop: l becomes an empty block before the if
+  set_block(l, -1, f);
+  vars[j].reads = 0;
+  return true;
+}
+fn sm_walk(s: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { sm_try(c); sm_walk(c); c = nd[c].next; } return; }
+  if k == S_IF { sm_walk(nd[s].b); sm_walk(nd[s].c); return; }
+  if k == S_WHILE { sm_walk(nd[s].b); return; }
+}
 // ---- one division for a / b and a % b: when a statement computes both on the same load-free,
 // call-free operands and nothing else in it can trap, q = a / b is computed first and
 // a % b becomes a - q * b (exact: |q * b| <= |a|; the only traps are this division's own)
@@ -3687,7 +3735,7 @@ fn allocate() {
   mark_used();
   simplify();
   f = 0;
-  while f < nfn { if fns[f].used != 0 { CS_F = f; cs_walk(fns[f].body); dm_walk(fns[f].body); } f += 1; }
+  while f < nfn { if fns[f].used != 0 { CS_F = f; sm_walk(fns[f].body); cs_walk(fns[f].body); dm_walk(fns[f].body); } f += 1; }
   let mut v = 0;
   while v < nv { if vars[v].owner >= 0 && fns[vars[v].owner].used == 0 { vars[v].reads = 0; } v += 1; }
   analyze();
@@ -5160,7 +5208,11 @@ fn plan_loop(s: i64) {
   if simd_off || nplans >= MAX_PLANS || nd[s].c >= 0 { return; }
   let cnd = nd[s].a;
   if nd[cnd].k != N_BIN || (nd[cnd].op != O_LT && nd[cnd].op != O_LE) { return; }
-  let ivn = nd[cnd].a; let en = nd[cnd].b;
+  let mut ivn = nd[cnd].a; let en = nd[cnd].b;
+  PLAN_CADD = 0;
+  if nd[ivn].k == N_BIN && nd[ivn].op == O_ADD && is_const(nd[ivn].b) && (nd[nd[ivn].b].v as i64) > 0 && (nd[nd[ivn].b].v as i64) < 1048576 {   // i + c < E
+    PLAN_CADD = nd[nd[ivn].b].v as i64; ivn = nd[ivn].a;
+  }
   if nd[ivn].k != N_VAR { return; }
   let iv = nd[ivn].var;
   if vars[iv].ty != TY_I64 || vars[iv].xr >= 0 { return; }
@@ -5208,7 +5260,7 @@ fn plan_loop(s: i64) {
   if nvlist + nvar > 65536 || nvneed + nvar > 65536 { return; }
   if !plan_extra(false, t0) { return; }
   let p = nplans; nplans += 1;
-  vplan[s] = p + 1;
+  vplan[s] = p + 1; vp_cadd[p] = PLAN_CADD;
   vp_loop[p] = s; vp_iv[p] = iv; vp_npre[p] = npre; vp_u[p] = u; vp_nv[p] = nvar;
   vp_need0[p] = nvneed; vp_v0[p] = nvlist;
   let mut g = 0;
@@ -5552,7 +5604,7 @@ fn plan_stream(s: i64, body: i64, inc: i64, iv: i64, nb: i64) {
   if nvlist + nvar > 65536 || nvrl + nred > 65536 { return; }
   if !plan_extra(true, t0) { return; }
   let p = nplans; nplans += 1;
-  vplan[s] = p + 1;
+  vplan[s] = p + 1; vp_cadd[p] = PLAN_CADD;
   vp_loop[p] = s; vp_iv[p] = iv; vp_npre[p] = nb; vp_u[p] = u; vp_nv[p] = nvar;
   vp_need0[p] = nvneed; vp_nneed[p] = 0; vp_v0[p] = nvlist; vp_scr[p] = vec_bytes;
   let mut g = 0;
@@ -5568,6 +5620,8 @@ fn plan_stream(s: i64, body: i64, inc: i64, iv: i64, nb: i64) {
 // the byte (class 1: unsigned 0..255, 2: signed -128..127, 3: both, 0: only its low byte is known).
 // Comparisons need exact operands of one signedness; stores and wrapping + - & | ^ need only low bytes.
 let vp_byte = alloc<bool>(4096);
+let vp_cadd = alloc<i64>(4096);       // loop test i + c < E: c
+let mut PLAN_CADD: i64 = 0;
 let vp_brec = alloc<i64>(4096);       // byte plans: the recurrence flag or -1
 let bclass = alloc<i64>(65536);      // byte let temporaries: class
 let vbyte = alloc<i64>(65536);       // == tag: byte let temporary
@@ -5582,6 +5636,10 @@ fn bx(e: i64, iv: i64) -> i64 {      // class, or -1 when e is not a byte-lane v
   if k == N_LOAD {
     if nd[e].op > 0 || vars[nd[e].var].arr != 1 { return -1; }
     let x = nd[e].a;
+    if !refs_v(x) && !has_call(x) && nd[e].chk == 0 && !has_trap(x) {   // the same byte for every lane
+      let et0 = vars[nd[e].var].et;
+      if et0 == TY_U8 { return 1; } if et0 == TY_I8 { return 2; } return -1;
+    }
     if !(nd[x].k == N_VAR && nd[x].var == iv) && !(nd[x].k == N_BIN && nd[x].op == O_ADD && nd[nd[x].a].k == N_VAR && nd[nd[x].a].var == iv && is_const(nd[x].b)) { return -1; }
     if nd[e].chk != 0 { let mut c = 0; if nd[x].k == N_BIN { c = nd[nd[x].b].v as i64; } if !add_guard(nd[e].var, c) { return -1; } }
     let et = vars[nd[e].var].et;
@@ -5687,14 +5745,17 @@ fn brec_find(s: i64, iv: i64) {   // candidate: an outer i64 assigned 0 / 1 in t
     if vars[v].ty == TY_I64 && vars[v].xr < 0 && vars[v].glob == 0 && v != iv { BREC = v; }
   }
 }
+let mut BC_NEG: bool = false;
 fn bcond_ok(e: i64, dst: i64, pm: i64, iv: i64) -> bool {
   if dst + 1 > VK_DEPTH { VK_DEPTH = dst + 1; }
   if !refs_v(e) { return false; }
   let k = nd[e].k;
-  if k == N_UN && nd[e].op == U_LNOT { return bcond_ok(nd[e].a, dst, pm, iv); }
+  if k == N_UN && nd[e].op == U_LNOT { BC_NEG = !BC_NEG; let r = bcond_ok(nd[e].a, dst, pm, iv); BC_NEG = !BC_NEG; return r; }
   if k != N_BIN { return false; }
   let op = nd[e].op;
-  if op == O_LAND || op == O_LOR { let t = mx(dst, pm) + 1; return bcond_ok(nd[e].a, t, pm, iv) && bcond_ok(nd[e].b, t + 1, pm, iv) && bcond_ok(nd[e].b, dst, dst, iv); }
+  // mask levels exactly as bcond uses them
+  if (op == O_LAND && !BC_NEG) || (op == O_LOR && BC_NEG) { return bcond_ok(nd[e].a, dst, pm, iv) && bcond_ok(nd[e].b, dst, dst, iv); }
+  if op == O_LAND || op == O_LOR { let t = mx(dst, pm) + 1; return bcond_ok(nd[e].a, t, pm, iv) && bcond_ok(nd[e].b, t + 1, pm, iv); }
   if !(op == O_EQ || op == O_NE || op == O_LT || op == O_LE || op == O_GT || op == O_GE) { return false; }
   if brec_cmp(e) { return op == O_EQ || op == O_NE; }
   let a = bx(nd[e].a, iv); let b = bx(nd[e].b, iv);
@@ -5786,7 +5847,7 @@ fn bplan(s: i64, body: i64, iv: i64, nb: i64) -> bool {
   if nvlist + nvar > 65536 || nvrl + nred > 65536 { return false; }
   if !plan_extra(true, t0) { return false; }
   let p = nplans; nplans += 1;
-  vplan[s] = p + 1; vp_byte[p] = true; vp_brec[p] = brec;
+  vplan[s] = p + 1; vp_cadd[p] = PLAN_CADD; vp_byte[p] = true; vp_brec[p] = brec;
   vp_loop[p] = s; vp_iv[p] = iv; vp_npre[p] = nb; vp_u[p] = 1; vp_nv[p] = nvar;
   vp_need0[p] = nvneed; vp_nneed[p] = 0; vp_v0[p] = nvlist; vp_scr[p] = vec_bytes;
   let mut g = 0;
@@ -5810,6 +5871,7 @@ fn bval(e: i64, d: i64, t: i64) {    // byte value of e into zmm d (all lanes), 
   if k == N_VAR { let r = VREG[nd[e].var]; if r != d { evx(1, 1, 1, 2, 111, d, 0, 0, r, 0, false, false); } return; }
   if k == N_LOAD {
     let a = nd[e].var;
+    if !refs(nd[e].a, vp_iv[VP]) && !refs_v(nd[e].a) { gen(e, VRG, VN); evx(2, 1, 0, 2, 122, d, 0, 0, RGS[VRG], 0, false, false); return; }   // vpbroadcastb from r32
     gen(nd[e].a, VRG, VN); let ri = RGS[VRG];
     let b = base_reg(a);
     vm_mem(b, ri, 0, 0); evx(1, 2, 1, 2, 111, d, 0, 1, 0, 0, false, false);   // vmovdqu64
@@ -6259,6 +6321,7 @@ fn vguards(p: i64, iv: i64, cnd: i64, en: i64, ts0: i64) -> i64 {
       mov_rr(RAX, ru); loc(iv); alu(A_ADD, K_REG, RAX, OK, ORR, OI); ts = pl_add(ts, jcc(0));
       alen_cmp(a); ts = pl_add(ts, jcc(CC_AE));
       bound_rcx(en);
+      if vp_cadd[p] != 0 { alui(A_SUB, RCX, vp_cadd[p] as u64); ts = pl_add(ts, jcc(0)); }
       mov_rr(RAX, ru); alu(A_ADD, K_REG, RAX, K_REG, RCX, 0); ts = pl_add(ts, jcc(0));
       if nd[cnd].op == O_LT { alui(A_SUB, RAX, 1); ts = pl_add(ts, jcc(0)); }
       alen_cmp(a); ts = pl_add(ts, jcc(CC_GE));
@@ -6269,7 +6332,7 @@ fn vguards(p: i64, iv: i64, cnd: i64, en: i64, ts0: i64) -> i64 {
     if c != 0 { alui(A_ADD, RAX, c as u64); ts = pl_add(ts, jcc(0)); }
     alen_cmp(a); ts = pl_add(ts, jcc(CC_AE));
     bound_rcx(en); mov_rr(RAX, RCX);
-    let mut adj = c; if nd[cnd].op == O_LT { adj = c - 1; }
+    let mut adj = c - vp_cadd[p]; if nd[cnd].op == O_LT { adj = c - 1; }
     if adj != 0 { alui(A_ADD, RAX, adj as u64); ts = pl_add(ts, jcc(0)); }
     alen_cmp(a); ts = pl_add(ts, jcc(CC_GE));
     g += 1;
@@ -6442,7 +6505,7 @@ fn gen_vloop(s: i64, p: i64) -> i64 {
   // all L lanes run: i + L - 1 (no overflow) < E  (or <= E)
   bound_rcx(en);
   loc(iv); load(RAX, OK, ORR, OI);
-  alui(A_ADD, RAX, (L - 1) as u64); ex = pl_add(ex, jcc(0));
+  alui(A_ADD, RAX, (L - 1 + vp_cadd[p]) as u64); ex = pl_add(ex, jcc(0));
   alu(A_CMP, K_REG, RAX, K_REG, RCX, 0);
   if nd[cnd].op == O_LT { ex = pl_add(ex, jcc(CC_GE)); } else { ex = pl_add(ex, jcc(CC_G)); }
   if byt {
@@ -6855,12 +6918,14 @@ fn ic_single(s: i64) -> i64 {   // the assignment statement, or -1
 }
 fn ifconv(s: i64, rg: i64, n: i64) {
   let one = ic_single(s);
-  if one >= 0 && n >= 3 {
+  let c0 = nd[s].a;
+  if one >= 0 && (n >= 3 || (simple(nd[c0].a) && simple(nd[c0].b))) {
     let c = nd[s].a;
     gen(nd[one].a, rg, n);
     let t = RGS[rg];
-    gen(nd[c].a, rg + 1, n - 1);
-    let ra = RGS[rg + 1];
+    let mut ra = RAX;
+    if simple(nd[c].a) { opnd(nd[c].a); load(RAX, OK, ORR, OI); }
+    else { gen(nd[c].a, rg + 1, n - 1); ra = RGS[rg + 1]; }
     if simple(nd[c].b) { opnd(nd[c].b); alu(A_CMP, K_REG, ra, OK, ORR, OI); }
     else { gen(nd[c].b, rg + 2, n - 2); alu(A_CMP, K_REG, ra, K_REG, RGS[rg + 2], 0); }
     let cc = cc_of(nd[c].op);
