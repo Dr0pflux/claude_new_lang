@@ -3977,6 +3977,195 @@ fn lh_walk(s: i64) {
   if k == S_IF { lh_walk(nd[s].b); lh_walk(nd[s].c); return; }
   if k == S_WHILE { if lh_inner(nd[s].b) { lh_loop(s); } else { lh_walk(nd[s].b); } return; }
 }
+// ---- row promotion: in `j = K + d; while j < E { .. }` (d >= 1, j only grows by one, K invariant)
+// every access of the one array a is a[j] or a[K]. j > K, so a[K] is never a[j]: its fields live
+// in variables, loaded before the loop when it runs and stored back after it (nbody's b[i].v*).
+// The body may not call, print, exit early or divide by a variable, so every trap is the same
+// bounds-check SIGILL and the unobservable memory order cannot be told apart.
+let mut RP_A: i64 = -1;
+let mut RP_J: i64 = -1;
+let mut RP_K: i64 = -1;
+let mut RP_KC: i64 = 0;   // constant start of j when K must be a constant below it
+let mut RP_BAD: bool = false;
+let mut RP_TOP: bool = false;   // an unconditional a[K] access (its bounds check runs in iteration 1)
+let mut RP_NST: i64 = 0;
+let RP_FK = alloc<i64>(16);   // promoted field keys (field index, -1 for a plain element)
+let RP_FT = alloc<i64>(16);   // their types
+let RP_FS = alloc<bool>(16);  // stored in the loop
+let RP_FV = alloc<i64>(16);   // their variables
+let mut RP_NF: i64 = 0;
+fn rp_isk(x: i64) -> bool {   // x is the K index
+  if RP_K >= 0 { return expr_same(x, RP_K); }
+  return is_const(x) && (nd[x].v as i64) >= 0 && (nd[x].v as i64) < RP_KC;
+}
+fn rp_field(key: i64, ty: i64, st: bool) {
+  let mut i = 0;
+  while i < RP_NF && RP_FK[i] != key { i += 1; }
+  if i == RP_NF {
+    if RP_NF >= 16 { RP_BAD = true; return; }
+    RP_FK[i] = key; RP_FT[i] = ty; RP_FS[i] = false; RP_NF += 1;
+  }
+  if RP_FT[i] != ty { RP_BAD = true; }
+  if st { RP_FS[i] = true; }
+}
+let mut RP_KX: i64 = -1;   // the K index expression seen (constant K: all must be the same constant)
+fn rp_idx(a: i64, x: i64, key: i64, ty: i64, st: bool, top: bool) {
+  if a != RP_A { RP_BAD = true; return; }
+  if nd[x].k == N_VAR && nd[x].var == RP_J { return; }
+  if !rp_isk(x) { RP_BAD = true; return; }
+  if RP_KX < 0 { RP_KX = x; } else if !expr_same(RP_KX, x) { RP_BAD = true; return; }
+  if key < 0 && !(ty_int(ty) || ty == TY_F64 || ty == TY_F32) { RP_BAD = true; return; }
+  if top { RP_TOP = true; }
+  rp_field(key, ty, st);
+}
+fn rp_e(e: i64, top: bool) {
+  if e < 0 { return; }
+  let k = nd[e].k;
+  if k == N_CALL || k == N_NCPU || k == N_ARR { RP_BAD = true; return; }
+  if k == N_CONST || k == N_VAR { return; }
+  if k == N_BIN && (nd[e].op == O_DIV || nd[e].op == O_MOD || nd[e].op == O_DIVU || nd[e].op == O_MODU) && ty_int(nd[e].ty) && !(is_const(nd[e].b) && nd[nd[e].b].v != 0 && (nd[nd[e].b].v as i64) != -1) { RP_BAD = true; }
+  if k == N_LOAD {
+    rp_e(nd[e].a, top);
+    let mut key = -1; if nd[e].op > 0 { key = nd[e].op - 1; }
+    rp_idx(nd[e].var, nd[e].a, key, nd[e].ty, false, top);
+    return;
+  }
+  if k == N_BIN && (nd[e].op == O_LAND || nd[e].op == O_LOR) { rp_e(nd[e].a, top); rp_e(nd[e].b, false); return; }
+  rp_e(nd[e].a, top); rp_e(nd[e].b, top);
+}
+fn rp_s(s: i64, top: bool) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { rp_s(c, top); c = nd[c].next; } return; }
+  if k == S_LET { if vars[nd[s].var].arr != 0 { RP_BAD = true; } rp_e(nd[s].a, top); return; }
+  if k == S_ASSIGN { if nd[s].var == RP_J && !is_inc1(s, RP_J) { RP_BAD = true; } rp_e(nd[s].a, top); return; }
+  if k == S_IF { rp_e(nd[s].a, top); rp_s(nd[s].b, false); rp_s(nd[s].c, false); return; }
+  if k == S_STORE {
+    rp_e(nd[s].a, top); rp_e(nd[s].b, top);
+    if nd[s].op >= 0 && !is_alu_op(nd[s].op) { RP_BAD = true; return; }
+    let mut ty = vars[nd[s].var].et; if nd[s].c >= 0 { ty = nd[nd[s].b].ty; }
+    rp_idx(nd[s].var, nd[s].a, nd[s].c, ty, true, top);
+    RP_NST += 1;
+    return;
+  }
+  RP_BAD = true;
+}
+fn rp_var(key: i64) -> i64 { let mut i = 0; while RP_FK[i] != key { i += 1; } if !RP_FS[i] { return -1; } return RP_FV[i]; }
+fn rp_sub(e: i64) {
+  if e < 0 { return; }
+  let k = nd[e].k;
+  if k == N_CONST || k == N_VAR { return; }
+  if k == N_LOAD && !(nd[nd[e].a].k == N_VAR && nd[nd[e].a].var == RP_J) {
+    let mut key = -1; if nd[e].op > 0 { key = nd[e].op - 1; }
+    let t = rp_var(key); let ty = nd[e].ty;
+    if t < 0 { return; }   // read-only fields stay loads (memory operands, no register)
+    nd[e].k = N_VAR; nd[e].var = t; nd[e].a = -1; nd[e].op = 0; nd[e].ty = ty; vars[t].reads += 1; return;
+  }
+  rp_sub(nd[e].a); rp_sub(nd[e].b);
+}
+fn rp_sub_s(s: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { rp_sub_s(c); c = nd[c].next; } return; }
+  if k == S_IF { rp_sub(nd[s].a); rp_sub_s(nd[s].b); rp_sub_s(nd[s].c); return; }
+  if k == S_STORE {
+    rp_sub(nd[s].a); rp_sub(nd[s].b);
+    if !(nd[nd[s].a].k == N_VAR && nd[nd[s].a].var == RP_J) {
+      let t = rp_var(nd[s].c);
+      let mut v = nd[s].b;
+      if nd[s].op >= 0 { v = mk_bin(nd[s].op, mk_var(t), v); nd[v].ty = vars[t].ty; }
+      nd[s].k = S_ASSIGN; nd[s].var = t; nd[s].a = v; nd[s].b = -1; nd[s].c = -1; nd[s].op = 0;
+    }
+    return;
+  }
+  rp_sub(nd[s].a);
+}
+fn rp_ld(key: i64) -> i64 {
+  let ld = mk_load(RP_A, clone_expr(RP_KX));
+  if key >= 0 { nd[ld].op = key + 1; }
+  nd[ld].ty = RP_FT[rp_slot(key)];
+  return ld;
+}
+fn rp_slot(key: i64) -> i64 { let mut i = 0; while RP_FK[i] != key { i += 1; } return i; }
+fn rp_try(p: i64, w: i64) {   // p: the statement before the while w
+  if nd[w].k != S_WHILE || nd[w].c >= 0 { return; }
+  let cnd = nd[w].a; let body = nd[w].b;
+  if nd[cnd].k != N_BIN || nd[cnd].op != O_LT || nd[nd[cnd].a].k != N_VAR || has_call(cnd) || body < 0 || nd[body].k != S_BLOCK { return; }
+  let j = nd[nd[cnd].a].var;
+  if vars[j].ty != TY_I64 || count_assign(w, j) != 1 || refs(nd[cnd].b, j) { return; }
+  if !((nd[p].k == S_LET || nd[p].k == S_ASSIGN) && nd[p].var == j) { return; }
+  let init = nd[p].a;
+  RP_K = -1; RP_KC = 0;
+  if is_const(init) { RP_KC = nd[init].v as i64; if RP_KC <= 0 { return; } }
+  else if nd[init].k == N_BIN && nd[init].op == O_ADD && is_const(nd[init].a) && is_const(nd[init].b) && (nd[nd[init].a].v as i64) >= 0 && (nd[nd[init].a].v as i64) < 1048576 && (nd[nd[init].b].v as i64) >= 1 && (nd[nd[init].b].v as i64) < 1048576 { RP_KC = (nd[nd[init].a].v + nd[nd[init].b].v) as i64; }   // unrolled K + d
+  else if nd[init].k == N_BIN && nd[init].op == O_ADD && is_const(nd[init].b) && (nd[nd[init].b].v as i64) >= 1 && (nd[nd[init].b].v as i64) < 1048576 && nd[nd[init].a].k == N_VAR && nd[nd[init].a].var != j && invariant(nd[init].a, w) { RP_K = nd[init].a; }
+  else { return; }
+  // the array: the first one the body touches
+  RP_A = -1; RP_J = j; RP_BAD = false; RP_TOP = false; RP_NST = 0; RP_NF = 0; RP_KX = -1;
+  RP_A = rp_first(body);
+  if RP_A < 0 { return; }
+  rp_e(cnd, true); rp_s(body, true);
+  if RP_BAD || !RP_TOP || RP_NF == 0 { return; }
+  let mut ns = 0; let mut i = 0; while i < RP_NF { if RP_FS[i] { ns += 1; } i += 1; }
+  if ns == 0 { return; }
+  // let ran = C; let t_f = 0..; if ran { t_f = a[K].f.. }; while C { .. }; if ran { a[K].f = t_f.. }
+  let ran = hidden(); vars[ran].ty = TY_BOOL; vars[ran].owner = CS_F;
+  let lr = mk(S_LET); nd[lr].var = ran; nd[lr].a = clone_expr(cnd);
+  let mut last = lr;
+  let mut ld0 = -1; let mut ldl = -1; let mut st0 = -1; let mut stl = -1;
+  i = 0;
+  while i < RP_NF {
+    if !RP_FS[i] { i += 1; continue; }
+    let t = hidden(); vars[t].ty = RP_FT[i]; vars[t].mutv = 1; vars[t].owner = CS_F; RP_FV[i] = t;
+    let l = mk(S_LET); nd[l].var = t; nd[l].a = mkconst_t(0, RP_FT[i]); nd[last].next = l; last = l;
+    let a1 = mk_assign(t, rp_ld(RP_FK[i]));
+    if ld0 < 0 { ld0 = a1; } else { nd[ldl].next = a1; } ldl = a1;
+    if RP_FS[i] {
+      let st = mk(S_STORE); nd[st].var = RP_A; nd[st].a = clone_expr(RP_KX); nd[st].b = mk_var(t); nd[st].op = -1; nd[st].chk = 1; nd[st].c = RP_FK[i];
+      vars[vars[RP_A].basev].reads += 1; if vars[RP_A].lenv >= 0 { vars[vars[RP_A].lenv].reads += 1; }
+      if st0 < 0 { st0 = st; } else { nd[stl].next = st; } stl = st;
+    }
+    i += 1;
+  }
+  let b1 = mk(S_BLOCK); set_block(b1, ld0, -1);
+  let f1 = mk(S_IF); nd[f1].a = mk_var(ran); nd[f1].b = b1; nd[f1].c = -1; nd[last].next = f1;
+  rp_sub_s(body); rp_sub(cnd);
+  let w2 = mk(S_WHILE); copy_node(w2, w); nd[f1].next = w2;
+  let b2 = mk(S_BLOCK); set_block(b2, st0, -1);
+  let f2 = mk(S_IF); nd[f2].a = mk_var(ran); nd[f2].b = b2; nd[f2].c = -1; nd[w2].next = f2;
+  set_block(w, lr, nd[w].next);
+}
+fn rp_first(s: i64) -> i64 {   // the array of the first load or store in s
+  if s < 0 { return -1; }
+  let k = nd[s].k;
+  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { let x = rp_first(c); if x >= 0 { return x; } c = nd[c].next; } return -1; }
+  if k == S_STORE { return nd[s].var; }
+  if k == S_IF { let x = rp_first_e(nd[s].a); if x >= 0 { return x; } let y = rp_first(nd[s].b); if y >= 0 { return y; } return rp_first(nd[s].c); }
+  return rp_first_e(nd[s].a);
+}
+fn rp_first_e(e: i64) -> i64 {
+  if e < 0 { return -1; }
+  if nd[e].k == N_LOAD { return nd[e].var; }
+  if nd[e].k == N_CONST || nd[e].k == N_VAR { return -1; }
+  let x = rp_first_e(nd[e].a); if x >= 0 { return x; }
+  return rp_first_e(nd[e].b);
+}
+fn rp_walk(s: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK || k == S_INL {
+    let mut p = -1; let mut c = nd[s].a;
+    while c >= 0 {
+      let nx = nd[c].next;
+      if nd[c].k == S_WHILE && lh_inner(nd[c].b) { if p >= 0 { rp_try(p, c); } }
+      else { rp_walk(c); }
+      p = c; c = nx;
+    }
+    return;
+  }
+  if k == S_IF { rp_walk(nd[s].b); rp_walk(nd[s].c); return; }
+  if k == S_WHILE { rp_walk(nd[s].b); return; }
+}
 fn cs_walk(s: i64) {
   if s < 0 { return; }
   let k = nd[s].k;
@@ -4000,7 +4189,7 @@ fn allocate() {
   mark_used();
   simplify();
   f = 0;
-  while f < nfn { if fns[f].used != 0 { CS_F = f; sm_walk(fns[f].body); ss_walk(fns[f].body, false); cs_walk(fns[f].body); lh_walk(fns[f].body); mm_walk(fns[f].body, false); dm_walk(fns[f].body); } f += 1; }
+  while f < nfn { if fns[f].used != 0 { CS_F = f; sm_walk(fns[f].body); ss_walk(fns[f].body, false); cs_walk(fns[f].body); rp_walk(fns[f].body); lh_walk(fns[f].body); mm_walk(fns[f].body, false); dm_walk(fns[f].body); } f += 1; }
   let mut v = 0;
   while v < nv { if vars[v].owner >= 0 && fns[vars[v].owner].used == 0 { vars[v].reads = 0; } v += 1; }
   analyze();
