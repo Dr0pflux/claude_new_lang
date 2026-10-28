@@ -2,6 +2,11 @@
 
 ### Unreleased (2026-10-28)
 
+- **Runtime length facts:** reuse `i < len(a)` for `a[i-k]` when a constant
+  `k >= 0` and the inferred lower bound `i >= k` rule out wrap. Proven identity
+  integer casts preserve the relation. `tests/length_facts.py` checks 842
+  normal/scalar output and trap cases, including aliases, mutation and narrowing.
+
 - **Vectorization (Claude):** element-wise loops and integer reductions (stores `a[i] = e`,
   `a[i] op= e`, `s op= e`, narrow element types), masked `if`/`else`, max/min reductions, and
   byte lanes for `u8`/`i8` loops (64 per instruction; counts by mask popcount, sums by `vpsadbw`).
