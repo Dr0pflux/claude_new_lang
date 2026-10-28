@@ -1,0 +1,22 @@
+name: Compiler validation
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: compiler-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    name: Build and regression tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Clean build, fixed point, regressions and fuzz smoke tests
+        run: make clean && make test
+      - name: Previously failing control-flow seed
+        run: timeout 120 ./tests/run_cf_fuzz.sh 100 23 1 1 1 1
+      - name: Constant-divisor oracle
+        run: timeout 120 ./tests/run_divconst.sh

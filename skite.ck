@@ -1784,6 +1784,14 @@ fn parse_stmt() -> i64 {
       else { kind = A_VIEW; et = legacy_et(digits_at(co + 4, cl - 4)); }
       let w = ty_width(et);
       if kind == A_VIEW && et == TY_BOOL { fail("no bool views (a byte is not always a valid bool)"); }
+      if kind == A_VIEW && is_struct(et) {
+        let st = et - TY_STRUCT0;
+        let mut fi = 0;
+        while fi < sts[st].nf {
+          if sfty[st * 32 + fi] == TY_BOOL { fail("no views of structs containing bool (a byte is not always a valid bool)"); }
+          fi += 1;
+        }
+      }
       if ann != 0 && (!aarr || ann != et) { fail("array type annotation does not match the constructor"); }
       if inpar && kind != A_VIEW && kind != A_ARG { fail("no allocation or file mapping inside a par block"); }
       if mut_ { fail("array bindings are immutable (their elements are not)"); }
