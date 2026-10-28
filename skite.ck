@@ -5219,7 +5219,9 @@ fn gen_arr(s: i64, rg: i64, n: i64) {
     if (w & (w - 1)) == 0 { shift_ri(4, RAX, lg(w)); } else { imul_r(RAX, K_IMM, 0, w as u64); }
     if nd[s].v != 0 {
       alui(A_ADD, RAX, 15); alui(A_AND, RAX, 18446744073709551600);
-      abs_op(139, RCX, ARENA_TOP); lea(RDX, RCX, RAX, 0);
+      abs_op(139, RCX, ARENA_TOP);
+      alui(A_ADD, RCX, 63); alui(A_AND, RCX, 18446744073709551552);
+      lea(RDX, RCX, RAX, 0);
       abs_op(59, RDX, ARENA_END); trap_if(7);
       abs_op(137, RDX, ARENA_TOP);
       emh("574889cf4889ca4889c131c0f3aa5f4889d0");

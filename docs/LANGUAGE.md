@@ -143,6 +143,8 @@ par w in 0..ncpu() {              // ncpu() workers, w = 0..ncpu()-1
 
 ## Arrays, strings and output
 
+Owned `alloc<T>` and `shared<T>` buffer bases are aligned to at least 64 bytes, including scoped arena allocations. Struct fields keep their natural layout; this guarantee does not extend to borrowed `argv`, file, string literal, or reinterpreted `view` data. Scoped allocation padding can increase memory use.
+
 | Form | Notes |
 |---|---|
 | `let a = alloc<T>(n);` | zero-initialized array of any scalar or struct `T`; `n` ∈ 1..2³¹−1 (constant: compile-time check; runtime: trap). At `main`'s top level: lives for the whole program. **Anywhere else** (functions, loops): taken from the scoped heap (below) |
