@@ -6408,6 +6408,86 @@ fn gen_stmt(s: i64, is_final: bool) {
   cur_pos = sv_pos; cur_stmt = sv_st;
   rgs_top -= 12;
 }
+// ---- if-conversion: inside loops, `if C { x = e; .. } else { y = f; .. }` with a few integer
+// assignments whose right sides cannot trap or touch memory becomes branch-free cmov selects
+// (unpredictable branches on text and DP data cost more than computing both sides)
+fn ic_pure(e: i64) -> bool {
+  if e < 0 { return true; }
+  let k = nd[e].k;
+  if k == N_LOAD || k == N_CALL || k == N_NCPU { return false; }
+  if !(ty_int(nd[e].ty) || nd[e].ty == TY_BOOL) { return false; }
+  if k == N_VAR { return vars[nd[e].var].xr < 0 && vars[nd[e].var].glob == 0; }
+  if k == N_CONST || k == N_ARR { return true; }
+  if has_trap(e) { return false; }
+  if k == N_UN && !(nd[e].op == U_NEG || nd[e].op == U_NOT || nd[e].op == U_LNOT || (nd[e].op >= U_SX8 && nd[e].op <= U_ZX32)) { return false; }
+  return ic_pure(nd[e].a) && ic_pure(nd[e].b);
+}
+fn ic_count(s: i64, d: i64) -> i64 {   // assignments in a branch, -1 when not convertible (d: nesting)
+  if s < 0 { return 0; }
+  let k = nd[s].k;
+  if k == S_BLOCK { let mut t = 0; let mut c = nd[s].a; while c >= 0 { let x = ic_count(c, d); if x < 0 { return -1; } t += x; c = nd[c].next; } return t; }
+  if k == S_IF && d == 0 && nd[s].c < 0 && ic_cond_ok(nd[s].a) && ic_pure(nd[s].a) { let x = ic_count(nd[s].b, 1); if x < 0 { return -1; } IC_NEST = true; return x + 1; }
+  if k != S_ASSIGN { return -1; }
+  let v = nd[s].var;
+  if !ty_int(vars[v].ty) || vars[v].xr >= 0 || vars[v].glob != 0 || vars[v].reads == 0 { return -1; }
+  if !ic_pure(nd[s].a) { return -1; }
+  return 1;
+}
+fn ic_cond_ok(e: i64) -> bool {   // evaluated without branches: && / || need side-effect-free, load-free right sides
+  if nd[e].ty != TY_BOOL || has_call(e) { return false; }
+  if nd[e].k == N_BIN && (nd[e].op == O_LAND || nd[e].op == O_LOR) { return ic_cond_ok(nd[e].a) && ic_pure(nd[e].b) && ic_cond_ok(nd[e].b); }
+  if nd[e].k == N_UN && nd[e].op == U_LNOT { return ic_cond_ok(nd[e].a); }
+  return nd[e].k == N_BIN && is_cmp(nd[e].op) && ty_int(nd[nd[e].a].ty);
+}
+let mut IC_NEST: bool = false;
+fn ifconv_ok(s: i64, n: i64) -> bool {
+  if !ic_cond_ok(nd[s].a) { return false; }
+  IC_NEST = false;
+  let a = ic_count(nd[s].b, 0); let b = ic_count(nd[s].c, 0);
+  return a >= 0 && b >= 0 && a + b >= 1 && a + b <= 4;
+}
+// condition -> 0/1 in RGS[rg]
+fn ic_bool(e: i64, rg: i64, n: i64) {
+  let k = nd[e].k;
+  if k == N_BIN && (nd[e].op == O_LAND || nd[e].op == O_LOR) {
+    ic_bool(nd[e].a, rg, n); ic_bool(nd[e].b, rg + 1, n - 1);
+    let mut d = A_AND; if nd[e].op == O_LOR { d = A_OR; }
+    alur(d, RGS[rg], RGS[rg + 1]); return;
+  }
+  if k == N_UN { ic_bool(nd[e].a, rg, n); alui(A_XOR, RGS[rg], 1); return; }
+  gen(e, rg, n);
+}
+fn cmov_rr(cc: i64, d: i64, sr: i64) { encr(1, false, 2, 15, 64 | cc, d, sr); }
+// statements of a branch under predicate (temp slot sl != 0) == want
+fn ic_gen(s: i64, sl: i64, rg: i64, n: i64, want: bool) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { ic_gen(c, sl, rg, n, want); c = nd[c].next; } return; }
+  if k == S_IF {   // nested condition: p = (pred == want) and C
+    ic_bool(nd[s].a, rg, n);
+    let r = RGS[rg];
+    if want { alu(A_AND, K_REG, r, K_MEM, sl, 0); } else { load(RAX, K_MEM, sl, 0); alui(A_XOR, RAX, 1); alur(A_AND, r, RAX); }
+    let s2 = tslot_push(); store(K_MEM, s2, r);
+    ic_gen(nd[s].b, s2, rg, n, true);
+    tdepth -= 1;
+    return;
+  }
+  let v = nd[s].var;
+  gen(nd[s].a, rg, n);
+  let t = RGS[rg];
+  alu(A_CMP, K_MEM, sl, K_IMM, 0, 0);
+  let mut cc = CC_NE; if !want { cc = CC_E; }
+  loc(v);
+  if OK == K_REG { cmov_rr(cc, ORR, t); }
+  else { enc(1, false, 2, 15, 64 | (cc ^ 1), t, OK, ORR); loc(v); store(OK, ORR, t); }   // t = cond ? t : v; v = t
+}
+fn ifconv(s: i64, rg: i64, n: i64) {
+  ic_bool(nd[s].a, rg, n);
+  let sl = tslot_push(); store(K_MEM, sl, RGS[rg]);
+  ic_gen(nd[s].b, sl, rg, n, true);
+  ic_gen(nd[s].c, sl, rg, n, false);
+  tdepth -= 1;
+}
 fn gen_stmt_body(s: i64, is_final: bool, rg: i64, n: i64) {
   let k = nd[s].k;
   if k == S_LET || k == S_ASSIGN {
@@ -6416,6 +6496,7 @@ fn gen_stmt_body(s: i64, is_final: bool, rg: i64, n: i64) {
   }
   if k == S_IF {
     if is_const(nd[s].a) { if nd[nd[s].a].v != 0 { gen_stmt(nd[s].b, false); } else if nd[s].c >= 0 { gen_stmt(nd[s].c, false); } return; }
+    if nloopctx > 0 && n >= 2 && ifconv_ok(s, n) { ifconv(s, rg, n); return; }
     let mut f = -1; let mut en = -1;
     f = cond_jump(nd[s].a, false, f, rg, n); gen_stmt(nd[s].b, false);
     if nd[s].c >= 0 { if !terminates(nd[s].b) { en = pl_add(en, jmp()); } pl_patch(f, clen); gen_stmt(nd[s].c, false); pl_patch(en, clen); }
