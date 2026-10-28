@@ -4507,12 +4507,27 @@ let vpor = alloc<i64>(65536);        // == tag: read in POST
 let vald = alloc<i64>(65536);        // == tag: array (leader) loaded in PRE
 let vast = alloc<i64>(65536);        // == tag: array (leader) stored in POST
 let VREG = alloc<i64>(65536);        // varying variable -> first zmm of its group
+let vred = alloc<i64>(65536);        // == tag: reduction variable (stream loops)
+let vldx = alloc<i64>(65536);        // == tag: array (leader) loaded at an index other than i
+// bounds guards of the plan being checked: a[i + c] with an unproven check runs vectorized only
+// while i + c .. i + c + L - 1 is inside a (tested per block; otherwise the scalar loop takes over)
+let vg_arr = alloc<i64>(64);
+let vg_off = alloc<i64>(64);
+let mut VK_NG: i64 = 0;
 let mut vtag: i64 = 0;
 let mut VK_OK: bool = true;          // legality accumulator
 let mut VK_LOOPS: i64 = 0;           // loops inside PRE
 let mut VK_DEPTH: i64 = 0;           // deepest mask level needed
 let mut VK_TMP: i64 = 0;             // deepest vector temporary needed
 fn is_v(v: i64) -> bool { return vmark[v] == vtag; }
+fn add_guard(a: i64, c: i64) -> bool {
+  if c < -1048576 || c > 1048576 { return false; }
+  let mut i = 0;
+  while i < VK_NG { if vg_arr[i] == a && vg_off[i] == c { return true; } i += 1; }
+  if VK_NG >= 64 { return false; }
+  vg_arr[VK_NG] = a; vg_off[VK_NG] = c; VK_NG += 1;
+  return true;
+}
 fn refs_v(e: i64) -> bool {
   if e < 0 { return false; }
   let k = nd[e].k;
@@ -4560,12 +4575,17 @@ fn vexpr_ok(e: i64, t: i64, iv: i64) -> bool {
     return f64_type(nd[e].ty) || int8_type(nd[e].ty) || k == N_CONST;
   }
   if k == N_VAR { let t2 = vars[nd[e].var].ty; return f64_type(t2) || int8_type(t2); }
-  if k == N_LOAD {   // varying: contiguous a[i + c], 8-byte elements, check proven
-    if nd[e].chk != 0 || nd[e].op > 0 || vars[nd[e].var].arr != 8 { return false; }
+  if k == N_LOAD {   // varying: contiguous a[i + c], 8-byte elements, check proven or guarded (constant c)
+    if nd[e].op > 0 || vars[nd[e].var].arr != 8 { return false; }
     if !(f64_type(nd[e].ty) || nd[e].ty == TY_I64 || nd[e].ty == TY_U64) { return false; }
     let x = nd[e].a;
-    if nd[x].k == N_VAR && nd[x].var == iv { return true; }
-    if nd[x].k == N_BIN && (nd[x].op == O_ADD || nd[x].op == O_SUB) && nd[nd[x].a].k == N_VAR && nd[nd[x].a].var == iv && !refs_v(nd[x].b) && !has_call(nd[x].b) { return true; }
+    if nd[x].k == N_VAR && nd[x].var == iv { return nd[e].chk == 0 || add_guard(nd[e].var, 0); }
+    if nd[x].k == N_BIN && (nd[x].op == O_ADD || nd[x].op == O_SUB) && nd[nd[x].a].k == N_VAR && nd[nd[x].a].var == iv && !refs_v(nd[x].b) && !has_call(nd[x].b) {
+      if nd[e].chk == 0 { return true; }
+      if !is_const(nd[x].b) { return false; }
+      let mut c = nd[nd[x].b].v as i64; if nd[x].op == O_SUB { c = 0 - c; }
+      return add_guard(nd[e].var, c);
+    }
     return false;
   }
   if k == N_UN {
@@ -4736,9 +4756,8 @@ fn plan_loop(s: i64) {
     if !pre_check(body, npre + 1, iv) { break; }
     npre += 1;
   }
-  if npre == 0 { return; }
-  pre_classify(body, npre, iv);
-  if !pre_check(body, npre, iv) || VK_LOOPS == 0 { return; }
+  if npre > 0 { pre_classify(body, npre, iv); }
+  if npre == 0 || !pre_check(body, npre, iv) || VK_LOOPS == 0 { plan_stream(s, body, inc, iv, nbefore); return; }
   let t0 = vtag;
   c = nd[body].a;
   let mut i = 0;
@@ -4761,6 +4780,7 @@ fn plan_loop(s: i64) {
   if (nvar + VK_TMP + 1) * 2 > 16 || VK_DEPTH * 2 > 6 { u = 1; }
   if (nvar + VK_TMP + 1) * u > 16 || VK_DEPTH * u > 6 { return; }
   if nvlist + nvar > 65536 || nvneed + nvar > 65536 { return; }
+  if !plan_extra(false, t0) { return; }
   let p = nplans; nplans += 1;
   vplan[s] = p + 1;
   vp_loop[p] = s; vp_iv[p] = iv; vp_npre[p] = npre; vp_u[p] = u; vp_nv[p] = nvar;
@@ -4777,6 +4797,183 @@ fn plan_loop(s: i64) {
   vp_nneed[p] = nvneed - vp_need0[p];
   vp_scr[p] = vec_bytes;
   vec_bytes += vp_nneed[p] * 64 * u;
+}
+// per plan: bounds guards, array pairs that must not share memory (checked at run time outside
+// main, where distinct arrays can be the same argument), stream loops and their reductions
+let vp_g0 = alloc<i64>(4096);
+let vp_ng = alloc<i64>(4096);
+let vgl_arr = alloc<i64>(65536);
+let vgl_off = alloc<i64>(65536);
+let mut nvgl: i64 = 0;
+let vp_a0 = alloc<i64>(4096);
+let vp_na = alloc<i64>(4096);
+let val_s = alloc<i64>(65536);
+let val_l = alloc<i64>(65536);
+let mut nval: i64 = 0;
+let vp_stream = alloc<bool>(4096);
+let vp_r0 = alloc<i64>(4096);
+let vp_nr = alloc<i64>(4096);
+let vrl_var = alloc<i64>(65536);
+let mut nvrl: i64 = 0;
+let vst_tmp = alloc<i64>(64);
+let vld_tmp = alloc<i64>(64);
+// fill plan nplans's guards and alias pairs from the current tags (t0); false: too many
+fn plan_extra(stream: bool, t0: i64) -> bool {
+  let p = nplans;
+  if nvgl + VK_NG > 65536 { return false; }
+  vp_g0[p] = nvgl; vp_ng[p] = VK_NG;
+  let mut i = 0;
+  while i < VK_NG { vgl_arr[nvgl + i] = vg_arr[i]; vgl_off[nvgl + i] = vg_off[i]; i += 1; }
+  // stored leaders x leaders loaded where a different memory layout could see another lane's store
+  let mut ns = 0; let mut nl = 0;
+  let mut v = 0;
+  while v < nv {
+    if vars[v].arr != 0 && arr_leader[v] == v {
+      if vast[v] == t0 { if ns >= 64 { return false; } vst_tmp[ns] = v; ns += 1; }
+      if (stream && vldx[v] == t0) || (!stream && vald[v] == t0) { if nl >= 64 { return false; } vld_tmp[nl] = v; nl += 1; }
+    }
+    v += 1;
+  }
+  if ns * nl > 16 || nval + ns * nl > 65536 { return false; }
+  vp_a0[p] = nval; vp_na[p] = 0;
+  i = 0;
+  while i < ns {
+    let mut j = 0;
+    while j < nl { if vst_tmp[i] != vld_tmp[j] { val_s[nval] = vst_tmp[i]; val_l[nval] = vld_tmp[j]; nval += 1; vp_na[p] += 1; } j += 1; }
+    i += 1;
+  }
+  nvgl += VK_NG;
+  vp_stream[p] = stream; vp_r0[p] = nvrl; vp_nr[p] = 0;
+  return true;
+}
+fn ecount(e: i64, v: i64) -> i64 {
+  if e < 0 { return 0; }
+  let k = nd[e].k;
+  if k == N_VAR { return (nd[e].var == v) as i64; }
+  if k == N_CONST || k == N_ARR || k == N_NCPU { return 0; }
+  if k == N_CALL { let mut n = 0; let mut a = nd[e].a; while a >= 0 { n += ecount(a, v); a = nd[a].next; } return n; }
+  return ecount(nd[e].a, v) + ecount(nd[e].b, v);
+}
+fn scount(s: i64, v: i64) -> i64 {
+  if s < 0 { return 0; }
+  let k = nd[s].k;
+  if k == S_BLOCK || k == S_INL { let mut n = 0; let mut c = nd[s].a; while c >= 0 { n += scount(c, v); c = nd[c].next; } return n; }
+  if k == S_IF { return ecount(nd[s].a, v) + scount(nd[s].b, v) + scount(nd[s].c, v); }
+  if k == S_WHILE { return ecount(nd[s].a, v) + scount(nd[s].b, v); }
+  if k == S_STORE || k == S_WRITE || k == S_SAVE { return ecount(nd[s].a, v) + ecount(nd[s].b, v); }
+  return ecount(nd[s].a, v);
+}
+// loads not at index i (stream loops): their arrays must not be stored in the loop
+fn vscan_loads(e: i64, iv: i64) {
+  if e < 0 { return; }
+  let k = nd[e].k;
+  if k == N_LOAD {
+    let x = nd[e].a;
+    if nd[x].k != N_VAR || nd[x].var != iv || nd[e].op > 0 { vldx[arr_leader[nd[e].var]] = vtag; }
+    vscan_loads(x, iv); return;
+  }
+  if k == N_CONST || k == N_VAR || k == N_ARR || k == N_NCPU { return; }
+  if k == N_CALL { let mut a = nd[e].a; while a >= 0 { vscan_loads(a, iv); a = nd[a].next; } return; }
+  vscan_loads(nd[e].a, iv); vscan_loads(nd[e].b, iv);
+}
+// hidden immutable copies `let t = i` (compound stores a[i] op= e index a[t]): read i instead
+fn ivcopy_e(e: i64, t: i64, iv: i64) {
+  if e < 0 { return; }
+  let k = nd[e].k;
+  if k == N_VAR { if nd[e].var == t { nd[e].var = iv; vars[t].reads -= 1; vars[iv].reads += 1; } return; }
+  if k == N_CONST || k == N_ARR || k == N_NCPU { return; }
+  if k == N_CALL { let mut a = nd[e].a; while a >= 0 { ivcopy_e(a, t, iv); a = nd[a].next; } return; }
+  ivcopy_e(nd[e].a, t, iv); ivcopy_e(nd[e].b, t, iv);
+}
+fn ivcopy_s(s: i64, t: i64, iv: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { ivcopy_s(c, t, iv); c = nd[c].next; } return; }
+  if k == S_IF { ivcopy_e(nd[s].a, t, iv); ivcopy_s(nd[s].b, t, iv); ivcopy_s(nd[s].c, t, iv); return; }
+  if k == S_WHILE { ivcopy_e(nd[s].a, t, iv); ivcopy_s(nd[s].b, t, iv); return; }
+  if k == S_STORE || k == S_WRITE || k == S_SAVE { ivcopy_e(nd[s].a, t, iv); ivcopy_e(nd[s].b, t, iv); return; }
+  if k == S_LET && nd[s].var == t { return; }
+  ivcopy_e(nd[s].a, t, iv);
+}
+fn ivcopies(body: i64, s: i64, iv: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { ivcopies(body, c, iv); c = nd[c].next; } return; }
+  if k == S_LET && nd[nd[s].a].k == N_VAR && nd[nd[s].a].var == iv && vars[nd[s].var].ty == TY_I64 && count_assign(body, nd[s].var) == 1 { ivcopy_s(body, nd[s].var, iv); }
+}
+// a statement of a stream loop: lane-parallel lets, vector stores a[i] = e / a[i] op= e (8-byte
+// elements), integer reductions s op= e (op: + - & | ^; wrapping, so any grouping gives the same sum)
+fn sst_ok(s: i64, iv: i64) -> bool {
+  let k = nd[s].k;
+  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { if !sst_ok(c, iv) { return false; } c = nd[c].next; } return true; }
+  if k == S_STORE {
+    let a = nd[s].var;
+    if nd[s].c >= 0 || vars[a].arr != 8 || vars[a].ro != 0 || has_call(nd[s].b) { return false; }
+    let et = vars[a].et;
+    if !(et == TY_I64 || et == TY_U64 || et == TY_F64) { return false; }
+    let x = nd[s].a;
+    if nd[x].k != N_VAR || nd[x].var != iv { return false; }
+    if nd[s].op >= 0 && !(et != TY_F64 && is_alu_op(nd[s].op)) { return false; }
+    if nd[s].chk != 0 && !add_guard(a, 0) { return false; }
+    vast[arr_leader[a]] = vtag;
+    vscan_loads(nd[s].b, iv);
+    if !vexpr_ok(nd[s].b, 1, iv) { return false; }
+    if VK_TMP < 2 { VK_TMP = 2; }
+    return true;
+  }
+  if k == S_ASSIGN && vdecl[nd[s].var] != vtag {
+    let v = nd[s].var; let e = nd[s].a;
+    if (vars[v].ty != TY_I64 && vars[v].ty != TY_U64) || vars[v].xr >= 0 || v == iv { return false; }
+    if nd[e].k != N_BIN || !is_alu_op(nd[e].op) || nd[nd[e].a].k != N_VAR || nd[nd[e].a].var != v { return false; }
+    if vred[v] == vtag || refs(nd[e].b, v) || has_call(nd[e].b) { return false; }
+    vred[v] = vtag;
+    vscan_loads(nd[e].b, iv);
+    return vexpr_ok(nd[e].b, 1, iv);
+  }
+  if k == S_LET || k == S_ASSIGN {
+    vscan_loads(nd[s].a, iv);
+    return vpre_ok(s, -1, 0, iv);
+  }
+  return false;
+}
+// loops without inner loops: every statement before the final i += 1 runs on L lanes at once
+fn plan_stream(s: i64, body: i64, inc: i64, iv: i64, nb: i64) {
+  if nd[inc].next >= 0 || nb == 0 { return; }
+  let mut c = nd[body].a; let mut i = 0;
+  while i < nb { ivcopies(body, c, iv); c = nd[c].next; i += 1; }
+  pre_classify(body, nb, iv);
+  VK_LOOPS = 0; VK_DEPTH = 0; VK_TMP = 0; VK_NG = 0;
+  let t0 = vtag;
+  c = nd[body].a; i = 0;
+  while i < nb { if !sst_ok(c, iv) { return; } c = nd[c].next; i += 1; }
+  if VK_LOOPS != 0 || VK_DEPTH != 0 { return; }
+  let mut nvar = 0; let mut nst = 0; let mut nred = 0;
+  let mut vv = 0;
+  while vv < nv {
+    if vprw[vv] == t0 && vdecl[vv] != t0 { return; }
+    if vast[vv] == t0 { nst += 1; if vldx[vv] == t0 { return; } }
+    if vred[vv] == t0 { if count_assign(body, vv) != 1 || scount(body, vv) != 1 { return; } nred += 1; }
+    if is_v(vv) && vv != iv && vdecl[vv] != t0 && vred[vv] != t0 { return; }
+    if is_v(vv) && (vars[vv].reads != 0 || vv == iv) { let t = vars[vv].ty; if !(f64_type(t) || int8_type(t)) { return; } nvar += 1; }
+    vv += 1;
+  }
+  if nst + nred == 0 { return; }
+  let mut u = 2;
+  if (nvar + VK_TMP + 1) * 2 > 16 { u = 1; }
+  if (nvar + VK_TMP + 1) * u > 16 { return; }
+  if nvlist + nvar > 65536 || nvrl + nred > 65536 { return; }
+  if !plan_extra(true, t0) { return; }
+  let p = nplans; nplans += 1;
+  vplan[s] = p + 1;
+  vp_loop[p] = s; vp_iv[p] = iv; vp_npre[p] = nb; vp_u[p] = u; vp_nv[p] = nvar;
+  vp_need0[p] = nvneed; vp_nneed[p] = 0; vp_v0[p] = nvlist; vp_scr[p] = vec_bytes;
+  let mut g = 0;
+  vv = 0;
+  while vv < nv {
+    if is_v(vv) && (vars[vv].reads != 0 || vv == iv) { vp_vlist[nvlist] = vv; vp_vreg[nvlist] = 16 + g * u; nvlist += 1; g += 1; }
+    if vred[vv] == t0 { vrl_var[nvrl] = vv; nvrl += 1; vp_nr[p] += 1; }
+    vv += 1;
+  }
 }
 // make plan p's varying set current (marks and registers)
 fn plan_enter(p: i64) {
