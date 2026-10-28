@@ -5615,6 +5615,7 @@ fn emit_runtime() {
   pl_patch(flush_calls, flush_at);
 }
 let fsites = alloc<i64>(8192);
+let mut map_runtime: i64 = 0; let mut map_codeend: i64 = 0; let mut map_pool: i64 = 0; let mut map_data: i64 = 0; let mut map_end: i64 = 0;   // --map region boundaries
 fn generate() {
   allocate();
   plan_all();
@@ -5739,6 +5740,7 @@ fn generate() {
   }
   f = 0;
   while f < nfn { if fns[f].used != 0 && f != mainfn { pl_patch(fns[f].calls, fns[f].addr); } f += 1; }
+  map_runtime = clen;
   emit_runtime();
   let mut shift = 0;
   // drop main's empty frame unless functions exist or a prologue branch (arena trap) crosses it
@@ -5751,9 +5753,11 @@ fn generate() {
   if handler_off > frame_at { handler_off -= shift; }
   i = 0;
   while i < nss { if ss_at[i] > frame_at { ss_at[i] -= shift; } i += 1; }
+  map_codeend = clen; if map_runtime > frame_at { map_runtime -= shift; }
   if cplen > 0 {
     while (clen & 63) != 0 { byte(204); }
     let pool_at = clen;
+    map_pool = pool_at;
     i = 0;
     while i < cplen { byte(cpool[i] as i64); i += 1; }
     i = 0;
@@ -5764,8 +5768,11 @@ fn generate() {
     }
   }
   let data_at = clen;
+  if cplen == 0 { map_pool = data_at; }
+  map_data = data_at;
   i = 0;
   while i < sdlen { byte(sdata[i] as i64); i += 1; }
+  map_end = clen;
   i = 0;
   while i < nss { patch32(ss_at[i], 4194304 + 256 + data_at + ss_off[i]); i += 1; }
   if use_out { patch32(handler_imm_at, 4194304 + 256 + handler_off); patch32(restorer_imm_at, 4194304 + 256 + handler_off); }
@@ -5802,25 +5809,29 @@ fn build_elf() -> i64 {
   return total;
 }
 let mut want_map: bool = false;
-// --map: function start addresses on stderr (for profiling)
-fn write_map() {
+// --map: function start addresses on stderr (for profiling), then the region boundaries
+// .runtime .codeend .pool .data .end (tests/enc_check.py uses them to bound the code)
+fn map_line(a0: i64, nm: [u8], nmoff: i64, nmlen: i64) {
   let hx = "0123456789abcdef";
   let line = alloc<u8>(128);
+  let a = 4194304 + 256 + a0;
+  let mut n = 0;
+  let mut sh = 28;
+  while sh >= 0 { line[n] = hx[(a >> sh) & 15]; n += 1; sh -= 4; }
+  line[n] = 32; n += 1;
+  let mut i = 0;
+  while i < nmlen && n < 120 { line[n] = nm[nmoff + i]; n += 1; i += 1; }
+  line[n] = 10; n += 1;
+  ewrite(line, 0, n);
+}
+fn write_map() {
   let mut f = 0;
   while f < nfn {
-    if fns[f].used != 0 && f != mainfn {
-      let a = 4194304 + 256 + fns[f].addr;
-      let mut n = 0;
-      let mut sh = 28;
-      while sh >= 0 { line[n] = hx[(a >> sh) & 15]; n += 1; sh -= 4; }
-      line[n] = 32; n += 1;
-      let mut i = 0;
-      while i < fns[f].nlen && n < 120 { line[n] = src[fns[f].noff + i]; n += 1; i += 1; }
-      line[n] = 10; n += 1;
-      ewrite(line, 0, n);
-    }
+    if fns[f].used != 0 && f != mainfn { map_line(fns[f].addr, src, fns[f].noff, fns[f].nlen); }
     f += 1;
   }
+  map_line(map_runtime, ".runtime", 0, 8); map_line(map_codeend, ".codeend", 0, 8); map_line(map_pool, ".pool", 0, 5);
+  map_line(map_data, ".data", 0, 5); map_line(map_end, ".end", 0, 4);
 }
 fn report(total: i64, out: [u8]) {
   write("skite: wrote "); write(out); write(" ("); putnum(total); write(" bytes, "); putnum(clen); write(" machine-code bytes, ");
