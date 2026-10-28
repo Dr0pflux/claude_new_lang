@@ -7,7 +7,9 @@ AVX-512) and the ELF file byte by byte.
 
 ```sh
 make              # bootstrap/skite-seed builds skite.ck -> skite, which rebuilds itself
+make quick        # fast gate: self-check, regressions and small fuzz batches, all at once (~15 s)
 make test         # self-check, regression suite and fuzzers
+make fuzz         # the full fuzz battery (the fuzzers use every CPU; JOBS=n overrides)
 make bench        # Benchmarks Game suite vs gcc, clang and rustc (QUICK=1: smaller sizes)
 ./skite prog.ck prog && ./prog
 ```
@@ -39,6 +41,6 @@ What makes skite fast:
 | `bootstrap/` | `skite-seed` (prebuilt compiler that starts the build), `skite.c` (original C seed, audit only) |
 | `docs/` | tutorial, language reference, design notes, limitations, changelog, benchmarks |
 | `examples/` | example and tutorial programs |
-| `tests/` | `run.sh` regressions; fuzzers with independent oracles (`cf_fuzz`, `ty_fuzz`, `dag_fuzz`, `divconst`, `vec_fuzz.py`) |
+| `tests/` | `run.sh` regressions; fuzzers with independent oracles (`cf_fuzz`, `ty_fuzz`, `dag_fuzz`, `divconst`, `vec_fuzz.py`; they compile and run `JOBS` programs at a time, default one per CPU; `SKITE=path` picks the compiler); `quick.sh` is `make quick`; `par.sh` is the runners' shared plumbing |
 | `bench/game/` | Benchmarks Game suite in skite, C and Rust |
 | `bench/kernels/`, `bench/vigenere/` | computational-linguistics kernels and a Vigenère solver |

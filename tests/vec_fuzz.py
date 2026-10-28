@@ -2,8 +2,10 @@
 """Differential fuzzer for the SIMD vectorizer: random loop nests built to be
 vectorizable (varying masks, inner loops, int/float mixes) are compiled twice,
 normally and with --scalar, and must print identical output.
-usage: tests/vec_fuzz.py [CASES] [SEED]"""
-import os, random, subprocess, sys, tempfile
+usage: tests/vec_fuzz.py [CASES] [SEED]
+env:   SKITE=compiler (default ./skite), JOBS=parallel workers (default: CPU count)"""
+import io, os, random, subprocess, sys, tempfile, threading
+from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKITE = os.environ.get("SKITE", os.path.join(ROOT, "skite"))
@@ -124,32 +126,68 @@ class Gen:
         L.append("}")
         return "\n".join(L) + "\n"
 
+class FirstFailure:
+    """Lowest failing case index so far. Cases after a known failure are skipped; cases
+    before it always run, so the failure reported is the one a serial run stops at."""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.idx = None
+    def skip(self, c):
+        return self.idx is not None and self.idx < c
+    def record(self, c):
+        with self.lock:
+            if self.idx is None or c < self.idx: self.idx = c
+
+def run_case(c, src, tmp, first):
+    """Compile one program normally and with --scalar, run both, compare.
+    Returns (vectorized, failure report or None, whether to save src as vec_fail.ck)."""
+    if first.skip(c): return (0, None, False)
+    p, a, b = (os.path.join(tmp, f"{n}{c}") for n in ("v", "a", "b"))
+    p += ".ck"
+    out = io.StringIO()
+    open(p, "w").write(src)
+    try:
+        r1 = subprocess.run([SKITE, p, a], capture_output=True, text=True)
+        r2 = subprocess.run([SKITE, p, b, "--scalar"], capture_output=True, text=True)
+        if r1.returncode or r2.returncode:
+            print("COMPILE FAIL", r1.stderr, r2.stderr, file=out); print(src, file=out)
+            first.record(c); return (0, out.getvalue(), False)
+        vec = 0 if " 0 loops vectorized" in r1.stdout else 1
+        try: o2 = subprocess.run([b], capture_output=True, timeout=10)
+        except subprocess.TimeoutExpired: return (vec, None, False)
+        try: o1 = subprocess.run([a], capture_output=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            print(f"VECTOR HANG case {c}", file=out); print(src, file=out)
+            first.record(c); return (vec, out.getvalue(), True)
+        if o1.stdout != o2.stdout or o1.returncode != o2.returncode:
+            print(f"MISMATCH case {c} (rc {o1.returncode} vs {o2.returncode})", file=out)
+            print(src, file=out)
+            print("vector:", o1.stdout[-300:], file=out); print("scalar:", o2.stdout[-300:], file=out)
+            first.record(c); return (vec, out.getvalue(), True)
+        return (vec, None, False)
+    finally:
+        for f in (p, a, b):
+            try: os.unlink(f)
+            except OSError: pass
+
 def main():
     cases = int(sys.argv[1]) if len(sys.argv) > 1 else 200
     seed = int(sys.argv[2]) if len(sys.argv) > 2 else 1
+    jobs = int(os.environ.get("JOBS") or len(os.sched_getaffinity(0)))
     rnd = random.Random(seed)
-    tmp = tempfile.mkdtemp()
+    srcs = [Gen(rnd).program() for _ in range(cases)]   # same programs as a serial run for this seed
+    first = FirstFailure()
     vec = 0
-    for c in range(cases):
-        src = Gen(rnd).program()
-        p = os.path.join(tmp, "v.ck")
-        open(p, "w").write(src)
-        r1 = subprocess.run([SKITE, p, os.path.join(tmp, "a")], capture_output=True, text=True)
-        r2 = subprocess.run([SKITE, p, os.path.join(tmp, "b"), "--scalar"], capture_output=True, text=True)
-        if r1.returncode or r2.returncode:
-            print("COMPILE FAIL", r1.stderr, r2.stderr); print(src); sys.exit(1)
-        if " 0 loops vectorized" not in r1.stdout: vec += 1
-        try: o2 = subprocess.run([os.path.join(tmp, "b")], capture_output=True, timeout=10)
-        except subprocess.TimeoutExpired: continue
-        try: o1 = subprocess.run([os.path.join(tmp, "a")], capture_output=True, timeout=60)
-        except subprocess.TimeoutExpired:
-            print(f"VECTOR HANG case {c}"); print(src); open(os.path.join(ROOT, "vec_fail.ck"), "w").write(src); sys.exit(1)
-        if o1.stdout != o2.stdout or o1.returncode != o2.returncode:
-            print(f"MISMATCH case {c} (rc {o1.returncode} vs {o2.returncode})")
-            print(src)
-            print("vector:", o1.stdout[-300:]); print("scalar:", o2.stdout[-300:])
-            open(os.path.join(ROOT, "vec_fail.ck"), "w").write(src)
-            sys.exit(1)
+    with tempfile.TemporaryDirectory() as tmp, ThreadPoolExecutor(max_workers=max(1, jobs)) as ex:
+        futs = [ex.submit(run_case, c, s, tmp, first) for c, s in enumerate(srcs)]
+        for c, fut in enumerate(futs):          # in program order: report the first failure
+            v, report, save = fut.result()
+            vec += v
+            if report is not None:
+                ex.shutdown(wait=True, cancel_futures=True)
+                sys.stdout.write(report)
+                if save: open(os.path.join(ROOT, "vec_fail.ck"), "w").write(srcs[c])
+                sys.exit(1)
     print(f"PASS {cases} programs ({vec} vectorized), seed {seed}")
 
 main()
