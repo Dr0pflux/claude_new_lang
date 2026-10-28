@@ -223,7 +223,7 @@ A flow-sensitive interval analysis tracks every scalar through assignments, `if`
 
 A check is removed when the index range lies within `[0, len−1]` for a constant length, when a length fact applies, or when the index's maximum is below a validated minimum length (`if len(q) < N { return …; }`). In `bench/vigenere/vig.ck`, 67 of 67 checks are proven.
 
-## Optimizations that change cost, never results
+## Optimizations intended to preserve results
 
 - **Division:** magic-number division and modulo by signed constants; shifts and masks for unsigned powers of two.
 - **Periodic-index strength reduction:** `(i + E) % p` → a wrapping counter (with `p ≥ 1` and `i + E ≥ 0` proven).
@@ -231,18 +231,24 @@ A check is removed when the index range lies within `[0, len−1]` for a constan
   - `as` to a width at least the element width is dropped right before a store;
   - narrowing casts proven in range are dropped;
   - widening is always free.
-- **Float trees:** float expression trees are evaluated in an XMM register stack (xmm2–xmm15). Values move in from leaves once and out at the root once, and loads go straight to XMM. Float variables themselves still live in general registers; XMM allocation is part of the SSA backend (Phase 3).
+- **Float trees:** float expression trees are evaluated in an XMM register stack (xmm2–xmm15). Values move in from leaves once and out at the root once, and loads go straight to XMM. Eligible local f32/f64 variables are allocated to XMM registers; globals and spills may still require memory/register transfers.
 - **Codegen:** loop-invariant constants in registers, in-place `x = f(x, …)`, `lea` and 3-operand `imul`, folded address offsets.
 - **Dead functions:** variables of functions that were fully inlined (or never called) take no registers or frame slots.
+
+These transformations must preserve language semantics. Known dependence-analysis
+risks and hardware validation gaps are tracked in [AUDIT.md](AUDIT.md) and
+[issue #9](https://github.com/Dr0pflux/skite.ck/issues/9); listed optimizations are
+not an exhaustive correctness proof for all programs.
 
 ## Diagnostics
 
 Compile errors go to stderr as `file:line:col: error: message`, followed by the source line and a caret, with exit status 1. Type errors point at the start of the offending expression; declaration errors at the name.
 
-## Limits (compile-time diagnostics, never crashes)
+## Configured compiler limits
 
 - Nesting depth 256.
-- 65,536 AST nodes, 4,096 variables.
-- 1 MiB of source; 1 MiB of machine code.
+- 1,048,576 AST nodes, 65,536 variables; optimizer-created nodes/variables also use these budgets.
+- 1 MiB of user source; 16 MiB of generated machine code.
+- 4,096 functions, 16 parameters per function, 64 struct types and 32 fields per struct.
 - Identifiers up to 63 bytes.
 - NUL bytes in source are rejected.

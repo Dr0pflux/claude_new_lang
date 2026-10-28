@@ -1,5 +1,14 @@
 # Design
 
+This is an architectural roadmap, not a description of every implemented pass.
+The current compiler is self-hosted and directly emits Linux x86-64 ELF; a full
+SSA pipeline, AArch64 backend, enforced noalias ownership, modules, SoA, bounded
+compile-time evaluation and host tuning remain goals in
+[issue #7](https://github.com/Dr0pflux/skite.ck/issues/7). Current implementation
+and evidence are summarized in [HANDOFF.md](HANDOFF.md), [LANGUAGE.md](LANGUAGE.md)
+and [LIMITATIONS.md](LIMITATIONS.md). Regular Game workloads, not vig/ngram,
+determine performance priorities.
+
 
 ## Native backend blueprint
 
@@ -9,7 +18,8 @@
   scheduling, encoding, relocation, ELF linking and runtime primitives.
 - No LLVM, GCC, Cranelift, QBE, external assembler or external linker in the
   source-language compilation pipeline.
-- Bootstrapping via C11 is acceptable. Later self-hosting is a separate goal.
+- Self-hosting is implemented via the prebuilt Skite seed. The archived C11
+  compiler remains an audit route, not a normal build dependency.
 - Target real existing ISAs. Initial target Linux x86-64 System V ABI. Second
   target Linux AArch64. Architecture-neutral IR and target-specific lowering.
 - Begin with existing kernel ABI and ELF for immediate testability. Building a
@@ -124,9 +134,9 @@ branch misses and binary size. Distinguish compiler-optimization wins from
 algorithm changes, then compare equal algorithms separately. Do not claim a
 universal speed advantage.
 
-For domain operators, test n-gram lookup throughput, corpus tokenization,
-29-symbol modular transforms, substring search, ragged transposition and
-candidate-scoring workloads, always with realistic input sizes.
+Primary acceptance measurements use the regular Game suite against matched C/Rust
+implementations. Domain-operator workloads are future supplemental experiments;
+vig/ngram results do not determine current optimization priorities.
 
 ### Primary reference specifications
 

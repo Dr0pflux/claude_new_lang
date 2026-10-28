@@ -21,22 +21,27 @@ Contributors (people and AI agents): read [`AGENTS.md`](AGENTS.md),
 
 ## Performance
 
-Benchmarks Game programs, the same algorithm in skite, C and Rust, byte-identical output
-required (`bench/game/`). gcc/clang `-O3 -march=native`, rustc `-C opt-level=3 -C target-cpu=native`.
-Results and methodology: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md); latest quick-size table in
-[`docs/HANDOFF.md`](docs/HANDOFF.md). Today skite is about 3.8x faster than the best of
-gcc/clang/rustc on mandelbrot, on par on fasta, spectralnorm and fannkuchredux, and behind on
-nbody (1.5x) and binarytrees (2.5x).
+Performance depends on the machine and compiler versions. The historical Xeon results and the
+current Ryzen results are separate snapshots in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+On the Ryzen 7 5700U quick-size run, Skite was 2.02x slower than the fastest reference on nbody,
+1.01x on spectralnorm, 1.04x on mandelbrot, 1.26x on fannkuchredux, 1.10x on fasta, and 1.86x
+on binarytrees. These are matched implementations with byte-identical output, not rankings against
+every implementation. The 3.9x mandelbrot lead in the older Xeon snapshot is specific to that host.
+
+Merged PR #10 reduced compiler self-compilation median time on the same Ryzen from 2.520167 s to
+2.221176 s (11.9% lower across three paired runs after warmup). It did not improve generated
+program runtime; binaries for the six Game programs remained byte-identical. See the measurement
+method and compiler versions in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
 What makes skite fast:
 
-- **Bit-exact auto-vectorization.** Loops whose bodies start with pure computation (including
-  inner loops with data-dependent exits) run 8 or 16 iterations at once in AVX-512 registers
-  under k-masks; the rest of the body runs per lane in order. Results are bit-identical to scalar
-  execution (no reassociation, no FMA contraction). CPUs without AVX-512 take the scalar path.
-- **Proven-safe indexing:** every array access is bounds-checked unless range analysis proves it.
-- **Zero-cost helpers:** non-recursive functions are inlined; bounds proofs flow through them.
-- Floats in XMM registers, periodic-index strength reduction, magic-number division.
+- **Vectorization:** eligible loops can use AVX-512; CPUs without AVX-512 take the scalar path.
+  Tested programs match their scalar/reference outputs. A global bit-exact guarantee for all
+  programs has not been established; [issue #9](https://github.com/Dr0pflux/skite.ck/issues/9)
+  tracks an alias-proof gap in the experimental stream-vectorization work.
+- **Proven-safe indexing:** array accesses are bounds-checked unless range analysis proves them safe.
+- **Bounded inlining:** small helpers can be inlined within size budgets; bounds proofs flow through them.
+- Floats in XMM registers, periodic-index strength reduction, and magic-number division.
 
 ## Layout
 

@@ -14,8 +14,10 @@ The ledger and its latest comments are live state; this document is the protocol
    an atomic lock: the single coordinator must resolve competing claims before
    authorizing overlapping work. Time elapsed alone does not prove abandonment.
 4. Parallelize reproduction, oracle tests, profiling and review. One implementer
-   owns overlapping `skite.ck` edits. Default to one implementer plus at most two
-   bounded reviewers; all subagents report results to the coordinator for saving.
+   owns overlapping `skite.ck` edits. Use Luna with low reasoning and minimal fresh context as the main scoped
+   implementation worker; keep at most three concurrent workers, with additional
+   tasks queued durably. One implementer owns overlapping edits; independent
+   reviewers report to the coordinator for saving.
 
 ## Checkpoint before stopping
 
@@ -46,9 +48,11 @@ link. This repository file does not itself install a scheduler on their hosts.
 ## Quality and both-provider review
 
 The goal is an efficient open-source language for computational linguistics,
-not maximum code churn. Prefer measured improvements to text scanning, n-grams,
-frequency tables, Unicode/text handling where supported, and real repository
-linguistics kernels. Use independent oracles and representative workloads;
+not maximum code churn. Primary performance metrics are the regular Game suite
+(`bench/game`) against matched GCC/Clang/Rust algorithms and byte-identical results.
+Do not rank optimization work by vig/Vigenere or ngram results. Track compile time,
+memory, startup, binary size and multicore scaling separately. The owner roadmap
+is [issue #7](https://github.com/Dr0pflux/skite.ck/issues/7). Use independent oracles;
 never claim global optimality or accept speed by silently changing semantics.
 
 Pass every change through both Codex and Claude when they are available. Save
@@ -66,6 +70,12 @@ Follow docs/AUDIT.md. Every change needs a reproducer or relevant oracle check.
 Run `make clean && make test`; run the constant-divisor oracle for division
 changes. Record the exact tested SHA and any hardware coverage gap. Review
 changes independently, require passing CI, and merge only the tested head.
+Update README.md and relevant Markdown references/changelog alongside verified
+behavior, feature and performance changes. Keep implemented features distinct from
+WIP/goals, label historical measurements by head/host and preserve pending reviews.
+Documentation-only changes need focused content/link checks and CI; do not rerun
+unchanged compiler tests locally without a new risk.
+
 Performance changes require matching outputs, before/after SHAs, CPU features,
 arguments, repeated timings and medians. Preserve traps and floating semantics.
 

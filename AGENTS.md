@@ -7,3 +7,6 @@ instruction is to keep pushing tested bugfixes and optimizations when a provider
 is capped: obtain independent available-agent review and passing CI, record the
 missing provider review honestly, and queue it for cross-audit after reset.
 Do not overwrite another team's work. Keep changes focused and updates succinct.
+
+Keep README.md and relevant docs current with merged behavior and measured results;
+distinguish implemented features, WIP, goals and pending provider reviews.
