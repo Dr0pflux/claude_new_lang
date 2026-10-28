@@ -48,6 +48,12 @@ Arithmetic and text kernels (`bench/kernels`, `run.py 3`):
 | sieve | **0.90** | prefixsum | 1.12 | divmod | 2.02 |
 | | | ngramhash | 1.23 | strsearch | 2.17 |
 
+The compiler fixes rare decimal-to-`f32` double rounding (issue #14)
+when a literal is used directly in an `f32` context. Default-`f64` literals and
+explicit `literal as f32` narrowing keep their staged conversion. Exact-rounding regressions cover midpoint
+and normal/subnormal boundaries; see [`docs/AUDIT.md`](docs/AUDIT.md).
+
+
 The goal is to lead on every arithmetic and text workload; the slower rows are open work
 (see [`docs/HANDOFF.md`](docs/HANDOFF.md)). Full history, other hosts (including a Ryzen host
 without AVX-512) and methodology: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).

@@ -35,6 +35,7 @@ Because every value is kept in its canonical 64-bit form, widening is free (no i
 
 - **Integers:** `123`, `1_000_000`, `0xff`, `0b1010`, `0o755` (`_` separators in any base; `0X`/`0B`/`0O` too), up to u64 max. Above the i64 max, a literal is `u64`.
 - **Floats:** `1.5`, `2e10`, `3.0e-7`. `1..n` stays an integer range.
+- **Decimal rounding:** a decimal literal used directly where `f32` is expected rounds from its decimal value straight to binary32. A literal with no such context still defaults to `f64`; an explicit narrowing such as `1.0000000596046448 as f32` remains an f64 parse followed by f32 conversion. See [AUDIT.md](AUDIT.md) for validation status.
 - **Bool:** `true`, `false`.
 - **Untyped until context fixes the type.** A literal adapts to the type it meets and must fit, or it is a compile error (`let x: u8 = 300;`). An integer literal used as a float must be exactly representable. On their own, literals default to `i64` / `f64`.
 - **Untyped constants:** `let k = 26;` (immutable, literal initializer) stays untyped, so `k` adapts wherever it is used.
@@ -50,7 +51,7 @@ Only lossless integer widenings happen implicitly: `i8→i16→i32→i64`, `u8�
   - Mixing `u64` with a signed type is a compile error (convert one with `as`).
   - The result is `i64` or `u64`. `/ % < <= > >=` and `>>` follow the signedness: `u64` divides and compares unsigned, and its `>>` is logical. `>>>` is always logical.
   - Shifts: the result has the (promoted) left type; the count may be any integer type, taken mod 64.
-- **Floats:** `+ - * /`, comparisons and unary `-`, on two operands of the same float type. A float literal adapts to `f32`.
+- **Floats:** `+ - * /`, comparisons and unary `-`, on two operands of the same float type. A float literal adapts to `f32` when that is the direct expected type and rounds directly to binary32. Defaulted or explicitly f64-typed values narrowed later with `as f32` retain staged f64-to-f32 conversion.
 - **bool:** `! && || == != & | ^`. `if`/`while` conditions must be `bool` (write `x != 0`).
 - **Comparisons** yield `bool`; `&&` and `||` short-circuit.
 

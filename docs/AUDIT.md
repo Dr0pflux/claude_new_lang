@@ -42,6 +42,19 @@ integer differential cases (13 expected traps, no mismatch). All six Game output
 match. Measured benefit is smaller nbody code, with a 24-byte compiler-size cost;
 no runtime-speed claim is made. Exact-head build/CI evidence is kept in the ledger.
 
+## Float-literal rounding (issue #14)
+
+Issue #14 has a reproducer where a decimal literal used directly as `f32` rounds to
+the lower binary32 value after an intermediate binary64 rounding, while its exact
+decimal value lies above the binary32 midpoint. The parser now
+rounds direct `f32`-context literals once from decimal to binary32. Literals defaulting
+to `f64`, including explicit `literal as f32` narrowing, retain their staged behavior.
+The implementation adds about 8.5 MiB of virtual metadata mappings; RSS impact is unknown,
+and it is not a performance optimization. `tests/f32_literals.py` checks 20 cases against exact Fraction rounding of the emitted
+decimal text, including midpoint parity, subnormal/normal and overflow boundaries,
+constant aliases, signed zero and explicit narrowing controls. The old compiler fails
+the above-midpoint case. Exact-head build, review and CI evidence is recorded in the ledger.
+
 ## Open findings
 
 1. [Issue #9](https://github.com/Dr0pflux/skite.ck/issues/9) tracks mixed-width
