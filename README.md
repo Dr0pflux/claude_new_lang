@@ -34,6 +34,11 @@ What makes skite fast:
   inner loops with data-dependent exits) run 8 or 16 iterations at once in AVX-512 registers
   under k-masks; the rest of the body runs per lane in order. Results are bit-identical to scalar
   execution (no reassociation, no FMA contraction). CPUs without AVX-512 take the scalar path.
+- **Element-wise loops and integer reductions** (`b[i] = b[i] * k + a[i]`, fills, copies,
+  `s += a[i]`, `x ^= b[i]`, narrow `u8`..`u32` elements) also run 8 or 16 lanes at once. Unproven
+  bounds are checked once before the vector loop, and array parameters that might be the same
+  array are compared at run time; when a check fails, the ordinary loop runs and traps exactly
+  where scalar code would.
 - **Proven-safe indexing:** every array access is bounds-checked unless range analysis proves it.
 - **Zero-cost helpers:** non-recursive functions are inlined; bounds proofs flow through them.
 - Floats in XMM registers, periodic-index strength reduction, magic-number division.
