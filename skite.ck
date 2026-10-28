@@ -4016,6 +4016,15 @@ let mut BV_E: i64 = -1;
 let mut BV_LE: bool = false;
 // an index i + X + k: X up to two loop-invariant i64 variables (BV_LV), k a small constant
 let mut BV_W: i64 = -1;
+// induction variables: conjuncts v < E (v <= E) of the loop test; each grows only by one v += 1
+let BV_IV = alloc<i64>(4);
+let BV_IE = alloc<i64>(4);
+let BV_ILE = alloc<bool>(4);
+let BV_INC = alloc<bool>(4);   // walking the body: v's increment already passed
+let mut BV_NIV: i64 = 0;
+let mut BV_NIV0: i64 = 0;   // test variables come first; counters after
+let mut BV_WHICH: i64 = 0;
+let BV_AI = alloc<i64>(64);    // access -> its induction variable
 let BV_LV = alloc<i64>(2);
 let mut BV_NLV: i64 = 0;
 let mut BV_NI: i64 = 0;
@@ -4028,7 +4037,8 @@ fn bv_lin(x: i64, neg: bool) {
   if k == N_VAR {
     let v = nd[x].var;
     if neg || vars[v].ty != TY_I64 { BV_LOK = false; return; }
-    if v == BV_I { BV_NI += 1; return; }
+    let mut q = 0; while q < BV_NIV && BV_IV[q] != v { q += 1; }
+    if q < BV_NIV { if BV_NI > 0 && BV_WHICH != q { BV_LOK = false; return; } BV_NI += 1; BV_WHICH = q; return; }
     if count_assign(BV_W, v) != 0 || BV_NLV >= 2 { BV_LOK = false; return; }
     BV_LV[BV_NLV] = v; BV_NLV += 1; return;
   }
@@ -4047,14 +4057,18 @@ let BV_X1 = alloc<i64>(64);
 let BV_X2 = alloc<i64>(64);
 fn bv_acc(a: i64, x: i64, node: i64, mark: bool) {
   if !bv_off(x) { return; }
+  let q = BV_WHICH;
+  if BV_INC[q] { return; }   // after the increment in this iteration: the test no longer bounds it
+  BV_E = BV_IE[q]; BV_LE = BV_ILE[q];
   let k = BV_LK;
   let mut x1 = -1; let mut x2 = -1;
   if BV_NLV > 0 { x1 = BV_LV[0]; } if BV_NLV > 1 { x2 = BV_LV[1]; }
   if mark { vpre[node] = true; return; }
   let mut i = 0;
-  while i < BV_N && !(BV_A[i] == a && BV_K[i] == k && BV_X1[i] == x1 && BV_X2[i] == x2) { i += 1; }
-  if i == BV_N { if BV_N >= 64 { BV_BAD = true; return; } BV_A[i] = a; BV_K[i] = k; BV_X1[i] = x1; BV_X2[i] = x2; BV_N += 1; }
+  while i < BV_N && !(BV_A[i] == a && BV_K[i] == k && BV_X1[i] == x1 && BV_X2[i] == x2 && BV_AI[i] == q) { i += 1; }
+  if i == BV_N { if BV_N >= 64 { BV_BAD = true; return; } BV_A[i] = a; BV_K[i] = k; BV_X1[i] = x1; BV_X2[i] = x2; BV_AI[i] = q; BV_N += 1; }
   let mut easy = false;   // the range analysis proves these itself: E is len(a) (or a copy of it), or a constant in range
+  if q >= BV_NIV0 { BV_HARD = true; return; }   // counters are bounded by the trip count only
   if x1 < 0 && k >= 0 && is_const(BV_E) && vars[a].lenv < 0 { let mut last = nd[BV_E].v as i64; if !BV_LE { last -= 1; } easy = last + k < vars[a].alen; }
   if x1 < 0 && k == 0 && !BV_LE && nd[BV_E].k == N_VAR && vars[a].lenv >= 0 {
     let ev = nd[BV_E].var;
@@ -4079,6 +4093,7 @@ fn bv_s(s: i64, mark: bool) {
   if k == S_WHILE { bv_e(nd[s].a, mark); bv_s(nd[s].b, mark); return; }
   if k == S_STORE { bv_e(nd[s].a, mark); bv_e(nd[s].b, mark); bv_acc(nd[s].var, nd[s].a, s, mark); return; }
   if k == S_WRITE || k == S_SAVE { BV_BAD = true; return; }
+  if k == S_ASSIGN { bv_e(nd[s].a, mark); let mut q = 0; while q < BV_NIV { if nd[s].var == BV_IV[q] { BV_INC[q] = true; } q += 1; } return; }
   bv_e(nd[s].a, mark); bv_e(nd[s].b, mark);
 }
 fn bv_len(a: i64) -> i64 {
@@ -4098,35 +4113,102 @@ fn bv_sum(e0: i64, x1: i64, x2: i64, k: i64) -> i64 {
   return e;
 }
 fn bv_and(g: i64, c: i64) -> i64 { if g < 0 { return c; } let o = mk_bin(O_LAND, g, c); nd[o].ty = TY_BOOL; return o; }
+fn bv_conj(c: i64, w: i64) {   // induction-variable conjuncts of the loop test
+  if nd[c].k == N_BIN && nd[c].op == O_LAND { bv_conj(nd[c].a, w); bv_conj(nd[c].b, w); return; }
+  if nd[c].k != N_BIN || (nd[c].op != O_LT && nd[c].op != O_LE) || nd[nd[c].a].k != N_VAR || BV_NIV >= 4 { return; }
+  let v = nd[nd[c].a].var; let E = nd[c].b;
+  if vars[v].ty != TY_I64 || nd[E].ty != TY_I64 || !invariant(E, w) || has_call(E) || count_assign(w, v) != 1 || !bv_has_inc(nd[w].b, v) { return; }
+  let mut q = 0; while q < BV_NIV { if BV_IV[q] == v { return; } q += 1; }
+  BV_IV[BV_NIV] = v; BV_IE[BV_NIV] = E; BV_ILE[BV_NIV] = nd[c].op == O_LE; BV_NIV += 1;
+}
+fn bv_progress(c0: i64) -> bool {   // every path through these statements increments a test variable
+  let mut c = c0;
+  while c >= 0 {
+    let k = nd[c].k;
+    if k == S_ASSIGN { let mut q = 0; while q < BV_NIV0 { if nd[c].var == BV_IV[q] { return true; } q += 1; } }
+    if k == S_BLOCK && bv_progress(nd[c].a) { return true; }
+    if k == S_IF && nd[c].c >= 0 && bv_progress1(nd[c].b) && bv_progress1(nd[c].c) { return true; }
+    if k == S_BRK || k == S_CONT || k == S_RET || k == S_IRET { return false; }
+    if k == S_IF && (bv_jumps(nd[c].b) || bv_jumps(nd[c].c)) { return false; }
+    c = nd[c].next;
+  }
+  return false;
+}
+fn bv_progress1(s: i64) -> bool { if nd[s].k == S_BLOCK { return bv_progress(nd[s].a); } let sv = nd[s].next; nd[s].next = -1; let r = bv_progress(s); nd[s].next = sv; return r; }
+fn bv_jumps(s: i64) -> bool { return s >= 0 && has_jump0(s, 0); }
+fn bv_trip(lim: bool) -> i64 {   // sum over test variables of E - v (+ 1 for <=): an iteration bound
+  let mut e = -1; let mut q = 0;
+  while q < BV_NIV0 {
+    let mut t = mk_bin(O_SUB, clone_expr(BV_IE[q]), mk_var(BV_IV[q])); nd[t].ty = TY_I64;
+    if BV_ILE[q] { t = mk_bin(O_ADD, t, mkconst_t(1, TY_I64)); nd[t].ty = TY_I64; }
+    if e < 0 { e = t; } else { e = mk_bin(O_ADD, e, t); nd[e].ty = TY_I64; }
+    q += 1;
+  }
+  return e;
+}
+fn bv_has_inc(s: i64, v: i64) -> bool {   // the one assignment of v in s is v += 1
+  if s < 0 { return false; }
+  let k = nd[s].k;
+  if k == S_ASSIGN { return nd[s].var == v && is_inc1(s, v); }
+  if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { if bv_has_inc(c, v) { return true; } c = nd[c].next; } return false; }
+  if k == S_IF { return bv_has_inc(nd[s].b, v) || bv_has_inc(nd[s].c, v); }
+  return false;
+}
 fn bv_loop(w: i64) {
   let cnd = nd[w].a; let body = nd[w].b;
-  if nd[w].c >= 0 || body < 0 || nd[body].k != S_BLOCK || nd[cnd].k != N_BIN || (nd[cnd].op != O_LT && nd[cnd].op != O_LE) || nd[nd[cnd].a].k != N_VAR { return; }
-  let iv = nd[nd[cnd].a].var; let E = nd[cnd].b;
-  if vars[iv].ty != TY_I64 || nd[E].ty != TY_I64 || !invariant(E, w) || has_call(E) || count_assign(w, iv) != 1 || stmt_size(body) > 80 { return; }
-  let mut last = nd[body].a; if last < 0 { return; }
-  while nd[last].next >= 0 { last = nd[last].next; }
-  if !is_inc1(last, iv) { return; }
-  BV_I = iv; BV_E = E; BV_LE = nd[cnd].op == O_LE; BV_N = 0; BV_BAD = false; BV_HARD = false; BV_W = w;
+  if nd[w].c >= 0 || body < 0 || nd[body].k != S_BLOCK || has_call(cnd) || stmt_size(body) > 80 { return; }
+  BV_W = w; BV_NIV = 0;
+  bv_conj(cnd, w);
+  if BV_NIV == 0 { return; }
+  // counters: a top-level v += 1 (v changed nowhere else) when every path of the body increments
+  // a test variable: at most sum(E - v0) iterations run, so v < v0 + sum(E - v0)
+  BV_NIV0 = BV_NIV;
+  if bv_progress(nd[body].a) {
+    let mut c = nd[body].a;
+    while c >= 0 && BV_NIV < 4 {
+      if nd[c].k == S_ASSIGN && is_inc1(c, nd[c].var) && vars[nd[c].var].ty == TY_I64 && count_assign(w, nd[c].var) == 1 {
+        let v = nd[c].var; let mut q = 0; while q < BV_NIV && BV_IV[q] != v { q += 1; }
+        if q == BV_NIV { BV_IV[BV_NIV] = v; BV_IE[BV_NIV] = -1; BV_ILE[BV_NIV] = false; BV_NIV += 1; }
+      }
+      c = nd[c].next;
+    }
+  }
+  BV_N = 0; BV_BAD = false; BV_HARD = false;
+  let mut q = 0; while q < BV_NIV { BV_INC[q] = false; q += 1; }
   bv_s(body, false);
   if BV_BAD || !BV_HARD || BV_N == 0 { return; }
   // guard: for each (a, X, k): i + X + k >= 0 && E + X + k <= len(a) (+ 1 for <=). With variable
   // offsets every term is first bounded to +-2^40 (&& evaluates them first), so no sum can wrap.
-  let mut g = -1; let mut kmin = 1048576; let mut i = 0; let mut anyx = false;
-  while i < BV_N { if BV_X1[i] < 0 && BV_K[i] < kmin { kmin = BV_K[i]; } if BV_X1[i] >= 0 { anyx = true; } i += 1; }
-  if anyx {
-    g = bv_and(g, bv_bound(mk_var(iv))); g = bv_and(g, bv_bound(clone_expr(E)));
+  let mut g = -1; let mut i = 0;
+  q = 0;
+  while q < BV_NIV {
+    let iv = BV_IV[q]; let E = BV_IE[q];
+    let mut kmin = 1048576; let mut anyx = false; let mut used = false;
     i = 0;
-    while i < BV_N {
-      if BV_X1[i] >= 0 { g = bv_and(g, bv_bound(mk_var(BV_X1[i]))); }
-      if BV_X2[i] >= 0 { g = bv_and(g, bv_bound(mk_var(BV_X2[i]))); }
-      i += 1;
+    while i < BV_N { if BV_AI[i] == q { used = true; if BV_X1[i] < 0 && BV_K[i] < kmin { kmin = BV_K[i]; } if BV_X1[i] >= 0 { anyx = true; } } i += 1; }
+    if q >= BV_NIV0 && used {   // counter: its bound sums every test variable's E - v0
+      g = bv_and(g, bv_bound(mk_var(iv)));
+      let mut r = 0; while r < BV_NIV0 { g = bv_and(g, bv_bound(mk_var(BV_IV[r]))); g = bv_and(g, bv_bound(clone_expr(BV_IE[r]))); r += 1; }
     }
+    if anyx {
+      g = bv_and(g, bv_bound(mk_var(iv)));
+      if E >= 0 { g = bv_and(g, bv_bound(clone_expr(E))); }
+      i = 0;
+      while i < BV_N {
+        if BV_AI[i] == q && BV_X1[i] >= 0 { g = bv_and(g, bv_bound(mk_var(BV_X1[i]))); }
+        if BV_AI[i] == q && BV_X2[i] >= 0 { g = bv_and(g, bv_bound(mk_var(BV_X2[i]))); }
+        i += 1;
+      }
+    }
+    // the smallest index i0 + kmin of the constant-offset accesses must be >= 0 (also for kmin >= 0)
+    if kmin < 1048576 { let c = mk_bin(O_GE, mk_var(iv), mkconst_t((0 - kmin) as u64, TY_I64)); nd[c].ty = TY_BOOL; g = bv_and(g, c); }
+    q += 1;
   }
-  // the smallest index i0 + kmin of the constant-offset accesses must be >= 0 (also for kmin >= 0)
-  if kmin < 1048576 { let c = mk_bin(O_GE, mk_var(iv), mkconst_t((0 - kmin) as u64, TY_I64)); nd[c].ty = TY_BOOL; g = bv_and(g, c); }
   i = 0;
   while i < BV_N {
-    let mut d = BV_K[i]; if BV_LE { d += 1; }
+    let iv = BV_IV[BV_AI[i]]; let mut E = BV_IE[BV_AI[i]];
+    if E < 0 { E = mk_bin(O_ADD, mk_var(iv), bv_trip(false)); nd[E].ty = TY_I64; }   // counter: v0 + trip
+    let mut d = BV_K[i]; if BV_ILE[BV_AI[i]] { d += 1; }
     if BV_X1[i] < 0 {
       let mut r = bv_len(BV_A[i]);
       if d != 0 { r = mk_bin(O_SUB, r, mkconst_t(d as u64, TY_I64)); nd[r].ty = TY_I64; }
@@ -4150,6 +4232,7 @@ fn bv_loop(w: i64) {
     if imap_gen[v] == igen && imap[v] >= nv0 { let c = imap[v]; vars[c].isconst = vars[v].isconst; vars[c].cval = vars[v].cval; vars[c].lenof = vars[v].lenof; }
     v += 1;
   }
+  q = 0; while q < BV_NIV { BV_INC[q] = false; q += 1; }
   bv_s(body, true);
   let w1 = mk(S_WHILE); copy_node(w1, w); nd[w1].next = -1;
   nd[cl].next = -1;
@@ -7665,10 +7748,10 @@ fn ic_cmovs(b: i64, i0: i64, cc: i64) -> i64 {
   }
   return i;
 }
-fn ic_incs(b: i64, i0: i64) -> i64 {   // v += rax for the v += 1 assignments (rax = predicate 0/1)
+fn ic_incs(b: i64, i0: i64, r: i64) -> i64 {   // v += r for the v += 1 assignments (r = predicate 0/1)
   if b < 0 { return i0; }
   let mut i = i0; let mut c = ic_list(b);
-  while c >= 0 { if IC_SRC[i] < 0 { loc(nd[c].var); alu(A_ADD, OK, ORR, K_REG, RAX, 0); } i += 1; c = nd[c].next; }
+  while c >= 0 { if IC_SRC[i] < 0 { loc(nd[c].var); alu(A_ADD, OK, ORR, K_REG, r, 0); } i += 1; c = nd[c].next; }
   return i;
 }
 fn ic_multi(s: i64, rg: i64, n: i64) -> bool {
@@ -7687,17 +7770,20 @@ fn ic_multi(s: i64, rg: i64, n: i64) -> bool {
   let mut ra = RAX;
   if simple(nd[c].a) { opnd(nd[c].a); if OK == K_REG { ra = ORR; } else { load(RAX, OK, ORR, OI); } }   // a register variable is compared in place
   else { gen(nd[c].a, rg + ia, n - ia); ra = RGS[rg + ia]; }
+  let mut ninc1 = 0; let mut ninc2 = 0; let mut q = 0;
+  while q < k { if IC_SRC[q] < 0 { if q < k1 { ninc1 += 1; } else { ninc2 += 1; } } q += 1; }
+  // v += 1 under the predicate: rcx / rdx (never temporaries) are zeroed before the compare and
+  // receive setcc / its negation, so each increment is one add after the flags
+  if ninc1 > 0 { emh("31c9"); }   // xor ecx, ecx
+  if ninc2 > 0 { emh("31d2"); }   // xor edx, edx
   if rb < 0 { opnd(nd[c].b); alu(A_CMP, K_REG, ra, OK, ORR, OI); }
   else { alu(A_CMP, K_REG, ra, K_REG, rb, 0); }
   let cc = cc_of(nd[c].op);
   ic_cmovs(nd[s].c, ic_cmovs(nd[s].b, 0, cc), cc ^ 1);
-  let mut ninc1 = 0; let mut ninc2 = 0; let mut q = 0;
-  while q < k { if IC_SRC[q] < 0 { if q < k1 { ninc1 += 1; } else { ninc2 += 1; } } q += 1; }
-  if ninc1 + ninc2 > 0 {
-    setcc_zx(cc, RAX);   // the flags survive the cmovs
-    ic_incs(nd[s].b, 0);
-    if ninc2 > 0 { alui(A_XOR, RAX, 1); ic_incs(nd[s].c, k1); }
-  }
+  if ninc1 > 0 { encr(0, false, 2, 15, 144 | cc, 0, RCX); }         // setcc cl
+  if ninc2 > 0 { encr(0, false, 2, 15, 144 | (cc ^ 1), 0, RDX); }   // set!cc dl
+  if ninc1 > 0 { ic_incs(nd[s].b, 0, RCX); }
+  if ninc2 > 0 { ic_incs(nd[s].c, k1, RDX); }
   return true;
 }
 fn ifconv(s: i64, rg: i64, n: i64) {
