@@ -4197,6 +4197,36 @@ fn bv_walk(s: i64) {
   if k == S_IF { bv_walk(nd[s].b); bv_walk(nd[s].c); return; }
   if k == S_WHILE { if lh_inner(nd[s].b) { bv_loop(s); } else { bv_walk(nd[s].b); } return; }
 }
+// ---- `let v = g; g += c` (g a global scalar, a one-element static array): the update reads v
+// instead of loading g again (nothing runs between the two)
+fn gi_g0(e: i64) -> bool { return nd[e].k == N_LOAD && gsc[nd[e].var] && is_const(nd[e].a) && nd[nd[e].a].v == 0 && nd[e].op <= 0; }
+fn gi_walk(s: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK || k == S_INL {
+    let mut c = nd[s].a;
+    while c >= 0 {
+      let x0 = nd[c].next;
+      let mut x = x0;
+      if x >= 0 && nd[x].k == S_BLOCK && nd[x].a >= 0 && nd[nd[x].a].next < 0 { x = nd[x].a; }
+      if x >= 0 && nd[c].k == S_LET && gi_g0(nd[c].a) && nd[x].k == S_STORE && nd[x].c < 0 && nd[x].var == nd[nd[c].a].var && is_const(nd[x].a) && nd[nd[x].a].v == 0 {
+        let e = nd[x].b; let v = nd[c].var; let g = nd[x].var;
+        if nd[x].op < 0 && nd[e].k == N_BIN && (nd[e].op == O_ADD || nd[e].op == O_SUB) && gi_g0(nd[e].a) && nd[nd[e].a].var == g && is_const(nd[e].b) && vars[v].ty == nd[nd[e].a].ty {
+          let ld = nd[e].a; let ty = nd[ld].ty;
+          nd[ld].k = N_VAR; nd[ld].var = v; nd[ld].a = -1; nd[ld].op = 0; nd[ld].ty = ty; vars[v].reads += 1;
+        }
+        else if (nd[x].op == O_ADD || nd[x].op == O_SUB) && is_const(e) && vars[v].ty == vars[g].et && ty_int(vars[g].et) {   // g[0] += c
+          let b = mk_bin(nd[x].op, mk_var(v), e); nd[b].ty = vars[g].et;
+          nd[x].b = b; nd[x].op = -1;
+        }
+      }
+      gi_walk(c); c = x0;
+    }
+    return;
+  }
+  if k == S_IF { gi_walk(nd[s].b); gi_walk(nd[s].c); return; }
+  if k == S_WHILE { gi_walk(nd[s].b); return; }
+}
 fn cs_walk(s: i64) {
   if s < 0 { return; }
   let k = nd[s].k;
@@ -4220,7 +4250,7 @@ fn allocate() {
   mark_used();
   simplify();
   f = 0;
-  while f < nfn { if fns[f].used != 0 { CS_F = f; sm_walk(fns[f].body); ss_walk(fns[f].body, false); cs_walk(fns[f].body); lh_walk(fns[f].body); bv_walk(fns[f].body); mm_walk(fns[f].body, false); dm_walk(fns[f].body); } f += 1; }
+  while f < nfn { if fns[f].used != 0 { CS_F = f; gi_walk(fns[f].body); sm_walk(fns[f].body); ss_walk(fns[f].body, false); cs_walk(fns[f].body); lh_walk(fns[f].body); bv_walk(fns[f].body); mm_walk(fns[f].body, false); dm_walk(fns[f].body); } f += 1; }
   let mut v = 0;
   while v < nv { if vars[v].owner >= 0 && fns[vars[v].owner].used == 0 { vars[v].reads = 0; } v += 1; }
   analyze();
