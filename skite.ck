@@ -1821,6 +1821,12 @@ fn parse_stmt() -> i64 {
           let n = nd[ag].v as i64;
           if n < 1 || n > 2147483647 { fail("array length must be 1..2^31-1"); }
           vars[v].alen = n;
+          // main's top-level constant-length arrays live in .bss: absolute addressing, no base register
+          let at = (glob_bytes + 63) & ~63;
+          if kind == A_ALLOC && !scoped && !shr && n * w <= 67108864 && at + n * w <= GLOB_MAX - 268435456 {
+            glob_bytes = at + n * w;
+            let b = vars[v].basev; vars[b].isconst = 1; vars[b].cval = at as u64; vars[b].owner = -1; vars[b].glob = 1;
+          }
         } else { vars[v].lenv = hidden(); }
       }
       vars[vars[v].basev].reads += 1;
@@ -5039,6 +5045,100 @@ fn gen_vloop(s: i64, p: i64) -> i64 {
   rel32(jmp(), vtop);
   return to_scalar;
 }
+// ---------------------------------------------------------------- in-place reversal
+//   while lo < hi { let t = a[lo]; a[lo] = a[hi]; a[hi] = t; lo += 1; hi -= 1; }
+// over a constant-length array of at most 128 bytes (8-byte elements): the whole array is
+// two zmm tables and one vpermi2q per half does every swap at once. Only lanes lo..hi are
+// read or written (masked), bounds are checked once up front (the first iteration touches
+// a[lo] and a[hi], the extremes), then lo and hi get their final values and the ordinary
+// loop below finds lo >= hi. No AVX-512: the ordinary loop does the work.
+let mut RV_A: i64 = 0;
+let mut RV_LO: i64 = 0;
+let mut RV_HI: i64 = 0;
+let mut RV_CHK: i64 = 0;
+let mut nrev: i64 = 0;
+fn is_dec1(s: i64, v: i64) -> bool {
+  if nd[s].k != S_ASSIGN || nd[s].var != v { return false; }
+  let e = nd[s].a;
+  if nd[e].k != N_BIN || nd[nd[e].a].k != N_VAR || nd[nd[e].a].var != v || !is_const(nd[e].b) { return false; }
+  return (nd[e].op == O_SUB && nd[nd[e].b].v == 1) || (nd[e].op == O_ADD && nd[nd[e].b].v == 18446744073709551615);
+}
+fn var_is(e: i64, v: i64) -> bool { return e >= 0 && nd[e].k == N_VAR && nd[e].var == v; }
+fn rev_match(s: i64) -> bool {
+  if simd_off || nd[s].k != S_WHILE || nd[s].c >= 0 || vplan[s] != 0 { return false; }
+  let c = nd[s].a;
+  if nd[c].k != N_BIN || nd[c].op != O_LT || nd[nd[c].a].k != N_VAR || nd[nd[c].b].k != N_VAR { return false; }
+  let lo = nd[nd[c].a].var; let hi = nd[nd[c].b].var;
+  if lo == hi || vars[lo].ty != TY_I64 || vars[hi].ty != TY_I64 { return false; }
+  let b = nd[s].b;
+  if b < 0 || nd[b].k != S_BLOCK { return false; }
+  let s1 = nd[b].a; if s1 < 0 { return false; }
+  let s2 = nd[s1].next; if s2 < 0 { return false; }
+  let s3 = nd[s2].next; if s3 < 0 { return false; }
+  let s4 = nd[s3].next; if s4 < 0 { return false; }
+  let s5 = nd[s4].next; if s5 < 0 || nd[s5].next >= 0 { return false; }
+  if nd[s1].k != S_LET || nd[s2].k != S_STORE || nd[s3].k != S_STORE { return false; }
+  let t = nd[s1].var; let l1 = nd[s1].a;
+  if t == lo || t == hi || nd[l1].k != N_LOAD || nd[l1].op != 0 || !var_is(nd[l1].a, lo) { return false; }
+  let a = nd[l1].var;
+  if vars[a].arr != 8 || vars[a].et >= TY_STRUCT0 || vars[a].lenv >= 0 || vars[a].alen * 8 > 128 || vars[a].ro != 0 { return false; }
+  if vars[t].ty != vars[a].et || nd[l1].ty != vars[a].et { return false; }
+  let l2 = nd[s2].b;
+  if nd[s2].var != a || nd[s2].op >= 0 || nd[s2].c >= 0 || !var_is(nd[s2].a, lo) { return false; }
+  if nd[l2].k != N_LOAD || nd[l2].var != a || nd[l2].op != 0 || nd[l2].ty != vars[a].et || !var_is(nd[l2].a, hi) { return false; }
+  if nd[s3].var != a || nd[s3].op >= 0 || nd[s3].c >= 0 || !var_is(nd[s3].a, hi) || !var_is(nd[s3].b, t) { return false; }
+  if !((is_inc1(s4, lo) && is_dec1(s5, hi)) || (is_dec1(s4, hi) && is_inc1(s5, lo))) { return false; }
+  RV_A = a; RV_LO = lo; RV_HI = hi;
+  RV_CHK = nd[l1].chk | nd[l2].chk | nd[s2].chk | nd[s3].chk;
+  return true;
+}
+// memory operand: element lane block h of array a (base in br, or static)
+fn rv_mem(a: i64, br: i64, h: i64) {
+  let bv = vars[a].basev;
+  if br < 0 { vm_abs(GLOB_BASE + (vars[bv].cval as i64) + 64 * h); } else { vm_mem(br, -1, 0, 64 * h); }
+}
+fn gen_rev(s: i64) -> i64 {
+  let a = RV_A;
+  let nz = (vars[a].alen * 8 + 63) / 64;
+  // whole blocks: plain loads and stores (unchanged lanes are rewritten with their own values)
+  let full = vars[a].alen * 8 == 64 * nz && vars[a].shared == 0;
+  let mut to_scalar = -1;
+  emh("803c25"); u32_(HAS_AVX); byte(0); to_scalar = pl_add(to_scalar, jcc(CC_E));
+  let bv = vars[a].basev;
+  let mut br = -1;
+  if vars[bv].isconst == 0 || vars[bv].glob != 1 { br = base_reg(a); if br == RAX || br == RCX { mov_rr(RDX, br); br = RDX; } }
+  loc(RV_LO); load(RAX, OK, ORR, OI);
+  loc(RV_HI); load(RCX, OK, ORR, OI);
+  alur(A_CMP, RAX, RCX); to_scalar = pl_add(to_scalar, jcc(CC_GE));
+  if RV_CHK != 0 {
+    alui(A_CMP, RAX, vars[a].alen as u64); trap_if(CC_AE);
+    alui(A_CMP, RCX, vars[a].alen as u64); trap_if(CC_AE);
+  }
+  evx(2, 1, 1, 2, 124, 19, 0, 0, RAX, 0, false, false);       // vpbroadcastq zmm19, lo
+  evx(2, 1, 1, 2, 124, 20, 0, 0, RCX, 0, false, false);       // vpbroadcastq zmm20, hi
+  evx(1, 1, 1, 2, 212, 18, 19, 0, 20, 0, false, false);       // vpaddq zmm18 = lo + hi
+  let mut h = 0;
+  while h < nz {
+    let J = cp_iota(8 * h);
+    VM_TAIL = 1; vm_pool(J); evx(3, 1, 1, 2, 31, 1 + h, 19, 1, 0, 0, false, false); byte(2);        // k = lo <= j
+    VM_TAIL = 1; vm_pool(J); evx(3, 1, 1, 2, 31, 1 + h, 20, 1, 0, 1 + h, false, false); byte(5);    // k &= hi >= j
+    if full { VM_TAIL = 0; vm_pool(J); evx(1, 2, 1, 2, 111, 21 + h, 0, 1, 0, 0, false, false); }    // idx = j
+    VM_TAIL = 0; vm_pool(J); evx(1, 1, 1, 2, 251, 21 + h, 18, 1, 0, if_sel(full, 1 + h, 0), false, false);   // idx{k} = lo + hi - j
+    if full { rv_mem(a, br, h); evx(1, 2, 1, 2, 111, 16 + h, 0, 1, 0, 0, false, false); }          // vmovdqu64 zmm, [a]
+    else { rv_mem(a, br, h); evx(1, 2, 1, 2, 111, 16 + h, 0, 1, 0, 1 + h, true, false); }          // vmovdqu64 zmm{k}{z}, [a]
+    h += 1;
+  }
+  h = 0;
+  while h < nz { evx(2, 1, 1, 2, 118, 21 + h, 16, 0, 16 + nz - 1, 0, false, false); h += 1; }    // vpermi2q
+  h = 0;
+  while h < nz { rv_mem(a, br, h); evx(1, 2, 1, 2, 127, 21 + h, 0, 1, 0, if_sel(full, 0, 1 + h), false, false); h += 1; }   // vmovdqu64 [a]{k}, zmm
+  // final lo, hi: c = (hi - lo + 1) >> 1 swaps
+  lea(RDX, RCX, -1, 1); alur(A_SUB, RDX, RAX); shift_ri(7, RDX, 1);
+  alur(A_ADD, RAX, RDX); alur(A_SUB, RCX, RDX);
+  loc(RV_LO); store(OK, ORR, RAX);
+  loc(RV_HI); store(OK, ORR, RCX);
+  return to_scalar;
+}
 // ---------------------------------------------------------------- statement codegen
 let brk_list = alloc<i64>(65536);
 let cont_list = alloc<i64>(65536);
@@ -5202,6 +5302,7 @@ fn gen_arr(s: i64, rg: i64, n: i64) {
     return;
   }
   if op == A_ALLOC {
+    if vars[vars[a].basev].isconst != 0 { return; }   // static (.bss)
     let mut rs = -1;
     if vars[a].lenv >= 0 {
       gen(nd[s].a, rg, n); rs = RGS[rg];
@@ -5310,6 +5411,7 @@ fn gen_stmt_body(s: i64, is_final: bool, rg: i64, n: i64) {
     let m = nd[s].c;
     if m >= 0 { abs_op(139, RAX, ARENA_TOP); loc(m); store(OK, ORR, RAX); }
     if vplan[s] != 0 { let ts = gen_vloop(s, vplan[s] - 1); pl_patch(ts, clen); }
+    else if rev_match(s) { let ts = gen_rev(s); pl_patch(ts, clen); }
     if !is_const(nd[s].a) { entry = pl_add(entry, jmp()); }
     let top = clen;
     let L = nloopctx; nloopctx += 1; brk_list[L] = -1; cont_list[L] = -1;
@@ -5618,11 +5720,13 @@ fn generate() {
   allocate();
   plan_all();
   let mut i = 0;
+  while i < nn { if nd[i].k == S_WHILE && rev_match(i) { nrev += 1; } i += 1; }
+  i = 0;
   while i < nn { if nd[i].k == S_PRINT || (nd[i].k == S_PUTC && nd[i].op != 1) || (nd[i].k == S_WRITE && nd[i].op == 0) { use_out = true; } i += 1; }
   use_bss = use_out || use_arena || glob_bytes > 0;
   i = 0;
   while i < nn { if nd[i].k == S_PAR { use_bss = true; } i += 1; }
-  if nplans > 0 {
+  if nplans > 0 || nrev > 0 {
     use_bss = true;
     // AVX-512F+DQ usable? (cpuid.1:ecx.OSXSAVE, xgetbv: opmask/zmm state enabled, cpuid.7:ebx bits 16, 17)
     emh("53"); emh("b80100000031c90fa2"); emh("0fbae11b"); let n1 = j8(115);
