@@ -6046,6 +6046,16 @@ fn plan_stream(s: i64, body: i64, inc: i64, iv: i64, nb: i64) {
   if (nvar + VK_TMP + 1) * 2 > 16 || VK_DEPTH * 2 > 6 { u = 1; }
   if (nvar + VK_TMP + 1) * u > 16 || VK_DEPTH * u > 6 { return; }
   if nvlist + nvar > 65536 || nvrl + nred > 65536 { return; }
+  // an array of constant length shorter than one block: the vector loop could never run
+  let mut sv = 0;
+  while sv < nv {
+    if vars[sv].arr != 0 && (vast[sv] == t0 || vlw[sv] == t0) {
+      let lv = vars[sv].lenv;
+      if lv < 0 && vars[sv].alen < 8 * u { return; }
+      if lv >= 0 && vars[lv].isconst != 0 && (vars[lv].cval as i64) < 8 * u { return; }
+    }
+    sv += 1;
+  }
   if !plan_extra(true, t0) { return; }
   let p = nplans; nplans += 1;
   vplan[s] = p + 1; vp_cadd[p] = PLAN_CADD;
@@ -7442,9 +7452,13 @@ fn ic_multi(s: i64, rg: i64, n: i64) -> bool {
   else { alu(A_CMP, K_REG, ra, K_REG, rb, 0); }
   let cc = cc_of(nd[c].op);
   ic_cmovs(nd[s].c, ic_cmovs(nd[s].b, 0, cc), cc ^ 1);
-  setcc_zx(cc, RAX);   // the flags survive the cmovs
-  ic_incs(nd[s].b, 0);
-  if nd[s].c >= 0 { alui(A_XOR, RAX, 1); ic_incs(nd[s].c, k1); }
+  let mut ninc1 = 0; let mut ninc2 = 0; let mut q = 0;
+  while q < k { if IC_SRC[q] < 0 { if q < k1 { ninc1 += 1; } else { ninc2 += 1; } } q += 1; }
+  if ninc1 + ninc2 > 0 {
+    setcc_zx(cc, RAX);   // the flags survive the cmovs
+    ic_incs(nd[s].b, 0);
+    if ninc2 > 0 { alui(A_XOR, RAX, 1); ic_incs(nd[s].c, k1); }
+  }
   return true;
 }
 fn ifconv(s: i64, rg: i64, n: i64) {
