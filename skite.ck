@@ -981,7 +981,7 @@ fn er(e: i64, env: i64) { // range of expression e -> R*
   if k == N_LOAD {
     er(nd[e].a, env);
     let rlo = RLO; let rhi = RHI; let rbot = RBOT;
-    if an_annot { if proven(nd[e].var, nd[e].a, rlo, rhi, rbot, env) { nd[e].chk = 0; } else { nd[e].chk = 1; } }
+    if an_annot { if vpre[e] || proven(nd[e].var, nd[e].a, rlo, rhi, rbot, env) { nd[e].chk = 0; } else { nd[e].chk = 1; } }
     if an_annot { nd[e].dlo = rlo; nd[e].dhi = rhi; }
     chk_refine(nd[e].var, nd[e].a, env);
     if nd[e].op > 0 { type_rg(nd[e].ty); return; }
@@ -1139,7 +1139,7 @@ fn as_stmt(s: i64, env: i64) {
     er(nd[s].a, env);
     let rlo = RLO; let rhi = RHI; let rbot = RBOT;
     if an_annot {
-      if proven(nd[s].var, nd[s].a, rlo, rhi, rbot, env) { nd[s].chk = 0; } else { nd[s].chk = 1; }
+      if vpre[s] || proven(nd[s].var, nd[s].a, rlo, rhi, rbot, env) { nd[s].chk = 0; } else { nd[s].chk = 1; }
       nd[s].dlo = rlo; nd[s].dhi = rhi;
     }
     er(nd[s].b, env);
@@ -1195,6 +1195,7 @@ fn as_stmt(s: i64, env: i64) {
     er(nd[s].a, env);
     let t = env_alloc(); let f = env_alloc(); env_copy(t, env); env_copy(f, env);
     refine(t, nd[s].a, true); refine(f, nd[s].a, false);
+    if an_annot && bv_sel[s] && !dead(f) { bv_alive[s] = true; }
     as_stmt(nd[s].b, t); if nd[s].c >= 0 { as_stmt(nd[s].c, f); }
     env_copy(env, t); env_join(env, f);
     if dead(t) && dead(f) { set_dead(env); }
@@ -3989,6 +3990,149 @@ fn lh_walk(s: i64) {
   if k == S_IF { lh_walk(nd[s].b); lh_walk(nd[s].c); return; }
   if k == S_WHILE { if lh_inner(nd[s].b) { lh_loop(s); } else { lh_walk(nd[s].b); } return; }
 }
+// ---- bounds versioning: `while i < E { ..; i += 1 }` (i changed only by that last statement, E
+// invariant) runs a copy without the bounds checks of its a[i + k] accesses when, before the loop,
+// i + k >= 0 and E + k <= len(a) (E + k < len(a) for <=) hold for each of them: every such access
+// sees i0 <= i < E (<= E), so it cannot fail. Otherwise the checked original runs and traps as before.
+let vpre = alloc<bool>(1048576);   // access proven by a versioning guard
+let BV_A = alloc<i64>(64);
+let BV_K = alloc<i64>(64);
+let mut BV_N: i64 = 0;
+let mut BV_I: i64 = -1;
+let mut BV_BAD: bool = false;
+let mut BV_HARD: bool = false;
+let mut BV_E: i64 = -1;
+let mut BV_LE: bool = false;
+fn bv_off(x: i64) -> i64 {   // k for an index i + k (-2^62 when not of that form)
+  if nd[x].k == N_VAR && nd[x].var == BV_I { return 0; }
+  if nd[x].k == N_BIN && nd[x].ty == TY_I64 {
+    let a = nd[x].a; let b = nd[x].b;
+    if nd[x].op == O_ADD && nd[a].k == N_VAR && nd[a].var == BV_I && is_const(b) { let k = nd[b].v as i64; if k > -1048576 && k < 1048576 { return k; } }
+    if nd[x].op == O_ADD && nd[b].k == N_VAR && nd[b].var == BV_I && is_const(a) { let k = nd[a].v as i64; if k > -1048576 && k < 1048576 { return k; } }
+    if nd[x].op == O_SUB && nd[a].k == N_VAR && nd[a].var == BV_I && is_const(b) { let k = nd[b].v as i64; if k >= 0 && k < 1048576 { return 0 - k; } }
+  }
+  return -4611686018427387904;
+}
+fn bv_acc(a: i64, x: i64, node: i64, mark: bool) {
+  let k = bv_off(x);
+  if k == -4611686018427387904 { return; }
+  if mark { vpre[node] = true; return; }
+  let mut i = 0;
+  while i < BV_N && !(BV_A[i] == a && BV_K[i] == k) { i += 1; }
+  if i == BV_N { if BV_N >= 64 { BV_BAD = true; return; } BV_A[i] = a; BV_K[i] = k; BV_N += 1; }
+  let mut easy = false;   // the range analysis proves these itself: E is len(a) (or a copy of it), or a constant in range
+  if k >= 0 && is_const(BV_E) && vars[a].lenv < 0 { let mut last = nd[BV_E].v as i64; if !BV_LE { last -= 1; } easy = last + k < vars[a].alen; }
+  if k == 0 && !BV_LE && nd[BV_E].k == N_VAR && vars[a].lenv >= 0 {
+    let ev = nd[BV_E].var;
+    easy = ev == vars[a].lenv || (vars[ev].lenof > 0 && vars[vars[ev].lenof - 1].lenv == vars[a].lenv);
+  }
+  if !easy { BV_HARD = true; }
+}
+fn bv_e(e: i64, mark: bool) {
+  if e < 0 { return; }
+  let k = nd[e].k;
+  if k == N_CONST || k == N_VAR || k == N_ARR || k == N_NCPU { return; }
+  if k == N_CALL { BV_BAD = true; return; }   // a call dominates the loop's cost; not worth a copy
+  if k == N_LOAD { bv_e(nd[e].a, mark); bv_acc(nd[e].var, nd[e].a, e, mark); return; }
+  bv_e(nd[e].a, mark); bv_e(nd[e].b, mark);
+}
+fn bv_s(s: i64, mark: bool) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { bv_s(c, mark); c = nd[c].next; } return; }
+  if k == S_ARR || k == S_PAR { BV_BAD = true; return; }
+  if k == S_IF { bv_e(nd[s].a, mark); bv_s(nd[s].b, mark); bv_s(nd[s].c, mark); return; }
+  if k == S_WHILE { bv_e(nd[s].a, mark); bv_s(nd[s].b, mark); return; }
+  if k == S_STORE { bv_e(nd[s].a, mark); bv_e(nd[s].b, mark); bv_acc(nd[s].var, nd[s].a, s, mark); return; }
+  if k == S_WRITE || k == S_SAVE { BV_BAD = true; return; }
+  bv_e(nd[s].a, mark); bv_e(nd[s].b, mark);
+}
+fn bv_len(a: i64) -> i64 {
+  if vars[a].lenv >= 0 { return mk_var(vars[a].lenv); }
+  return mkconst_t(vars[a].alen as u64, TY_I64);
+}
+fn bv_and(g: i64, c: i64) -> i64 { if g < 0 { return c; } let o = mk_bin(O_LAND, g, c); nd[o].ty = TY_BOOL; return o; }
+fn bv_loop(w: i64) {
+  let cnd = nd[w].a; let body = nd[w].b;
+  if nd[w].c >= 0 || body < 0 || nd[body].k != S_BLOCK || nd[cnd].k != N_BIN || (nd[cnd].op != O_LT && nd[cnd].op != O_LE) || nd[nd[cnd].a].k != N_VAR { return; }
+  let iv = nd[nd[cnd].a].var; let E = nd[cnd].b;
+  if vars[iv].ty != TY_I64 || nd[E].ty != TY_I64 || !invariant(E, w) || has_call(E) || count_assign(w, iv) != 1 || stmt_size(body) > 80 { return; }
+  let mut last = nd[body].a; if last < 0 { return; }
+  while nd[last].next >= 0 { last = nd[last].next; }
+  if !is_inc1(last, iv) { return; }
+  BV_I = iv; BV_E = E; BV_LE = nd[cnd].op == O_LE; BV_N = 0; BV_BAD = false; BV_HARD = false;
+  bv_s(body, false);
+  if BV_BAD || !BV_HARD || BV_N == 0 { return; }
+  // guard: for each (a, k): i >= -k && E <= len(a) - k (- 1 for <=)
+  let mut g = -1; let mut kmin = 0; let mut i = 0;
+  while i < BV_N { if BV_K[i] < kmin { kmin = BV_K[i]; } i += 1; }
+  if kmin < 0 { let c = mk_bin(O_GE, mk_var(iv), mkconst_t((0 - kmin) as u64, TY_I64)); nd[c].ty = TY_BOOL; g = bv_and(g, c); }
+  i = 0;
+  while i < BV_N {
+    let mut d = BV_K[i]; if BV_LE { d += 1; }
+    let mut r = bv_len(BV_A[i]);
+    if d != 0 { r = mk_bin(O_SUB, r, mkconst_t(d as u64, TY_I64)); nd[r].ty = TY_I64; }
+    let c = mk_bin(O_LE, clone_expr(E), r); nd[c].ty = TY_BOOL;
+    g = bv_and(g, c);
+    i += 1;
+  }
+  // if g { w (unchecked accesses) } else { checked copy }
+  igen += 1;
+  let nv0 = nv;
+  let cl = clone_stmt_inl(w, -2);
+  let mut v = nv0; while v < nv { vars[v].owner = CS_F; v += 1; }
+  v = 0;   // the copies of lets keep the facts known about the originals
+  while v < nv0 {
+    if imap_gen[v] == igen && imap[v] >= nv0 { let c = imap[v]; vars[c].isconst = vars[v].isconst; vars[c].cval = vars[v].cval; vars[c].lenof = vars[v].lenof; }
+    v += 1;
+  }
+  bv_s(body, true);
+  let w1 = mk(S_WHILE); copy_node(w1, w); nd[w1].next = -1;
+  nd[cl].next = -1;
+  let sel = mk(S_IF); nd[sel].a = g; nd[sel].b = w1; nd[sel].c = cl; nd[sel].pos = nd[w].pos;
+  set_block(w, sel, nd[w].next);
+  if BV_NV < 4096 { BV_SEL[BV_NV] = w; BV_NV += 1; bv_sel[sel] = true; }
+}
+// after the range analysis: a versioned loop whose checked copy needs no check keeps only that copy
+let BV_SEL = alloc<i64>(4096);
+let bv_sel = alloc<bool>(1048576);     // the if of a versioned loop
+let bv_alive = alloc<bool>(1048576);   // the analysis reached its checked branch
+let mut BV_NV: i64 = 0;
+fn bv_chk_e(e: i64) -> bool {   // a load in e keeps a bounds check
+  if e < 0 { return false; }
+  let k = nd[e].k;
+  if k == N_CONST || k == N_VAR || k == N_ARR || k == N_NCPU { return false; }
+  if k == N_CALL { let mut a = nd[e].a; while a >= 0 { if bv_chk_e(a) { return true; } a = nd[a].next; } return false; }
+  if k == N_LOAD && nd[e].chk != 0 { return true; }
+  return bv_chk_e(nd[e].a) || bv_chk_e(nd[e].b);
+}
+fn bv_chk_s(s: i64) -> bool {
+  if s < 0 { return false; }
+  let k = nd[s].k;
+  if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { if bv_chk_s(c) { return true; } c = nd[c].next; } return false; }
+  if k == S_IF { return bv_chk_e(nd[s].a) || bv_chk_s(nd[s].b) || bv_chk_s(nd[s].c); }
+  if k == S_WHILE { return bv_chk_e(nd[s].a) || bv_chk_s(nd[s].b); }
+  if k == S_STORE && nd[s].chk != 0 { return true; }
+  return bv_chk_e(nd[s].a) || bv_chk_e(nd[s].b);
+}
+fn bv_prune() {
+  let mut i = 0;
+  while i < BV_NV {
+    let b = BV_SEL[i]; let sel = nd[b].a;
+    if nd[b].k == S_BLOCK && sel >= 0 && nd[sel].k == S_IF {
+      if !bv_alive[sel] { nd[b].a = nd[sel].b; }   // the guard always holds
+      else if !bv_chk_s(nd[sel].c) { nd[b].a = nd[sel].c; }   // the checked copy needs no check
+    }
+    i += 1;
+  }
+}
+fn bv_walk(s: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { let nx = nd[c].next; bv_walk(c); c = nx; } return; }
+  if k == S_IF { bv_walk(nd[s].b); bv_walk(nd[s].c); return; }
+  if k == S_WHILE { if lh_inner(nd[s].b) { bv_loop(s); } else { bv_walk(nd[s].b); } return; }
+}
 fn cs_walk(s: i64) {
   if s < 0 { return; }
   let k = nd[s].k;
@@ -4012,10 +4156,11 @@ fn allocate() {
   mark_used();
   simplify();
   f = 0;
-  while f < nfn { if fns[f].used != 0 { CS_F = f; sm_walk(fns[f].body); ss_walk(fns[f].body, false); cs_walk(fns[f].body); lh_walk(fns[f].body); mm_walk(fns[f].body, false); dm_walk(fns[f].body); } f += 1; }
+  while f < nfn { if fns[f].used != 0 { CS_F = f; sm_walk(fns[f].body); ss_walk(fns[f].body, false); cs_walk(fns[f].body); lh_walk(fns[f].body); bv_walk(fns[f].body); mm_walk(fns[f].body, false); dm_walk(fns[f].body); } f += 1; }
   let mut v = 0;
   while v < nv { if vars[v].owner >= 0 && fns[vars[v].owner].used == 0 { vars[v].reads = 0; } v += 1; }
   analyze();
+  bv_prune();
   strength_reduce();
   v = 0;
   while v < nv { chint[v] = -1; v += 1; }

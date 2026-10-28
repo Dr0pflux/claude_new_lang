@@ -358,6 +358,9 @@ cmp -s tests/data/carry.trap "$T/carry.out" || { echo 'FAIL: carry trap output' 
 "$SKITE" tests/data/lhoist_trap.ck "$T/lhoist_trap" > /dev/null
 if "$T/lhoist_trap" > "$T/lhoist_trap.out" 2>/dev/null; then echo 'FAIL: hoisted load must trap' >&2; exit 1; fi
 [[ "$(cat "$T/lhoist_trap.out")" == $'0\n0' ]] || { echo 'FAIL: hoisted load trapped in a zero-trip loop' >&2; exit 1; }
+"$SKITE" tests/data/bversion.ck "$T/bversion" > /dev/null
+if "$T/bversion" > "$T/bversion.out" 2>/dev/null; then echo 'FAIL: bversion must trap in its checked copy' >&2; exit 1; fi
+cmp -s tests/data/bversion.expected "$T/bversion.out" || { echo 'FAIL: bversion output' >&2; exit 1; }
 "$SKITE" tests/data/refine_trap.ck "$T/refine_trap" > /dev/null
 if "$T/refine_trap" > "$T/refine_trap.out" 2>/dev/null; then echo 'FAIL: bounds check in a comparison was elided' >&2; exit 1; fi
 [[ "$(cat "$T/refine_trap.out")" == "7" ]] || { echo 'FAIL: refine_trap output' >&2; exit 1; }

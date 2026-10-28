@@ -27,6 +27,11 @@
   refinement re-evaluated it under the assumption that the check had already passed (pre-existing;
   `tests/data/refine_trap.ck`). The if-conversion operand reorder in `7b6f7bb` also reused a
   register for both compare operands when both were non-trivial (miscompile on `84ff0e4`; fixed).
+- **Bounds versioning:** a call-free loop `while i < E { ..; i += 1 }` whose `a[i + k]` checks the
+  range analysis cannot prove runs an unchecked copy when a pre-loop guard (`i + k >= 0`,
+  `E + k <= len(a)`) holds, else the checked original. After the analysis, a copy pair collapses to
+  one loop when the guard always holds or the checked copy needs no check. ngramhash 241 → 208 ms,
+  histogram 206 → 175 ms. Test: `tests/data/bversion.ck`.
 - **Recursive inlining:** tiny recursive bodies get an 8x statement budget for their inlined
   copies (binarytrees 524 → 454 ms on Xeon, gcc 296; compiler +2% size, same compile time).
 - **Loop-carried stores:** `a[i - 1]` after a store `a[i]` reads a register (prefixsum 994 → 204 ms).
