@@ -1,6 +1,6 @@
 # Learn skite
 
-This is a short, practical introduction. Every program here is in `examples/tutorial/` and runs as shown. The full rules are in `LANGUAGE.md`.
+This is a short, practical introduction. Every program here is in `examples/tutorial/` and runs as shown. The full rules are in `docs/LANGUAGE.md`.
 
 ## 0. Build and run
 
@@ -175,5 +175,5 @@ save(1, buf, n);      // first n bytes of buf -> the file named by argv[1]
 
 ## Next steps
 
-- Read `LANGUAGE.md`, the complete reference.
+- Read [`LANGUAGE.md`](LANGUAGE.md), the complete reference.
 - Look at `bench/vigenere/vig.cock`, a real Vigenère solver that is faster than its gcc -O3 equivalent.

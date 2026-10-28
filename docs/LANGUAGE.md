@@ -1,6 +1,6 @@
 # skite language reference — implemented in v0.9
 
-Everything here is implemented and tested. Planned features live in `LANGUAGE_SPEC.md`.
+Everything here is implemented and tested. Planned features live in `DESIGN.md` (domain roadmap).
 
 ## Program
 

@@ -22,10 +22,10 @@ For each ciphertext (A–Z, one per line):
 
 ```sh
 python3 make_data.py /path/to/gutenberg /tmp/vigbig 4000 7
-./run_bench.sh /tmp/vigbig/quad.bin /tmp/vigbig/cipher.txt 11
+python3 ../kernels/run.py 11 vig-solver vig-par   # uses data/ (400 texts x 10)
 ```
 
-`run_bench.sh` rejects the run unless all four binaries produce identical output.
+`bench/kernels/run.py` rejects the run unless all binaries produce identical output.
 
 ## Results (Intel Xeon @ 2.10 GHz, 2-vCPU VM; median of 21 interleaved runs)
 

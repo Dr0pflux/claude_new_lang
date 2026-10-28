@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""skite vs gcc/clang/rustc on every benchmark in bench/.
+"""skite vs gcc/clang/rustc on the domain kernels: two arithmetic kernels
+(bench/kernels) and the Vigenere solver, serial and par (bench/vigenere).
 
 Every program implements the same algorithm; a run is rejected unless all
 binaries print byte-identical output. Runs are interleaved (skite, gcc, clang,
 rust, skite, ...) and the median wall time is reported.
 
-usage: bench/run_all.py [RUNS] [NAME...]
+usage: bench/kernels/run.py [RUNS] [NAME...]
 """
 import os, subprocess, sys, tempfile, time, statistics, hashlib, shutil
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SKITE = os.path.join(ROOT, "skite")
 B = os.path.join(ROOT, "bench")
 V = os.path.join(B, "vigenere")
@@ -24,13 +25,11 @@ def big_cipher(tmp):
 
 def benches(tmp):
     quad = os.path.join(D, "quad.bin"); c4k = big_cipher(tmp)
-    n3000 = os.path.join(B, "float", "n3000.txt")
     return [
-        ("ngram29",    os.path.join(B, "runtime", "ngram29"),    [], "c"),
-        ("vigenere29", os.path.join(B, "runtime", "vigenere29"), [], "c"),
+        ("ngram29",    os.path.join(B, "kernels", "ngram29"),    [], "c"),
+        ("vigenere29", os.path.join(B, "kernels", "vigenere29"), [], "c"),
         ("vig-solver", os.path.join(V, "vig"),  [quad, c4k], "c"),
         ("vig-par",    os.path.join(V, "vigp"), [quad, c4k], "omp"),
-        ("spectral",   os.path.join(B, "float", "spectral"), [n3000], "cm"),
     ]
 
 def build(name, base, kind, tmp):
