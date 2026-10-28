@@ -3859,6 +3859,18 @@ fn store_elem_imm(w: i64, dig: i64, v: u64) {
 }
 fn unop(dig: i64, dk: i64, dr: i64) { enc(1, false, 1, 247, 0, dig, dk, dr); }
 fn cqo() { emh("4899"); }
+// rax / rcx -> rax, rdx. When both fit in 32 unsigned bits (so a signed operand is non-negative),
+// the 32-bit divide gives the same quotient and remainder several times faster; a zero divisor
+// still raises #DE (SIGFPE) on either path, and i64::MIN / -1 takes the 64-bit idiv.
+fn div32_fast(signed: bool) {
+  emh("4889c2"); emh("4809ca"); emh("48c1ea20");   // rdx = (rax | rcx) >> 32
+  let slow = j8(117);                              // jnz
+  emh("f7f1");                                     // div ecx (edx = 0)
+  let done = j8(235);
+  p8(slow, clen);
+  if signed { cqo(); emh("48f7f9"); } else { emh("31d2"); emh("48f7f1"); }   // idiv / div rcx
+  p8(done, clen);
+}
 fn setcc_zx(cc: i64, r: i64) { encr(0, true, 2, 15, 144 | cc, 0, r); encr(1, false, 2, 15, 182, r, r); }
 fn test_rr(r: i64) { encr(1, false, 1, 133, 0, r, r); }
 fn jcc(cc: i64) -> i64 { byte(15); byte(128 | cc); u32_(0); return clen - 4; }
@@ -4109,8 +4121,8 @@ fn apply(op: i64, r: i64, sk0: i64, sr0: i64, si: u64) {
       if op == O_MODU { alui(A_AND, r, si - 1); } else { shift_ri(5, r, k as i64); }
       return;
     }
-    if sk == K_IMM { mov_ri(RCX, si); sk = K_REG; sr = RCX; }
-    mov_rr(RAX, r); emh("31d2"); unop(6, sk, sr);
+    if sk == K_IMM { mov_ri(RCX, si); } else { load(RCX, sk, sr, si); }
+    mov_rr(RAX, r); div32_fast(false);
     if op == O_DIVU { mov_rr(r, RAX); } else { mov_rr(r, RDX); }
     return;
   }
@@ -4137,7 +4149,7 @@ fn apply(op: i64, r: i64, sk0: i64, sr0: i64, si: u64) {
   }
   if op == O_DIV || op == O_MOD {
     if sk == K_IMM { divconst(r, si, op == O_MOD, nn_); return; }
-    mov_rr(RAX, r); cqo(); unop(7, sk, sr);
+    load(RCX, sk, sr, si); mov_rr(RAX, r); div32_fast(true);
     if op == O_DIV { mov_rr(r, RAX); } else { mov_rr(r, RDX); }
     return;
   }
