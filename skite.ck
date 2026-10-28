@@ -2481,11 +2481,14 @@ fn walk_stmt(s: i64) {
   if k == S_LET {
     pc += 1; nd[s].pos = pc; walk_expr(nd[s].a);
     let v = nd[s].var;
-    if vars[v].reads != 0 { vars[v].start = pc; vars[v].end = pc; }
+    if vars[v].reads != 0 { vars[v].start = pc; vars[v].end = pc; if nd[nd[s].a].k == N_VAR { chint[v] = nd[nd[s].a].var; } }
   }
   else if k == S_ASSIGN || k == S_IRET {
     pc += 1; nd[s].pos = pc; walk_expr(nd[s].a);
-    if k == S_IRET && vars[nd[s].var].start > pc { vars[nd[s].var].start = pc; }
+    if k == S_IRET && vars[nd[s].var].start > pc {
+      vars[nd[s].var].start = pc;
+      if nd[nd[s].a].k == N_VAR { chint[nd[s].var] = nd[nd[s].a].var; }
+    }
     touch(nd[s].var);
   }
   else if k == S_INL { // the inlined call's result variable is born at its first return (not live across the body's calls)
@@ -2725,10 +2728,14 @@ fn try_inline_stmt(s: i64) -> bool {
   if starts2u(fns[f].noff, fns[f].nlen) || fn_nr[f] { return false; }
   let rec = frec[f];
   let mut src_body = fns[f].body;
-  if rec { if forig[f] < 0 || rec_depth >= MAX_REC_INLINE { return false; } src_body = forig[f]; }
+  if rec { if forig[f] < 0 { return false; } src_body = forig[f]; }
   let csz = stmt_size(src_body);
+  // tiny recursive bodies (tree builders and walkers) get one more level
+  let mut rmax = MAX_REC_INLINE; let mut rbud = INLINE_REC_BUDGET;
+  if csz <= INLINE_REC_TINY { rmax += 1; rbud = 2 * rbud; }
+  if rec && rec_depth >= rmax { return false; }
   if csz > INLINE_MAX_STMTS || nn > INLINE_NODE_BUDGET { return false; }
-  if rec && (csz > INLINE_REC_STMTS || rec_growth + csz > INLINE_REC_BUDGET) { return false; }
+  if rec && (csz > INLINE_REC_STMTS || rec_growth + csz > rbud) { return false; }
   if rec { rec_growth += csz; }
   if inl_growth + csz > INLINE_CALLER_BUDGET { return false; }
   LAST_REC = rec;
@@ -2782,6 +2789,7 @@ fn inline_stmts(s: i64) {
 let MAX_REC_INLINE = 3;
 let INLINE_REC_STMTS = 16;
 let INLINE_REC_BUDGET = 160;   // statements of recursive copies per caller
+let INLINE_REC_TINY = 15;
 let mut rec_growth: i64 = 0;
 let forig = alloc<i64>(4096);
 let mut rec_depth: i64 = 0;
@@ -3405,6 +3413,7 @@ fn nop_fill(at0: i64, n0: i64) {   // multi-byte NOPs over code[at0 .. at0 + n0)
 }
 fn callee_saved(r: i64) -> bool { return r == RBX || r == RBP || r >= 12; }
 let lext = alloc<bool>(65536);   // interval stretched to a loop's end (live around its back edge)
+let chint = alloc<i64>(65536);   // variable defined as a plain copy of this one (register coalescing hint)
 let callpc = alloc<i64>(1048576);   // pcs of statements containing a real call (non-decreasing)
 let mut ncallpc: i64 = 0;
 fn crosses_call(v: i64) -> bool {
@@ -3413,8 +3422,94 @@ fn crosses_call(v: i64) -> bool {
   while lo < hi { let m = (lo + hi) / 2; if callpc[m] <= st { lo = m + 1; } else { hi = m; } }
   return lo < ncallpc && callpc[lo] <= en;
 }
+// ---- tail recursion modulo +: in f, `return A + f(B)` becomes `acc = acc + A; params = B; continue` inside
+// `let mut acc = 0; while true { body }`, and every other `return R` becomes `return acc + R`.
+// Exact for wrapping 64-bit integers: A is evaluated before B as before, and + is associative and commutative.
+let mut tre_n: i64 = 0;
+fn tre_tail(s: i64, f: i64) -> bool {
+  let e = nd[s].a;
+  if e < 0 { return false; }
+  if nd[e].k == N_CALL { return nd[e].var == f; }
+  return nd[e].k == N_BIN && nd[e].op == O_ADD && nd[e].ty == fns[f].rett && nd[nd[e].b].k == N_CALL && nd[nd[e].b].var == f;
+}
+// number of tail returns, or -1 when the function cannot be rewritten
+fn tre_scan(s: i64, f: i64, inloop: bool) -> i64 {
+  if s < 0 { return 0; }
+  let k = nd[s].k;
+  if k == S_PAR || k == S_INL || k == S_IRET { return -1; }
+  if k == S_RET { if !tre_tail(s, f) { return 0; } if inloop { return -1; } return 1; }
+  let mut a = 0; let mut b = 0;
+  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { let x = tre_scan(c, f, inloop); if x < 0 { return -1; } a += x; c = nd[c].next; } return a; }
+  if k == S_IF { a = tre_scan(nd[s].b, f, inloop); b = tre_scan(nd[s].c, f, inloop); if a < 0 || b < 0 { return -1; } return a + b; }
+  if k == S_WHILE { return tre_scan(nd[s].b, f, true); }
+  return 0;
+}
+fn tre_rewrite(s: i64, f: i64, acc: i64, last: bool) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { tre_rewrite(c, f, acc, last && nd[c].next < 0); c = nd[c].next; } return; }
+  if k == S_IF { tre_rewrite(nd[s].b, f, acc, last); tre_rewrite(nd[s].c, f, acc, last); return; }
+  if k == S_WHILE { tre_rewrite(nd[s].b, f, acc, false); return; }
+  if k != S_RET { return; }
+  let rt = fns[f].rett;
+  if !tre_tail(s, f) { let e = mk_bin(O_ADD, mk_var(acc), nd[s].a); nd[e].ty = rt; nd[s].a = e; return; }
+  let e = nd[s].a;
+  let mut call = e;
+  let mut head = -1; let mut tail = -1;
+  if nd[e].k != N_CALL {
+    call = nd[e].b;
+    let ad = mk_bin(O_ADD, mk_var(acc), nd[e].a); nd[ad].ty = rt;
+    let st = mk(S_ASSIGN); nd[st].var = acc; nd[st].a = ad; head = st; tail = st;
+  }
+  // arguments left to right into temporaries (all but the last), then into the parameters
+  let np = fns[f].np;
+  let tv = alloc<i64>(16);
+  let mut x = nd[call].a; let mut i = 0;
+  while x >= 0 {
+    let nx = nd[x].next; nd[x].next = -1;
+    let pv = fpvar[f * 16 + i];
+    let mut st = -1;
+    if i == np - 1 { st = mk(S_ASSIGN); nd[st].var = pv; nd[st].a = x; tv[i] = -1; }
+    else if nd[x].k == N_VAR && nd[x].var == pv { tv[i] = -1; }
+    else { let t = hidden(); vars[t].ty = vars[pv].ty; vars[t].mutv = 1; st = mk(S_LET); nd[st].var = t; nd[st].a = x; tv[i] = t; }
+    if st >= 0 { if head < 0 { head = st; } else { nd[tail].next = st; } tail = st; }
+    x = nx; i += 1;
+  }
+  i = 0;
+  while i < np - 1 {
+    if tv[i] >= 0 {
+      let st = mk(S_ASSIGN); nd[st].var = fpvar[f * 16 + i]; nd[st].a = mk_var(tv[i]);
+      if head < 0 { head = st; } else { nd[tail].next = st; } tail = st;
+    }
+    i += 1;
+  }
+  if !last {
+    let st = mk(S_CONT);
+    if head < 0 { head = st; } else { nd[tail].next = st; } tail = st;
+  }
+  set_block(s, head, nd[s].next);
+}
+fn tre_fn(f: i64) {
+  let b = fns[f].body;
+  let rt = fns[f].rett;
+  if b < 0 || (rt != TY_I64 && rt != TY_U64) || fns[f].mark >= 0 || fns[f].np < 1 || fns[f].np > 16 { return; }
+  let mut i = 0;
+  while i < fns[f].np { if fpw[f * 16 + i] != 0 { return; } i += 1; }
+  if !terminates(b) || tre_scan(b, f, false) <= 0 { return; }
+  i = 0;
+  while i < fns[f].np { vars[fpvar[f * 16 + i]].mutv = 1; i += 1; }
+  let acc = hidden(); vars[acc].ty = rt; vars[acc].mutv = 1; vars[acc].owner = f;
+  let lb = mk(S_BLOCK); nd[lb].a = nd[b].a;
+  tre_rewrite(lb, f, acc, true);
+  let w = mk(S_WHILE); nd[w].a = mkconst_t(1, TY_BOOL); nd[w].b = lb;
+  let la = mk(S_LET); nd[la].var = acc; nd[la].a = mkconst_t(0, rt); nd[la].next = w;
+  nd[b].a = la;
+  tre_n += 1;
+}
 fn allocate() {
   let mut g = 0;
+  while g < nfn { if !starts2u(fns[g].noff, fns[g].nlen) { tre_fn(g); } g += 1; }
+  g = 0;
   while g < nfn { fn_nr[g] = noreturn(g, 0); g += 1; }
   inline_calls();
   g = 0;
@@ -3430,6 +3525,8 @@ fn allocate() {
   while v < nv { if vars[v].owner >= 0 && fns[vars[v].owner].used == 0 { vars[v].reads = 0; } v += 1; }
   analyze();
   strength_reduce();
+  v = 0;
+  while v < nv { chint[v] = -1; v += 1; }
   f = 0;
   while f < nfn {
     if fns[f].used != 0 {
@@ -3507,7 +3604,15 @@ fn allocate() {
       if vars[active[j]].end < vars[vv].start { freer[nf] = vars[active[j]].reg; nf += 1; na -= 1; active[j] = active[na]; }
       else { j += 1; }
     }
-    if na < MAX_ACTIVE {
+    // `let v = h` where h dies right there: v takes over h's register and the copy disappears
+    let h = chint[vv];
+    let mut hj = -1;
+    if h >= 0 && !is_xvar(h) && vars[h].reg >= 0 && vars[h].end == vars[vv].start && !lext[h] && (callee_saved(vars[h].reg) || !crosses_call(vv)) {
+      j = 0;
+      while j < na { if active[j] == h { hj = j; } j += 1; }
+    }
+    if hj >= 0 { vars[vv].reg = vars[h].reg; active[hj] = vv; }
+    else if na < MAX_ACTIVE {
       // values live across a call prefer callee-saved registers, others caller-saved ones
       let want = crosses_call(vv);
       let mut pick = nf - 1;

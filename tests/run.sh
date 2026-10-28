@@ -271,6 +271,8 @@ echo 'PASS: structs, globals, scoped heap, save(), 16/32/64-byte struct alloc an
 "$SKITE" tests/features/for_form.ck "$T/for_form" > /dev/null
 "$SKITE" tests/features/while_form.ck "$T/while_form" > /dev/null
 cmp -s "$T/for_form" "$T/while_form" || { echo "FAIL: for loops must compile to the same machine code as their while form" >&2; exit 1; }
+"$SKITE" tests/features/tail_acc.ck "$T/tail_acc" > /dev/null
+"$T/tail_acc" | cmp -s - tests/features/tail_acc.expected || { echo "FAIL: tail recursion modulo +" >&2; "$T/tail_acc" | diff - tests/features/tail_acc.expected >&2; exit 1; }
 while IFS='|' read -r msg bad; do
   printf '%s\n' "$bad" > "$T/bad.ck"
   if "$SKITE" "$T/bad.ck" "$T/prog" 2> "$T/error" > /dev/null; then echo "FAIL: accepted [$bad]" >&2; exit 1; fi
