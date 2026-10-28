@@ -117,3 +117,25 @@ Measured outputs match for the listed programs. This does not establish a univer
 guarantee for every program. [Issue #9](https://github.com/Dr0pflux/skite.ck/issues/9) tracks a
 remaining alias-proof gap in experimental stream-vectorization work; native AVX-512 validation is
 still needed for that work. Skite does not contract floating-point multiply-add into FMA.
+
+## Xeon AVX-512 snapshot, 2026-10-28 (Claude cloud host)
+
+Intel Xeon @ 2.1 GHz, AVX-512 F/DQ/BW/VL, 4 shared vCPUs (other jobs running: expect ±10%).
+gcc 13.3, clang 18.1, rustc 1.97. `bench/game/run.py 1 --quick` (median of 3, ms) at the
+byte-lane head:
+
+| benchmark | skite | gcc | clang | rust |
+|---|---|---|---|---|
+| nbody 5000000 | 312 | 265 | 243 | 224 |
+| spectralnorm 3000 | 253 | 228 | 462 | 464 |
+| mandelbrot 4000 | 334 | 1039 | 989 | 1076 |
+| fannkuchredux 11 | 2565 | 2746 | 2522 | 2338 |
+| fasta 2500000 | 360 | 356 | 316 | 366 |
+| binarytrees 19 | 531 | 327 | 751 | 909 |
+
+`bench/kernels/run.py 3 textscan`: skite 118.7, gcc 449.5, clang 166.5, rust 142.1 ms.
+
+Micro-measurements behind the merged changes (same host, single runs, ms; scratch programs):
+- element-wise f64 update + i32 add loops: 557 scalar → 181 vector (gcc 163);
+- count spaces + conditional byte sum over 1 MiB × 1000: 1777 scalar → 71 byte-lane (gcc 1199, clang 265);
+- gcd sums + `x / k`, `x % k` with run-time `k`: 454 → 381 with the 32-bit divide (gcc 378, clang 365).

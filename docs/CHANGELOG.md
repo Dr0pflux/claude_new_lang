@@ -2,6 +2,17 @@
 
 ### Unreleased (2026-10-28)
 
+- **Vectorization (Claude):** element-wise loops and integer reductions (stores `a[i] = e`,
+  `a[i] op= e`, `s op= e`, narrow element types), masked `if`/`else`, max/min reductions, and
+  byte lanes for `u8`/`i8` loops (64 per instruction; counts by mask popcount, sums by `vpsadbw`).
+  Bounds and parameter-alias guards fall back to the scalar loop; #9 (mixed-width views) fixed.
+  Runtime check now requires AVX-512 BW and VL. Tests: `stream_fuzz.py`, `stream_boundaries.py`,
+  `valias*.ck`, `stream_mixed_width.ck`. New kernel `bench/kernels/textscan`.
+- **Division:** run-time divisors use a 32-bit `div` when both operands fit in 32 unsigned bits.
+- **Calls/recursion (Claude agent):** dominating bounds-check reuse, dead-at-call save elision,
+  tail recursion modulo `+`, register coalescing, deeper inlining of tiny recursive bodies
+  (binarytrees 945 → ~600 ms on Xeon).
+
 - **Generated code size:** omit hidden compound-index snapshots for constants and
   stable local scalars, while preserving RHS-first evaluation and snapshots for
   effectful/global indices. Standard nbody ELF shrinks by 1,850 bytes (17.3%);

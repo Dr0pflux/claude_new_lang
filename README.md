@@ -21,41 +21,40 @@ Contributors (people and AI agents): read [`AGENTS.md`](AGENTS.md),
 
 ## Performance
 
-Performance depends on the machine and compiler versions. The historical Xeon results and the
-current Ryzen results are separate snapshots in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
-On the Ryzen 7 5700U quick-size run, Skite was 2.02x slower than the fastest reference on nbody,
-1.01x on spectralnorm, 1.04x on mandelbrot, 1.26x on fannkuchredux, 1.10x on fasta, and 1.86x
-on binarytrees. These are matched implementations with byte-identical output, not rankings against
-every implementation. The 3.9x mandelbrot lead in the older Xeon snapshot is specific to that host.
+Matched implementations (same algorithm in skite, C and Rust, byte-identical output required);
+gcc/clang `-O3 -march=native`, rustc `-C opt-level=3 -C target-cpu=native`. Quick sizes, Xeon
+(AVX-512, shared 4-vCPU cloud host, so expect noise), integration head of 2026-10-28.
+Ratio = skite time / fastest other; below 1 means skite is faster.
 
-Merged PR #10 reduced compiler self-compilation median time on the same Ryzen from 2.520167 s to
-2.221176 s (11.9% lower across three paired runs after warmup). It did not improve generated
-program runtime; binaries for the six Game programs remained byte-identical. See the measurement
-method and compiler versions in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+| workload | skite ms | best other | ratio |
+|---|---|---|---|
+| mandelbrot (Game) | 334 | clang 989 | **0.34** |
+| textscan (text statistics kernel) | 119 | rust 142 | **0.84** |
+| fasta (Game) | 360 | clang 316 | 1.14 |
+| fannkuchredux (Game) | 2565 | rust 2338 | 1.10 |
+| spectralnorm (Game) | 253 | gcc 228 | 1.11 |
+| nbody (Game) | 312 | rust 224 | 1.39 |
+| binarytrees (Game) | 531 | gcc 327 | 1.63 |
 
-Reusing analysis-copy indices also trims the compiler executable from 1,214,532 to
-1,211,216 bytes (3,316 bytes). Paired measurements showed no reliable compile-time
-gain; generated Game binaries remain unchanged. See the compiler-size measurement
-in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+The goal is to lead on every arithmetic and text workload; the slower rows are open work
+(see [`docs/HANDOFF.md`](docs/HANDOFF.md)). Full history, other hosts (including a Ryzen host
+without AVX-512) and methodology: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
-Eliding pure index snapshots in general compound array assignments reduces the
-nbody executable from 10,705 to 8,855 bytes (17.3%). Measured runtime differences
-were within noise; all six Game outputs still match. This adds 24 bytes to the
-compiler itself. Details and regression coverage are in
-[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+What makes skite fast (all bit-exact: strict IEEE floats, wrapping integers, traps preserved):
 
-What makes skite fast:
-
-- **Vectorization:** eligible loops can use AVX-512; CPUs without AVX-512 take the scalar path.
-  Lane-parallel loops (outer loops with inner loops) and element-wise loops / integer reductions
-  (`b[i] = b[i] * k + a[i]`, fills, copies, `s += a[i]`, narrow `u8`..`u32` elements) run 8 or 16
-  iterations at once. Unproven bounds and possibly-aliased array parameters are checked once
-  before the vector loop; on failure the ordinary loop runs. Tested programs match their
-  `--scalar` and reference outputs; a global bit-exact guarantee has not been proven
-  ([issue #9](https://github.com/Dr0pflux/skite.ck/issues/9) tracked a mixed-width alias case).
-- **Proven-safe indexing:** array accesses are bounds-checked unless range analysis proves them safe.
-- **Bounded inlining:** small helpers can be inlined within size budgets; bounds proofs flow through them.
-- Floats in XMM registers, periodic-index strength reduction, and magic-number division.
+- **AVX-512 vectorization** with run-time dispatch (CPUs without AVX-512 F/DQ/BW/VL run scalar):
+  - *lane-parallel loops*: outer loops whose bodies contain inner loops with data-dependent exits;
+  - *element-wise loops and reductions*: `b[i] = b[i] * k + a[i]`, fills, copies, masked `if`/`else`,
+    integer `+ - & | ^` reductions, max/min, narrow `u8`..`u32` elements;
+  - *byte lanes*: `u8`/`i8` loops (text scanning, character classes, counts, case conversion)
+    run 64 characters per instruction, counts via mask popcount, byte sums via `vpsadbw`.
+  Unproven bounds and possibly-aliased arrays are checked once before the vector loop; on failure
+  the ordinary loop runs and traps exactly where scalar code would.
+- **Range analysis** removes bounds checks it can prove, including checks dominated by an earlier one.
+- **Calls**: bounded inlining (including recursive), callee-saved registers, tail recursion with
+  accumulators turned into loops, register coalescing.
+- Floats in XMM registers, magic-number division by constants, fast 32-bit division when
+  operands fit, periodic-index strength reduction.
 
 ## Layout
 
@@ -65,7 +64,7 @@ What makes skite fast:
 | `bootstrap/` | `skite-seed` (prebuilt compiler that starts the build), `skite.c` (original C seed, audit only) |
 | `docs/` | tutorial, language reference, design notes, limitations, changelog, benchmarks, audit and handoff notes |
 | `examples/` | example and tutorial programs |
-| `tests/` | `run.sh` regressions; fuzzers with independent oracles (`cf_fuzz`, `ty_fuzz`, `dag_fuzz`, `divconst`, `vec_fuzz.py`); `alignment.py`, `zero_divisor.py` |
+| `tests/` | `run.sh` regressions; fuzzers with independent oracles (`cf_fuzz`, `ty_fuzz`, `dag_fuzz`, `divconst`, `vec_fuzz.py`, `stream_fuzz.py`); `stream_boundaries.py`, `alignment.py`, `zero_divisor.py` |
 | `.github/workflows/` | CI: clean build, fixed point, `make test`, divisor oracle |
 | `bench/game/` | Benchmarks Game suite in skite, C and Rust |
-| `bench/kernels/`, `bench/vigenere/` | computational-linguistics kernels and a Vigenère solver |
+| `bench/kernels/`, `bench/vigenere/` | arithmetic and text kernels (`textscan`, n-grams, ...) and a Vigenère solver |
