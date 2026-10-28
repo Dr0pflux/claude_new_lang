@@ -29,6 +29,22 @@ def benches(tmp):
         ("ngram29",    os.path.join(B, "kernels", "ngram29"),    [], "c"),
         ("vigenere29", os.path.join(B, "kernels", "vigenere29"), [], "c"),
         ("textscan",   os.path.join(B, "kernels", "textscan"),   [], "c"),
+        ("sieve", os.path.join(B, "kernels", "sieve"), [], "c"),
+        ("collatz", os.path.join(B, "kernels", "collatz"), [], "c"),
+        ("gcdsum", os.path.join(B, "kernels", "gcdsum"), [], "c"),
+        ("hashmix", os.path.join(B, "kernels", "hashmix"), [], "c"),
+        ("prefixsum", os.path.join(B, "kernels", "prefixsum"), [], "c"),
+        ("matmul", os.path.join(B, "kernels", "matmul"), [], "c"),
+        ("polyeval", os.path.join(B, "kernels", "polyeval"), [], "c"),
+        ("intsort", os.path.join(B, "kernels", "intsort"), [], "c"),
+        ("divmod", os.path.join(B, "kernels", "divmod"), [], "c"),
+        ("nqueens", os.path.join(B, "kernels", "nqueens"), [], "c"),
+        ("histogram", os.path.join(B, "kernels", "histogram"), [], "c"),
+        ("wordcount", os.path.join(B, "kernels", "wordcount"), [], "c"),
+        ("strsearch", os.path.join(B, "kernels", "strsearch"), [], "c"),
+        ("ngramhash", os.path.join(B, "kernels", "ngramhash"), [], "c"),
+        ("editdist", os.path.join(B, "kernels", "editdist"), [], "c"),
+        ("caseconv", os.path.join(B, "kernels", "caseconv"), [], "c"),
         ("vig-solver", os.path.join(V, "vig"),  [quad, c4k], "c"),
         ("vig-par",    os.path.join(V, "vigp"), [quad, c4k], "omp"),
     ]
@@ -42,7 +58,7 @@ def build(name, base, kind, tmp):
     extra = {"c": [], "cm": ["-lm"], "omp": ["-fopenmp"]}[kind]
     for cc in ("gcc", "clang"):
         try:
-            run([cc, "-O3", "-march=native", base + ".c", "-o", exe + "." + cc] + extra)
+            run([cc, "-O3", "-march=native", "-ffp-contract=off", base + ".c", "-o", exe + "." + cc] + extra)
             out[cc] = exe + "." + cc
         except subprocess.CalledProcessError:
             print(f"  ({cc} build of {name} failed; skipped)", file=sys.stderr)
