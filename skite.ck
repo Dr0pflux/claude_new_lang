@@ -3437,9 +3437,9 @@ fn new_slot(v: i64) {
 }
 let active = alloc<i64>(11);
 // float scalars are allocated to xmm8..xmm15 (xmm0/1 are scratch, xmm2..7 the expression stack)
-let XREG0 = 8;
-let NXREG = 8;
-let xactive = alloc<i64>(8);
+let XREG0 = 6;
+let NXREG = 10;
+let xactive = alloc<i64>(16);
 let mut xspilled: i64 = 0;
 let mut xpeak: i64 = 0;
 fn is_xvar(v: i64) -> bool {
@@ -4250,7 +4250,7 @@ fn allocate() {
   let mut nf = 12;
   i = 0;
   while i < 12 { freer[i] = allregs[i]; i += 1; }
-  let xfree = alloc<i64>(8);
+  let xfree = alloc<i64>(16);
   let mut nxf = NXREG;
   let mut nxa = 0;
   i = 0;
@@ -5145,7 +5145,7 @@ fn genf(e: i64, x: i64, rg: i64, n: i64) {
   }
   gen_x(e, x - 1, rg, n); xmov_in(x, K_REG, RGS[rg], 0);
 }
-let XSTACK_TOP = 7;   // expression stack xmm2..xmm7
+let XSTACK_TOP = 5;   // expression stack xmm2..xmm5
 fn xroom(e: i64) -> bool { return ftree(e) && !has_call(e) && xtop <= XSTACK_TOP - 2; }
 fn genf_root(e: i64, r: i64, rg: i64, n: i64) { let x = xtop; genf(e, x, rg, n); fstore(r, x, fprec(e)); }
 let mut clobm: i64 = 0;   // callee-saved registers written while generating the current function
