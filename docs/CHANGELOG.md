@@ -19,6 +19,12 @@
 - **Calls/recursion (Claude agent):** dominating bounds-check reuse, dead-at-call save elision,
   tail recursion modulo `+`, register coalescing, deeper inlining of tiny recursive bodies
   (binarytrees 945 → ~600 ms on Xeon).
+- **Float-literal correctness:** direct decimal literals in an `f32` context
+  round once from the decimal value to binary32, avoiding rare double-rounding
+  cases. Literals that default to `f64`, and explicit narrowing such as `literal as f32`, keep
+  the existing staged conversion. Twenty exact rational-oracle regression cases cover boundary rounding, aliases,
+  signed zero and explicit narrowing. The implementation uses about 8.5 MiB of additional virtual
+  metadata mappings; resident-memory impact has not been measured, and no speed gain is claimed.
 
 - **Generated code size:** omit hidden compound-index snapshots for constants and
   stable local scalars, while preserving RHS-first evaluation and snapshots for

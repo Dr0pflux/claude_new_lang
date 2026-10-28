@@ -98,6 +98,7 @@ let mut tk_op: i64 = 0;
 let mut tk_big: bool = false;
 let mut tk_value: u64 = 0;
 let mut tk_fval: u64 = 0;       // f64 bits
+let mut tk_fval32: u64 = 0;     // the same literal correctly rounded to f32
 let mut tk_noff: i64 = 0;       // identifier: offset/length in src
 let mut tk_nlen: i64 = 0;
 let mut tk_soff: i64 = 0;       // string literal: offset/length in sdata
@@ -206,7 +207,7 @@ fn next() {
     if ch(pos) == '/' && ch(pos + 1) == '/' { while ch(pos) != 0 && ch(pos) != 10 { pos += 1; } continue; }
     break;
   }
-  tk_kind = 0; tk_op = 0; tk_big = false; tk_value = 0; tk_fval = 0; tk_noff = 0; tk_nlen = 0; tk_soff = 0; tk_slen = 0;
+  tk_kind = 0; tk_op = 0; tk_big = false; tk_value = 0; tk_fval = 0; tk_fval32 = 0; tk_noff = 0; tk_nlen = 0; tk_soff = 0; tk_slen = 0;
   tstart = pos;
   let c = ch(pos);
   if c == 0 { tk_kind = T_EOF; return; }
@@ -298,7 +299,7 @@ fn next() {
           while is_digit(ch(pos)) { pos += 1; }
         }
         if pos - st > 127 { fail("float literal too long"); }
-        tk_kind = T_FNUM; tk_fval = parse_float(st, pos);
+        tk_kind = T_FNUM; tk_fval = parse_float(st, pos, false); tk_fval32 = parse_float(st, pos, true);
         if is_alpha(ch(pos)) || ch(pos) == '_' { fail("malformed number"); }
         return;
       }
@@ -409,27 +410,33 @@ fn round_keep(q: u64, qb: i64, sticky: bool, keep: i64) -> u64 {
   if rem > half || (rem == half && (sticky || (r & 1) == 1)) { return r + 1; }
   return r;
 }
-// double nearest to q * 2^(e2 - qb + 1) (q's top bit has weight 2^e2)
-fn make_double(q: u64, qb: i64, sticky: bool, e2: i64) -> u64 {
-  if e2 > 1023 { return 9218868437227405312; }
-  if e2 >= -1022 {
-    let mut m = round_keep(q, qb, sticky, 53);
+// Nearest IEEE binary64 (sg=false) or binary32 (sg=true) to q * 2^(e2 - qb + 1).
+fn make_double(q: u64, qb: i64, sticky: bool, e2: i64, sg: bool) -> u64 {
+  let mut mb = 53; let mut emax = 1023; let mut fb: u64 = 52;
+  if sg { mb = 24; emax = 127; fb = 23; }
+  let emin = 1 - emax;
+  let inf = ((2 * emax + 1) as u64) << fb;
+  if e2 > emax { return inf; }
+  if e2 >= emin {
+    let mut m = round_keep(q, qb, sticky, mb);
     let mut e = e2;
-    if (m >> 53) != 0 { m = m >> 1; e += 1; }
-    if e > 1023 { return 9218868437227405312; }
-    return (((e + 1023) as u64) << 52) | (m & 4503599627370495);
+    if (m >> (mb as u64)) != 0 { m = m >> 1; e += 1; }
+    if e > emax { return inf; }
+    return (((e + emax) as u64) << fb) | (m & (((1 as u64) << fb) - 1));
   }
-  // subnormal: units of 2^-1074; keep = number of bits from 2^e2 down to 2^-1074
-  let keep = e2 + 1075;
+  // Subnormal unit is 2^(emin - mb + 1); keep counts retained bits below e2.
+  let keep = e2 - emin + mb;
   if keep < 0 { return 0; }
-  if keep == 0 { // q is below half of the smallest subnormal unless it is above exactly half
+  if keep == 0 {
     let half: u64 = (1 as u64) << ((qb - 1) as u64);
     if q > half || (q == half && sticky) { return 1; }
     return 0;
   }
-  return round_keep(q, qb, sticky, keep);   // a carry to 2^52 encodes the smallest normal
+  return round_keep(q, qb, sticky, keep);
 }
-fn parse_float(st: i64, en: i64) -> u64 {
+fn parse_float(st: i64, en: i64, sg: bool) -> u64 {
+  let mut inf: u64 = 9218868437227405312;
+  if sg { inf = 2139095040; }
   let n = alloc<u64>(160);
   let mut nl = 1;
   let mut e10 = 0;
@@ -457,11 +464,11 @@ fn parse_float(st: i64, en: i64) -> u64 {
   if !nz { return 0; }
   let nb = big_bits(n, nl);
   let est = e10 + nb * 30103 / 100000;   // ~ log10(value)
-  if est > 310 { return 9218868437227405312; }
+  if est > 310 { return inf; }
   if est < -326 { return 0; }
   if e10 >= 0 {
     let mut k = 0;
-    while k < e10 { nl = big_mul_small(n, nl, 10, 0); if nl < 0 { return 9218868437227405312; } k += 1; }
+    while k < e10 { nl = big_mul_small(n, nl, 10, 0); if nl < 0 { return inf; } k += 1; }
     let b = big_bits(n, nl);
     let top = if_min(b, 64);
     let mut q: u64 = 0;
@@ -470,7 +477,7 @@ fn parse_float(st: i64, en: i64) -> u64 {
     let mut sticky = false;
     i = 0;
     while i < b - top { if big_bit(n, nl, i) != 0 { sticky = true; } i += 1; }
-    return make_double(q, top, sticky, b - 1);
+    return make_double(q, top, sticky, b - 1, sg);
   }
   // N / 10^-E: q = floor(N * 2^sh / D) has 63 or 64 bits
   let d = alloc<u64>(160);
@@ -499,7 +506,7 @@ fn parse_float(st: i64, en: i64) -> u64 {
   let mut qb = 0;
   let mut t = q;
   while t != 0 { qb += 1; t = t >> 1; }
-  return make_double(q, qb, sticky, qb - 1 - sh);
+  return make_double(q, qb, sticky, qb - 1 - sh, sg);
 }
 fn if_min(a: i64, b: i64) -> i64 { if a < b { return a; } return b; }
 // ---------------------------------------------------------------- AST
@@ -512,6 +519,9 @@ let A_ALLOC = 0; let A_FILE = 1; let A_VIEW = 2; let A_STR = 3; let A_ARG = 4;
 struct Node { k: i64, op: i64, a: i64, b: i64, c: i64, next: i64, var: i64, pos: i64, chk: i64, nn: i64, ty: i64, v: u64, dlo: i64, dhi: i64, src: i64 }
 let nd = alloc<Node>(1048576);
 let mut nn: i64 = 0;
+let flit32 = alloc<u64>(1048576);
+let vflit32 = alloc<u64>(65536);
+let FLIT32_OK: u64 = 4294967296;
 
 struct Var { noff: i64, nlen: i64, mutv: i64, isconst: i64, alias: i64, hoist: i64, reads: i64, start: i64, end: i64,
   reg: i64, slot: i64, cval: u64, weight: i64, arr: i64, ro: i64, basev: i64, lenv: i64, shared: i64, alen: i64,
@@ -532,7 +542,7 @@ let mut mainfn: i64 = 0;
 fn mk(k: i64) -> i64 {
   if nn >= MAX_NODES { fail("program too large"); }
   nd[nn].k = k; nd[nn].op = 0; nd[nn].a = -1; nd[nn].b = -1; nd[nn].c = -1; nd[nn].next = -1; nd[nn].var = -1;
-  nd[nn].pos = 0; nd[nn].chk = 0; nd[nn].nn = 0; nd[nn].ty = TY_I64; nd[nn].v = 0; nd[nn].dlo = 0; nd[nn].dhi = -1;
+  nd[nn].pos = 0; nd[nn].chk = 0; nd[nn].nn = 0; nd[nn].ty = TY_I64; nd[nn].v = 0; nd[nn].dlo = 0; nd[nn].dhi = -1; flit32[nn] = 0;
   if parsing_src != 0 && tstart != 0 { nd[nn].src = tstart - source; } else { nd[nn].src = -1; }
   nn += 1;
   return nn - 1;
@@ -1359,11 +1369,11 @@ fn find_var(off: i64, n: i64) -> i64 {
 fn lookup(off: i64, n: i64) -> i64 { let v = find_var(off, n); if v < 0 { fail_name("unknown variable", off, n); } return v; }
 fn peek_kind() -> i64 {
   let sp = pos; let ts = tstart; let sd = sdlen;
-  let k0 = tk_kind; let o0 = tk_op; let b0 = tk_big; let v0 = tk_value; let f0 = tk_fval; let no = tk_noff; let nl = tk_nlen; let so = tk_soff; let sl = tk_slen;
+  let k0 = tk_kind; let o0 = tk_op; let b0 = tk_big; let v0 = tk_value; let f0 = tk_fval; let g0 = tk_fval32; let no = tk_noff; let nl = tk_nlen; let so = tk_soff; let sl = tk_slen;
   next();
   let k = tk_kind;
   pos = sp; tstart = ts; sdlen = sd;
-  tk_kind = k0; tk_op = o0; tk_big = b0; tk_value = v0; tk_fval = f0; tk_noff = no; tk_nlen = nl; tk_soff = so; tk_slen = sl;
+  tk_kind = k0; tk_op = o0; tk_big = b0; tk_value = v0; tk_fval = f0; tk_fval32 = g0; tk_noff = no; tk_nlen = nl; tk_soff = so; tk_slen = sl;
   return k;
 }
 fn var_ref(v0: i64) -> i64 {
@@ -1371,7 +1381,7 @@ fn var_ref(v0: i64) -> i64 {
   while vars[v].alias != 0 { v = vars[v].alias - 1; }
   if vars[v].garr != 0 { let e = mk_load(vars[v].garr, mkconst(0)); nd[e].ty = vars[v].ty; return e; }
   if vars[v].arr != 0 { fail("array used as a scalar (index it, or use len())"); }
-  if vars[v].isconst != 0 { return mkconst_t(vars[v].cval, vars[v].ty); }
+  if vars[v].isconst != 0 { let ce = mkconst_t(vars[v].cval, vars[v].ty); flit32[ce] = vflit32[v]; return ce; }
   vars[v].reads += 1;
   let e = mk(N_VAR); nd[e].var = v; nd[e].ty = vars[v].ty; return e;
 }
@@ -1406,7 +1416,13 @@ fn conv(e: i64, t: i64) -> i64 {
       nd[e].ty = t; return e;
     }
   }
-  if s == TY_FLIT && ty_flt(t) { if t == TY_F32 { nd[e].v = bits(f64_from_bits(nd[e].v) as f32) as u64; } nd[e].ty = t; return e; }
+  if s == TY_FLIT && ty_flt(t) {
+    if t == TY_F32 {
+      if (flit32[e] & FLIT32_OK) != 0 { nd[e].v = flit32[e] & 4294967295; }
+      else { nd[e].v = bits(f64_from_bits(nd[e].v) as f32) as u64; }
+    }
+    nd[e].ty = t; return e;
+  }
   if ty_int(s) && ty_int(t) && widens(s, t) { nd[e].ty = t; errnode = -1; return e; }
   fail_ty2("type mismatch: expected ", t, ", found ", s); return -1;
 }
@@ -1494,7 +1510,9 @@ fn typed_un(op: i64, a0: i64) -> i64 {
   if op == U_LNOT { need_bool(a); return mk_un(U_LNOT, a, TY_BOOL); }
   if op == U_NEG && (ty_flt(t) || t == TY_FLIT) {
     if t == TY_F32 { return mk_un(U_GNEG, a, t); }
-    return mk_un(U_FNEG, a, t);
+    let r = mk_un(U_FNEG, a, t);
+    if t == TY_FLIT && is_const(r) && (flit32[a] & FLIT32_OK) != 0 { flit32[r] = flit32[a] ^ 2147483648; }
+    return r;
   }
   if !ty_int(t) { fail_ty("operator needs an integer, found ", t); }
   if t == TY_ILIT { return mk_un(op, a, TY_ILIT); }
@@ -1571,7 +1589,7 @@ fn mk_load(a: i64, idx: i64) -> i64 {
 fn copy_node(r: i64, e: i64) {
   nd[r].k = nd[e].k; nd[r].op = nd[e].op; nd[r].a = nd[e].a; nd[r].b = nd[e].b; nd[r].c = nd[e].c; nd[r].next = nd[e].next;
   nd[r].var = nd[e].var; nd[r].pos = nd[e].pos; nd[r].chk = nd[e].chk; nd[r].nn = nd[e].nn; nd[r].ty = nd[e].ty;
-  nd[r].v = nd[e].v; nd[r].dlo = nd[e].dlo; nd[r].dhi = nd[e].dhi; nd[r].src = nd[e].src;
+  nd[r].v = nd[e].v; nd[r].dlo = nd[e].dlo; nd[r].dhi = nd[e].dhi; nd[r].src = nd[e].src; flit32[r] = flit32[e];
 }
 fn clone_expr(e: i64) -> i64 {
   if e < 0 { return -1; }
@@ -1665,7 +1683,7 @@ fn retag(e: i64, t: i64) -> i64 { nd[e].ty = t; return e; }
 fn builtin_arg() -> i64 { expect('('); let e = parse_expr(); expect(')'); return e; }
 fn atom() -> i64 {
   if tk_kind == T_NUM { let v = tk_value; let big = tk_big; next(); if big { return mkconst_t(v, TY_U64); } return mkconst_t(v, TY_ILIT); }
-  if tk_kind == T_FNUM { let d = tk_fval; next(); return mkconst_t(d, TY_FLIT); }
+  if tk_kind == T_FNUM { let d = tk_fval; let d32 = tk_fval32; next(); let e = mkconst_t(d, TY_FLIT); flit32[e] = d32 | FLIT32_OK; return e; }
   if tk_kind == T_TRUE || tk_kind == T_FALSE { let v = (tk_kind == T_TRUE) as u64; next(); return mkconst_t(v, TY_BOOL); }
   if tk_kind == '(' { next(); let e = parse_expr(); expect(')'); return e; }
   if tk_kind == T_ID {
@@ -1770,7 +1788,7 @@ fn clear_var(v: i64) {
   vars[v].reads = 0; vars[v].start = 0; vars[v].end = 0; vars[v].reg = -1; vars[v].slot = -1; vars[v].cval = 0;
   vars[v].weight = 0; vars[v].arr = 0; vars[v].ro = 0; vars[v].basev = 0; vars[v].lenv = -1; vars[v].shared = 0;
   vars[v].alen = 0; vars[v].lenof = 0; vars[v].aid = 0; vars[v].ty = TY_I64; vars[v].et = 0; vars[v].owner = 0;
-  vars[v].glob = 0; vars[v].garr = 0; vars[v].xr = -1; forvar[v] = false;
+  vars[v].glob = 0; vars[v].garr = 0; vars[v].xr = -1; forvar[v] = false; vflit32[v] = 0;
 }
 fn hidden() -> i64 {
   if nv >= MAX_VARS { fail("too many variables"); }
@@ -1903,7 +1921,7 @@ fn parse_stmt() -> i64 {
     if k == T_CONST && !is_const(e) { fail("a const value must be a compile-time constant"); }
     else if nd[e].ty == TY_UNIT { fail("this function returns no value"); }
     let v = declare(no, nl, mut_); vars[v].ty = nd[e].ty;
-    if !mut_ && is_const(e) { vars[v].isconst = 1; vars[v].cval = nd[e].v; s = mk(S_BLOCK); }
+    if !mut_ && is_const(e) { vars[v].isconst = 1; vars[v].cval = nd[e].v; vflit32[v] = flit32[e]; s = mk(S_BLOCK); }
     else if !mut_ && nd[e].k == N_VAR && vars[nd[e].var].mutv == 0 && nd[e].ty == vars[nd[e].var].ty {
       vars[v].alias = nd[e].var + 1; vars[nd[e].var].reads -= 1; s = mk(S_BLOCK);
     } else { s = mk(S_LET); nd[s].var = v; nd[s].a = e; }
@@ -2295,7 +2313,7 @@ fn parse_global() {
   if !is_const(e) { fail("a global initializer must be a constant"); }
   if ann != 0 { e = conv(e, ann); } else if mut_ { e = deflt(e); }
   let v = new_global(no, nl, mut_); vars[v].ty = nd[e].ty;
-  if !mut_ { vars[v].isconst = 1; vars[v].cval = nd[e].v; return; }
+  if !mut_ { vars[v].isconst = 1; vars[v].cval = nd[e].v; vflit32[v] = flit32[e]; return; }
   let g = hidden(); vars[g].owner = -1; static_array(g, nd[e].ty, 1); vars[v].garr = g;
   if nd[e].v != 0 {
     let st = mk(S_STORE); nd[st].var = g; nd[st].a = mkconst(0); nd[st].b = e; nd[st].op = -1; nd[st].chk = 1;
@@ -2318,7 +2336,7 @@ fn skip_item() {
 fn skip_fn() { while tk_kind != '{' && tk_kind != T_EOF { next(); } skip_item(); }
 fn prescan() {
   let sp = pos; let ts = tstart; let sd = sdlen;
-  let k0 = tk_kind; let o0 = tk_op; let b0 = tk_big; let v0 = tk_value; let f0 = tk_fval; let no = tk_noff; let nl = tk_nlen; let so = tk_soff; let sl = tk_slen;
+  let k0 = tk_kind; let o0 = tk_op; let b0 = tk_big; let v0 = tk_value; let f0 = tk_fval; let g0 = tk_fval32; let no = tk_noff; let nl = tk_nlen; let so = tk_soff; let sl = tk_slen;
   let mut d = 0;
   while tk_kind != T_EOF {
     if d == 0 && tk_kind == T_FN {
@@ -2337,7 +2355,7 @@ fn prescan() {
     next();
   }
   pos = sp; tstart = ts; sdlen = sd;
-  tk_kind = k0; tk_op = o0; tk_big = b0; tk_value = v0; tk_fval = f0; tk_noff = no; tk_nlen = nl; tk_soff = so; tk_slen = sl;
+  tk_kind = k0; tk_op = o0; tk_big = b0; tk_value = v0; tk_fval = f0; tk_fval32 = g0; tk_noff = no; tk_nlen = nl; tk_soff = so; tk_slen = sl;
 }
 let fout_state = alloc<i64>(4096);
 fn expr_outputs(e: i64) -> bool {
