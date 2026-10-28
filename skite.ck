@@ -743,15 +743,21 @@ let mut pool_top: i64 = 16000000;    // loop-entry snapshots (kept for strength 
 let freeb = alloc<i64>(1048576);     // free temporary blocks (all of size env_n+1 within a function)
 let mut nfreeb: i64 = 0;
 fn pool_reset() { pool_bump = 0; nfreeb = 0; }
-fn env_new() -> i64 {
-  let bs = env_n + 1;
+fn env_alloc() -> i64 { // contents undefined: the caller overwrites them (or marks the block dead) first
   let mut e = 0;
   if nfreeb > 0 { nfreeb -= 1; e = freeb[nfreeb]; }
-  else { e = pool_bump; pool_bump += bs; if pool_bump > pool_top { fail("analysis memory exhausted"); } }
+  else { e = pool_bump; pool_bump += env_n + 1; if pool_bump > pool_top { fail("analysis memory exhausted"); } }
+  return e;
+}
+fn env_new() -> i64 {
+  let bs = env_n + 1;
+  let e = env_alloc();
   let mut i = 0;
   while i < bs { envp[e + i].lo = 0; envp[e + i].hi = 0; envp[e + i].lt = 0; envp[e + i].bot = false; i += 1; }
   return e;
 }
+fn env_dead() -> i64 { let e = env_alloc(); set_dead(e); return e; } // joins into a dead block overwrite it whole
+fn env_dup(s: i64) -> i64 { let e = env_alloc(); env_copy(e, s); return e; }
 fn env_new_keep() -> i64 { // never freed
   let bs = env_n + 1;
   pool_top -= bs;
@@ -764,41 +770,47 @@ fn env_new_keep() -> i64 { // never freed
 fn env_free(e: i64) { freeb[nfreeb] = e; nfreeb += 1; }
 fn dead(e: i64) -> bool { return envp[e + env_n].lo != 0; }
 fn set_dead(e: i64) { envp[e + env_n].lo = 1; }
+// the 0 <= j, k < ENV_CAP tests always hold (blocks lie in the pool); they let the bounds checks fold
 fn env_copy(d: i64, s: i64) {
-  let mut i = 0;
-  while i <= env_n {
-    envp[d + i].lo = envp[s + i].lo; envp[d + i].hi = envp[s + i].hi; envp[d + i].lt = envp[s + i].lt; envp[d + i].bot = envp[s + i].bot;
-    i += 1;
+  let mut j = d; let mut k = s;
+  let e = d + env_n;
+  while j <= e && j >= 0 && j < 16000000 && k >= 0 && k < 16000000 {
+    envp[j].lo = envp[k].lo; envp[j].hi = envp[k].hi; envp[j].lt = envp[k].lt; envp[j].bot = envp[k].bot;
+    j += 1; k += 1;
   }
 }
 fn env_join(d: i64, s: i64) {
   if dead(s) { return; }
   if dead(d) { env_copy(d, s); return; }
-  let mut v = 0;
-  while v < env_n {
-    if envp[d + v].bot { envp[d + v].lo = envp[s + v].lo; envp[d + v].hi = envp[s + v].hi; envp[d + v].bot = envp[s + v].bot; }
-    else if !envp[s + v].bot {
-      if envp[s + v].lo < envp[d + v].lo { envp[d + v].lo = envp[s + v].lo; }
-      if envp[s + v].hi > envp[d + v].hi { envp[d + v].hi = envp[s + v].hi; }
+  let mut j = d; let mut k = s;
+  let e = d + env_n;
+  while j < e && j >= 0 && j < 16000000 && k >= 0 && k < 16000000 {
+    if envp[j].bot { envp[j].lo = envp[k].lo; envp[j].hi = envp[k].hi; envp[j].bot = envp[k].bot; }
+    else if !envp[k].bot {
+      if envp[k].lo < envp[j].lo { envp[j].lo = envp[k].lo; }
+      if envp[k].hi > envp[j].hi { envp[j].hi = envp[k].hi; }
     }
-    envp[d + v].lt = envp[d + v].lt & envp[s + v].lt;
-    v += 1;
+    envp[j].lt = envp[j].lt & envp[k].lt;
+    j += 1; k += 1;
   }
 }
 fn env_eq(a: i64, b: i64) -> bool {
   if dead(a) != dead(b) { return false; }
-  let mut v = 0;
-  while v < env_n {
-    if envp[a + v].lt != envp[b + v].lt || envp[a + v].bot != envp[b + v].bot { return false; }
-    if !envp[a + v].bot && (envp[a + v].lo != envp[b + v].lo || envp[a + v].hi != envp[b + v].hi) { return false; }
-    v += 1;
+  let mut j = a; let mut k = b;
+  let e = a + env_n;
+  while j < e && j >= 0 && j < 16000000 && k >= 0 && k < 16000000 {
+    if envp[j].lt != envp[k].lt || envp[j].bot != envp[k].bot { return false; }
+    if !envp[j].bot && (envp[j].lo != envp[k].lo || envp[j].hi != envp[k].hi) { return false; }
+    j += 1; k += 1;
   }
   return true;
 }
+let wc_set = alloc<i64>(1048576);   // the loops whose wcache entry is set
+let mut nwc_set: i64 = 0;
 fn wcache_free() {
   let mut i = 0;
-  while i < nn { wcache[i] = 0; i += 1; }
-  wcache_bytes = 0;
+  while i < nwc_set { wcache[wc_set[i]] = 0; i += 1; }
+  nwc_set = 0; wcache_bytes = 0;
   pool_reset();
 }
 fn has_mod(e: i64) -> bool {
@@ -821,17 +833,66 @@ let fl_n = alloc<i64>(4096);
 let fl_has = alloc<bool>(4096);
 let fl_store = alloc<i64>(4194304);
 let mut fl_used: i64 = 0;
+// per function: array classes whose content ranges it reads (to skip re-analysis when none changed)
+let fr_start = alloc<i64>(4096);
+let fr_n = alloc<i64>(4096);
+let fr_store = alloc<i64>(4194304);
+let mut fr_used: i64 = 0;
+let fr_mark = alloc<i64>(65536);
+let arr_ver = alloc<i64>(65536);    // an_stamp of the last change to each class
+let fn_seen = alloc<i64>(4096);     // an_stamp when the function was last analyzed (-1: never)
+let mut an_stamp: i64 = 0;
+// per function: the nodes its analysis annotates, with their values from before any analysis, so a
+// re-analysis starts from the same state; then each function's last analysis leaves the final annotations
+let ann_start = alloc<i64>(4096);
+let ann_n = alloc<i64>(4096);
+let ann_node = alloc<i64>(1048576);
+let mut ann_used: i64 = 0;
+let ann_owner = alloc<i64>(1048576); // function + 1 that recorded the node
+let mut ann_shared: bool = false;    // a node in two functions: annotate in a separate final pass instead
+let snap_chk = alloc<i64>(1048576);
+let snap_nn = alloc<i64>(1048576);
+let snap_dlo = alloc<i64>(1048576);
+let snap_dhi = alloc<i64>(1048576);
+let wblk = alloc<i64>(1048576);      // per loop: wentry block + 1, reused across re-analyses
+let wmod = alloc<i64>(1048576);      // per loop: has_mod(body) + 1 (0: not computed)
 fn LV(v: i64) -> i64 { let i = lmap[v]; if i < 0 { fail("internal: variable outside the analyzed function"); } return i; }
 fn lv_add(v: i64) { if v >= 0 && lmap[v] < 0 { lmap[v] = nlvars; lvars[nlvars] = v; nlvars += 1; } }
 fn lv_arr(a: i64) { if vars[a].lenv >= 0 { lv_add(vars[a].lenv); } }
+fn ann_rec(x: i64) {
+  if ann_owner[x] == lmap_fn + 1 { return; }
+  if ann_owner[x] != 0 { ann_shared = true; return; }
+  ann_owner[x] = lmap_fn + 1;
+  ann_node[ann_used] = x; ann_used += 1;
+  snap_chk[x] = nd[x].chk; snap_nn[x] = nd[x].nn; snap_dlo[x] = nd[x].dlo; snap_dhi[x] = nd[x].dhi;
+}
+fn ann_reset(f: i64) {
+  let mut i = ann_start[f];
+  while i < ann_start[f] + ann_n[f] {
+    let x = ann_node[i];
+    nd[x].chk = snap_chk[x]; nd[x].nn = snap_nn[x]; nd[x].dlo = snap_dlo[x]; nd[x].dhi = snap_dhi[x];
+    if nd[x].k == S_WHILE { wentry[x] = 0; }
+    i += 1;
+  }
+}
+fn lv_rd(a: i64) {
+  let L = arr_leader[a];
+  if fr_mark[L] != lmap_fn + 1 {
+    fr_mark[L] = lmap_fn + 1;
+    if fr_used >= 4194304 { fail("analysis tables full"); }
+    fr_store[fr_used] = L; fr_used += 1;
+  }
+}
 fn lv_expr(e: i64) {
   if e < 0 { return; }
   let k = nd[e].k;
   if k == N_VAR { lv_add(nd[e].var); return; }
-  if k == N_LOAD { lv_arr(nd[e].var); lv_expr(nd[e].a); return; }
+  if k == N_LOAD { lv_arr(nd[e].var); lv_rd(nd[e].var); ann_rec(e); lv_expr(nd[e].a); return; }
   if k == N_ARR { lv_arr(nd[e].var); return; }
   if k == N_CALL { let mut a = nd[e].a; while a >= 0 { lv_expr(a); a = nd[a].next; } return; }
   if k == N_CONST || k == N_NCPU { return; }
+  let op = nd[e].op;
+  if op == O_DIV || op == O_MOD || (op >= U_SX8 && op <= U_SATU32) { ann_rec(e); }
   lv_expr(nd[e].a); lv_expr(nd[e].b);
 }
 fn lv_stmt(s: i64) {
@@ -839,10 +900,13 @@ fn lv_stmt(s: i64) {
   let k = nd[s].k;
   if k == S_LET || k == S_ASSIGN || k == S_IRET { lv_add(nd[s].var); lv_expr(nd[s].a); return; }
   if k == S_ARR { lv_arr(nd[s].var); lv_expr(nd[s].a); return; }
-  if k == S_STORE || k == S_WRITE || k == S_SAVE { if nd[s].var >= 0 { lv_arr(nd[s].var); } lv_expr(nd[s].a); lv_expr(nd[s].b); return; }
+  if k == S_STORE || k == S_WRITE || k == S_SAVE {
+    if k == S_STORE { ann_rec(s); }
+    if nd[s].var >= 0 { lv_arr(nd[s].var); } lv_expr(nd[s].a); lv_expr(nd[s].b); return;
+  }
   if k == S_PAR { lv_add(nd[s].var); lv_add(nd[s].op); lv_expr(nd[s].a); lv_expr(nd[s].b); lv_stmt(nd[s].c); return; }
   if k == S_IF { lv_expr(nd[s].a); lv_stmt(nd[s].b); lv_stmt(nd[s].c); return; }
-  if k == S_WHILE { lv_expr(nd[s].a); lv_stmt(nd[s].b); return; }
+  if k == S_WHILE { ann_rec(s); lv_expr(nd[s].a); lv_stmt(nd[s].b); return; }
   if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { lv_stmt(c); c = nd[c].next; } return; }
   lv_expr(nd[s].a);
 }
@@ -863,7 +927,9 @@ fn lmap_for(f: i64) {
     if fpw[f * 16 + i] != 0 { lv_add(vars[v].lenv); } else { lv_add(v); }
     i += 1;
   }
+  fr_start[f] = fr_used; ann_start[f] = ann_used;
   lv_stmt(fns[f].body);
+  fr_n[f] = fr_used - fr_start[f]; ann_n[f] = ann_used - ann_start[f];
   env_n = nlvars;
   fl_has[f] = true; fl_start[f] = fl_used; fl_n[f] = nlvars;
   if fl_used + nlvars > 4194304 { fail("analysis tables full"); }
@@ -969,7 +1035,7 @@ fn er(e: i64, env: i64) { // range of expression e -> R*
   let op = nd[e].op;
   if op == O_LAND || op == O_LOR {
     er(nd[e].a, env);
-    let t = env_new(); env_copy(t, env); refine(t, nd[e].a, op == O_LAND);
+    let t = env_dup(env); refine(t, nd[e].a, op == O_LAND);
     if !dead(t) { er(nd[e].b, t); }
     env_free(t); ret_rg(0, 1); return;
   }
@@ -1051,6 +1117,7 @@ fn arr_store(a: i64, vlo0: i64, vhi0: i64, vbot: bool) {
   if !arr_bot[L] { nlo = mn(arr_lo[L], vlo); nhi = mx(arr_hi[L], vhi); }
   if nbot != arr_bot[L] || nlo != arr_lo[L] || nhi != arr_hi[L] {
     arr_lo[L] = nlo; arr_hi[L] = nhi; arr_bot[L] = nbot; an_changed = true; arr_chg[L] = true;
+    an_stamp += 1; arr_ver[L] = an_stamp;
   }
 }
 fn set_var_rg(env: i64, v: i64, lo: i64, hi: i64, bot: bool) {
@@ -1100,7 +1167,7 @@ fn as_stmt(s: i64, env: i64) {
     let alo = RLO; let abot = RBOT;
     er(nd[s].b, env);
     let blo = RLO; let bhi = RHI; let bbot = RBOT;
-    let t = env_new(); env_copy(t, env);
+    let t = env_dup(env);
     let mut klo = INT64_MIN; let mut khi = INT64_MAX;
     if !abot && !bbot && bhi > INT64_MIN { klo = alo; khi = bhi - 1; }
     if klo <= khi {
@@ -1115,7 +1182,7 @@ fn as_stmt(s: i64, env: i64) {
   if k == S_INL {
     if an_inl >= MAX_LOOPS { fail("inlining nested too deeply"); }
     let L = an_inl; an_inl += 1;
-    inl_env[L] = env_new(); set_dead(inl_env[L]);
+    inl_env[L] = env_dead();
     let mut c = nd[s].a;
     while c >= 0 { as_stmt(c, env); c = nd[c].next; }
     env_join(env, inl_env[L]);
@@ -1126,20 +1193,19 @@ fn as_stmt(s: i64, env: i64) {
   if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { as_stmt(c, env); c = nd[c].next; } return; }
   if k == S_IF {
     er(nd[s].a, env);
-    let t = env_new(); let f = env_new(); env_copy(t, env); env_copy(f, env);
-    refine(t, nd[s].a, true); refine(f, nd[s].a, false);
-    as_stmt(nd[s].b, t); if nd[s].c >= 0 { as_stmt(nd[s].c, f); }
-    env_copy(env, t); env_join(env, f);
-    if dead(t) && dead(f) { set_dead(env); }
-    env_free(t); env_free(f); return;
+    let f = env_dup(env);   // env itself is the then-branch environment
+    refine(env, nd[s].a, true); refine(f, nd[s].a, false);
+    as_stmt(nd[s].b, env); if nd[s].c >= 0 { as_stmt(nd[s].c, f); }
+    env_join(env, f);
+    env_free(f); return;
   }
   if k == S_WHILE {
-    let entry = env_new(); let head = env_new(); let bdy = env_new(); let nh = env_new();
-    env_copy(entry, env); env_copy(head, env);
+    let entry = env;   // not written until the loop is done
+    let mut head = env_dup(env); let bdy = env_alloc(); let mut nh = env_alloc();
     if wcache[s] != 0 { env_join(head, wcache[s] - 1); }
     if an_loops >= MAX_LOOPS { fail("loops nested too deeply"); }
     let L = an_loops; an_loops += 1;
-    brk_env[L] = env_new(); cont_env[L] = env_new();
+    brk_env[L] = env_dead(); cont_env[L] = env_dead();
     let mut it = 0;
     while true {
       set_dead(brk_env[L]); set_dead(cont_env[L]);
@@ -1149,7 +1215,7 @@ fn as_stmt(s: i64, env: i64) {
       env_join(nh, head);
       if it >= 2 { env_widen(head, nh, it < 40); }
       if env_eq(nh, head) { break; }
-      env_copy(head, nh);
+      let x = head; head = nh; nh = x;
       if it > 200 { fail("internal: range analysis did not converge"); }
       it += 1;
     }
@@ -1160,19 +1226,26 @@ fn as_stmt(s: i64, env: i64) {
       as_stmt(nd[s].b, bdy); env_join(bdy, cont_env[L]);
       env_copy(nh, entry); env_join(nh, bdy);
       if env_eq(nh, head) { break; }
-      env_copy(head, nh);
+      let x = head; head = nh; nh = x;
       it += 1;
     }
-    if wcache[s] == 0 && wcache_bytes < WCACHE_MAX { wcache[s] = env_new_cache() + 1; wcache_bytes += (env_n + 1) * 32; }
+    if wcache[s] == 0 && wcache_bytes < WCACHE_MAX {
+      wcache[s] = env_new_cache() + 1; wcache_bytes += (env_n + 1) * 32;
+      wc_set[nwc_set] = s; nwc_set += 1;
+    }
     if wcache[s] != 0 { env_copy(wcache[s] - 1, head); }
-    if an_annot && has_mod(nd[s].b) { if wentry[s] == 0 { wentry[s] = env_new_keep() + 1; } env_copy(wentry[s] - 1, entry); wfn[s] = an_fn; }
+    if an_annot && wmod[s] == 0 { wmod[s] = has_mod(nd[s].b) as i64 + 1; }
+    if an_annot && wmod[s] == 2 {
+      if wentry[s] == 0 { if wblk[s] == 0 { wblk[s] = env_new_keep() + 1; } wentry[s] = wblk[s]; }
+      env_copy(wentry[s] - 1, entry); wfn[s] = an_fn;
+    }
     env_copy(env, head); refine(env, nd[s].a, false); env_join(env, brk_env[L]);
     an_loops -= 1; env_free(brk_env[L]); env_free(cont_env[L]);
-    env_free(entry); env_free(head); env_free(bdy); env_free(nh);
+    env_free(head); env_free(bdy); env_free(nh);
     return;
   }
 }
-fn env_new_cache() -> i64 { return env_new(); }   // cache blocks live until wcache_free (pool reset)
+fn env_new_cache() -> i64 { return env_alloc(); }   // cache blocks live until wcache_free (pool reset)
 fn fn_env(env: i64, f: i64) {
   let mut v = 0;
   while v < env_n { envp[env + v].lo = 0; envp[env + v].hi = 0; envp[env + v].bot = true; envp[env + v].lt = 0; v += 1; }
@@ -1186,8 +1259,16 @@ fn fn_env(env: i64, f: i64) {
     i += 1;
   }
 }
+fn an_stale(f: i64) -> bool { // can f's analysis store anything new?  (its inputs are the classes it reads)
+  if fn_seen[f] < 0 { return true; }
+  let mut i = fr_start[f];
+  while i < fr_start[f] + fr_n[f] { if arr_ver[fr_store[i]] > fn_seen[f] { return true; } i += 1; }
+  return false;
+}
 fn analyze_fn(f: i64) {
+  fn_seen[f] = an_stamp;
   lmap_for(f); an_fn = f;
+  if !ann_shared { ann_reset(f); }
   let env = env_new(); fn_env(env, f); as_stmt(fns[f].body, env); env_free(env);
   wcache_free();
 }
@@ -1262,13 +1343,16 @@ fn analyze() {
   v = 0;
   while v < MAX_VARS { lmap[v] = -1; v += 1; }
   nlvars = 0; lmap_fn = -2;
+  f = 0;
+  while f < nfn { fn_seen[f] = -1; f += 1; }
+  an_annot = true;
   let mut round = 0;
   while true {
     an_changed = false;
     v = 0;
     while v < nv { arr_chg[v] = false; v += 1; }
     f = 0;
-    while f < nfn { if fns[f].used != 0 { analyze_fn(f); } f += 1; }
+    while f < nfn { if fns[f].used != 0 && an_stale(f) { analyze_fn(f); } f += 1; }
     if !an_changed { break; }
     if round >= 8 {
       v = 0;
@@ -1277,6 +1361,7 @@ fn analyze() {
           type_rg(vars[v].et);
           if arr_bot[v] { arr_lo[v] = RLO; arr_hi[v] = RHI; arr_bot[v] = false; }
           else { arr_lo[v] = mn(arr_lo[v], RLO); arr_hi[v] = mx(arr_hi[v], RHI); }
+          an_stamp += 1; arr_ver[v] = an_stamp;
         }
         v += 1;
       }
@@ -1284,9 +1369,12 @@ fn analyze() {
     if round > 32 { fail("internal: array range analysis did not converge"); }
     round += 1;
   }
-  an_annot = true;
-  f = 0;
-  while f < nfn { if fns[f].used != 0 { analyze_fn(f); } f += 1; }
+  if ann_shared { // annotate in order from the original values, as one final pass
+    f = 0;
+    while f < nfn { if fns[f].used != 0 { ann_reset(f); } f += 1; }
+    f = 0;
+    while f < nfn { if fns[f].used != 0 { analyze_fn(f); } f += 1; }
+  }
 }
 // ---------------------------------------------------------------- parser state
 let mut depth: i64 = 0;
@@ -2311,12 +2399,19 @@ fn touch(v: i64) {
     i += 1;
   }
 }
+// constants hoisted out of each loop, in creation (= variable number) order: head/next are var + 1, 0 ends
+let hl_head = alloc<i64>(65536);
+let hl_tail = alloc<i64>(65536);
+let hl_next = alloc<i64>(MAX_VARS);
 fn hoist_var(v: u64, L: i64, t: i64) -> i64 {
-  let mut i = 0;
-  while i < nv { if vars[i].hoist == L + 1 && vars[i].cval == v && vars[i].ty == t { return i; } i += 1; }
+  let mut i = hl_head[L] - 1;
+  while i >= 0 { if vars[i].cval == v && vars[i].ty == t { return i; } i = hl_next[i] - 1; }
   if nv >= MAX_VARS { fail("too many variables"); }
   clear_var(nv); vars[nv].owner = 0; vars[nv].ty = t; vars[nv].lenv = 0;
   vars[nv].hoist = L + 1; vars[nv].cval = v; vars[nv].reads = 1; vars[nv].reg = -1; vars[nv].slot = -1; vars[nv].start = loop_start[L];
+  hl_next[nv] = 0;
+  if hl_head[L] == 0 { hl_head[L] = nv + 1; } else { hl_next[hl_tail[L]] = nv + 1; }
+  hl_tail[L] = nv;
   nv += 1; return nv - 1;
 }
 let mut nchecks: i64 = 0;
@@ -5300,13 +5395,12 @@ fn gen_stmt_body(s: i64, is_final: bool, rg: i64, n: i64) {
   if k == S_WHILE {
     if is_const(nd[s].a) && nd[nd[s].a].v == 0 { return; }
     let mut entry = -1; let mut back = -1;
-    let mut v = 0;
-    while v < nv {
-      if vars[v].hoist == nd[s].var + 1 {
-        if vars[v].reg >= 0 { mov_ri(vars[v].reg, vars[v].cval); }
-        else if vars[v].xr >= 0 { mov_ri(RAX, vars[v].cval); sse(102, 1, 110, vars[v].xr, K_REG, RAX); }
-      }
-      v += 1;
+    if nd[s].var < 0 || nd[s].var >= 65536 { fail("internal: loop without a number"); }
+    let mut v = hl_head[nd[s].var] - 1;
+    while v >= 0 {
+      if vars[v].reg >= 0 { mov_ri(vars[v].reg, vars[v].cval); }
+      else if vars[v].xr >= 0 { mov_ri(RAX, vars[v].cval); sse(102, 1, 110, vars[v].xr, K_REG, RAX); }
+      v = hl_next[v] - 1;
     }
     let m = nd[s].c;
     if m >= 0 { abs_op(139, RAX, ARENA_TOP); loc(m); store(OK, ORR, RAX); }
