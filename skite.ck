@@ -5346,6 +5346,7 @@ fn plan_stream(s: i64, body: i64, inc: i64, iv: i64, nb: i64) {
 // the byte (class 1: unsigned 0..255, 2: signed -128..127, 3: both, 0: only its low byte is known).
 // Comparisons need exact operands of one signedness; stores and wrapping + - & | ^ need only low bytes.
 let vp_byte = alloc<bool>(4096);
+let vp_brec = alloc<i64>(4096);       // byte plans: the recurrence flag or -1
 let bclass = alloc<i64>(65536);      // byte let temporaries: class
 let vbyte = alloc<i64>(65536);       // == tag: byte let temporary
 let vcnt = alloc<i64>(65536);        // == tag: count reduction (s += k / s -= k with constant k)
@@ -5402,6 +5403,68 @@ fn bxc(e: i64) -> i64 {   // class of an accepted byte-lane value (codegen; no c
   if (a == 2 || a == 3) && (b == 2 || b == 3) { if a == 3 && b == 3 { return 3; } return 2; }
   return 0;
 }
+// first-order recurrence (byte lanes): a 0/1 state flag BREC declared outside the loop, assigned
+// constants on every path, read only as `b == k` / `b != k` before it is assigned. Its value
+// before iteration i is its value after i - 1: the after-mask shifted up one lane.
+let mut BREC: i64 = -1;
+fn brec_cmp(e: i64) -> bool {
+  if BREC < 0 || nd[e].k != N_BIN { return false; }
+  return (nd[nd[e].a].k == N_VAR && nd[nd[e].a].var == BREC && is_const(nd[e].b)) || (nd[nd[e].b].k == N_VAR && nd[nd[e].b].var == BREC && is_const(nd[e].a));
+}
+fn brec_assigns(s: i64) -> bool {   // does subtree s assign BREC?
+  if s < 0 { return false; }
+  let k = nd[s].k;
+  if k == S_ASSIGN { return nd[s].var == BREC; }
+  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { if brec_assigns(c) { return true; } c = nd[c].next; } return false; }
+  if k == S_IF { return brec_assigns(nd[s].b) || brec_assigns(nd[s].c); }
+  return false;
+}
+// state after s on every path: 0 unassigned, 1 assigned, 2 mixed, -1 invalid (read after assignment,
+// or a condition that steers an assignment reads the flag)
+fn brec_flow(s: i64, st: i64) -> i64 {
+  if s < 0 { return st; }
+  let k = nd[s].k;
+  if k == S_BLOCK { let mut a = st; let mut c = nd[s].a; while c >= 0 { a = brec_flow(c, a); if a < 0 { return -1; } c = nd[c].next; } return a; }
+  if k == S_ASSIGN && nd[s].var == BREC { return 1; }
+  if k == S_IF {
+    let rd = refs(nd[s].a, BREC);
+    if rd && (st != 0 || brec_assigns(s)) { return -1; }
+    let a = brec_flow(nd[s].b, st); let b = brec_flow(nd[s].c, st);
+    if a < 0 || b < 0 { return -1; }
+    if a == b { return a; } return 2;
+  }
+  let mut rd = refs(nd[s].a, BREC);
+  if k == S_STORE { rd = rd || refs(nd[s].b, BREC); }
+  if rd { return -1; }   // only conditions may read it
+  return st;
+}
+// pass 1 runs before the body's stores: what it evaluates must not load an array the loop stores
+fn ld_stored(e: i64, t0: i64) -> bool {
+  if e < 0 { return false; }
+  let k = nd[e].k;
+  if k == N_LOAD { if vast[arr_leader[nd[e].var]] == t0 { return true; } return ld_stored(nd[e].a, t0); }
+  if k == N_CONST || k == N_VAR || k == N_ARR || k == N_NCPU { return false; }
+  if k == N_CALL { return true; }
+  return ld_stored(nd[e].a, t0) || ld_stored(nd[e].b, t0);
+}
+fn brec_pure(s: i64, t0: i64, top: bool) -> bool {
+  if s < 0 { return true; }
+  let k = nd[s].k;
+  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { if !brec_pure(c, t0, top) { return false; } c = nd[c].next; } return true; }
+  if k == S_LET && top { return !ld_stored(nd[s].a, t0); }
+  if k == S_IF && brec_assigns(s) { return !ld_stored(nd[s].a, t0) && brec_pure(nd[s].b, t0, false) && brec_pure(nd[s].c, t0, false); }
+  return true;
+}
+fn brec_find(s: i64, iv: i64) {   // candidate: an outer i64 assigned 0 / 1 in the body
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { brec_find(c, iv); c = nd[c].next; } return; }
+  if k == S_IF { brec_find(nd[s].b, iv); brec_find(nd[s].c, iv); return; }
+  if k == S_ASSIGN && BREC < 0 && is_const(nd[s].a) && (nd[nd[s].a].v == 0 || nd[nd[s].a].v == 1) {
+    let v = nd[s].var;
+    if vars[v].ty == TY_I64 && vars[v].xr < 0 && vars[v].glob == 0 && v != iv { BREC = v; }
+  }
+}
 fn bcond_ok(e: i64, dst: i64, pm: i64, iv: i64) -> bool {
   if dst + 1 > VK_DEPTH { VK_DEPTH = dst + 1; }
   if !refs_v(e) { return false; }
@@ -5411,6 +5474,7 @@ fn bcond_ok(e: i64, dst: i64, pm: i64, iv: i64) -> bool {
   let op = nd[e].op;
   if op == O_LAND || op == O_LOR { let t = mx(dst, pm) + 1; return bcond_ok(nd[e].a, t, pm, iv) && bcond_ok(nd[e].b, t + 1, pm, iv) && bcond_ok(nd[e].b, dst, dst, iv); }
   if !(op == O_EQ || op == O_NE || op == O_LT || op == O_LE || op == O_GT || op == O_GE) { return false; }
+  if brec_cmp(e) { return op == O_EQ || op == O_NE; }
   let a = bx(nd[e].a, iv); let b = bx(nd[e].b, iv);
   return (a == 1 || a == 3) && (b == 1 || b == 3) || (a == 2 || a == 3) && (b == 2 || b == 3);
 }
@@ -5437,6 +5501,10 @@ fn bst_ok(s: i64, iv: i64, lvl: i64) -> bool {
     vast[arr_leader[a]] = vtag;
     vscan_loads(nd[s].b, iv);
     return bx(nd[s].b, iv) >= 0;
+  }
+  if k == S_ASSIGN && nd[s].var == BREC {   // state flag: b = 0 / 1 (checked in brec_ok)
+    VK_SNO += 1;
+    return is_const(nd[s].a) && (nd[s].a >= 0) && (nd[nd[s].a].v == 0 || nd[nd[s].a].v == 1);
   }
   if k == S_ASSIGN && vbyte[nd[s].var] != vtag {   // s += k (count) or s += byte (sum), s -= ...
     let v = nd[s].var; let e = nd[s].a;
@@ -5465,8 +5533,18 @@ fn bplan(s: i64, body: i64, iv: i64, nb: i64) -> bool {
   pre_classify(body, nb, iv);
   VK_LOOPS = 0; VK_DEPTH = 0; VK_TMP = 0; VK_NG = 0; VK_SNO = 0;
   let t0 = vtag;
+  BREC = -1;
   let mut c = nd[body].a; let mut i = 0;
-  while i < nb { if !bst_ok(c, iv, -1) { return false; } c = nd[c].next; i += 1; }
+  while i < nb { brec_find(c, iv); c = nd[c].next; i += 1; }
+  if BREC >= 0 {   // the whole body must assign it on every path, reads first
+    let mut st = 0; c = nd[body].a; i = 0;
+    while i < nb { st = brec_flow(c, st); if st < 0 { break; } c = nd[c].next; i += 1; }
+    if st != 1 || count_assign(body, BREC) == 0 { BREC = -1; }
+  }
+  let brec = BREC;
+  c = nd[body].a; i = 0;
+  while i < nb { if !bst_ok(c, iv, -1) { BREC = -1; return false; } c = nd[c].next; i += 1; }
+  BREC = -1;
   let mut nvar = 0; let mut nst = 0; let mut nred = 0;
   let mut vv = 0;
   while vv < nv {
@@ -5476,11 +5554,17 @@ fn bplan(s: i64, body: i64, iv: i64, nb: i64) -> bool {
     if vred[vv] == t0 { nvar += 1; }
     vv += 1;
   }
-  if nst + nred == 0 || nvar + 4 > 16 || VK_DEPTH > 6 { return false; }
+  if nst + nred == 0 || nvar + 4 > 16 || VK_DEPTH > 4 { return false; }
+  if brec >= 0 {
+    BREC = brec;
+    c = nd[body].a; i = 0;
+    while i < nb { if !brec_pure(c, t0, true) { BREC = -1; return false; } c = nd[c].next; i += 1; }
+    BREC = -1;
+  }
   if nvlist + nvar > 65536 || nvrl + nred > 65536 { return false; }
   if !plan_extra(true, t0) { return false; }
   let p = nplans; nplans += 1;
-  vplan[s] = p + 1; vp_byte[p] = true;
+  vplan[s] = p + 1; vp_byte[p] = true; vp_brec[p] = brec;
   vp_loop[p] = s; vp_iv[p] = iv; vp_npre[p] = nb; vp_u[p] = 1; vp_nv[p] = nvar;
   vp_need0[p] = nvneed; vp_nneed[p] = 0; vp_v0[p] = nvlist; vp_scr[p] = vec_bytes;
   let mut g = 0;
@@ -5538,6 +5622,16 @@ fn bcond(e: i64, dst: i64, pm: i64, neg: bool) {
     kor64(kreg(dst, 0), kreg(t, 0), kreg(t + 1, 0));
     return;
   }
+  if brec_cmp(e) {   // the state flag before this lane: k6
+    let mut K = nd[e].b; if !is_const(K) { K = nd[e].a; }
+    let kv = nd[K].v;
+    let mut eq = op == O_EQ; if neg { eq = !eq; }
+    let d = kreg(dst, 0); let pmk = kpar(pm, 0);
+    if kv == 1 { if eq { kand64(d, 6, pmk); } else { kandn64(d, 6, pmk); } }
+    else if kv == 0 { if eq { kandn64(d, 6, pmk); } else { kand64(d, 6, pmk); } }
+    else { if eq { kandn64(d, pmk, pmk); } else { kand64(d, pmk, pmk); } }
+    return;
+  }
   let ca = bxc(nd[e].a); let cb = bxc(nd[e].b);
   let uns = (ca == 1 || ca == 3) && (cb == 1 || cb == 3);
   let A = vr(0); let B = vr(1);
@@ -5545,6 +5639,26 @@ fn bcond(e: i64, dst: i64, pm: i64, neg: bool) {
   let mut pred = bcmp_pred(op); if neg { pred = pred ^ 4; }
   let mut opc = 63; if uns { opc = 62; }
   evx(3, 1, 0, 2, opc, kreg(dst, 0), A, 0, B, kpar(pm, 0), false, false); byte(pred);   // vpcmp[u]b
+}
+// pass 1: k5 = lanes whose flag is 1 after the iteration (only the ifs that steer assignments)
+fn brec_pass(p: i64, s: i64, lvl: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { brec_pass(p, c, lvl); c = nd[c].next; } return; }
+  if k == S_LET && lvl < 0 { bgen(p, s, lvl); return; }   // byte temporaries the conditions read
+  if k == S_ASSIGN && nd[s].var == BREC {
+    if nd[nd[s].a].v == 1 { kor64(5, 5, kpar(lvl, 0)); } else { kandn64(5, kpar(lvl, 0), 5); }
+    return;
+  }
+  if k == S_IF && brec_assigns(s) {
+    let sv_rg = rgs_top; let sv_pos = cur_pos;
+    vtemps(s); rgs_top += 12; cur_pos = nd[s].pos;
+    let nl = lvl + 1;
+    bcond(nd[s].a, nl, lvl, false);
+    rgs_top = sv_rg; cur_pos = sv_pos;
+    brec_pass(p, nd[s].b, nl);
+    if nd[s].c >= 0 { kandn64(kreg(nl, 0), kreg(nl, 0), kpar(lvl, 0)); brec_pass(p, nd[s].c, nl); }
+  }
 }
 fn bgen(p: i64, s: i64, lvl: i64) {
   let k = nd[s].k;
@@ -5585,6 +5699,7 @@ fn bgen(p: i64, s: i64, lvl: i64) {
     rgs_top = sv_rg; cur_pos = sv_pos;
     return;
   }
+  if k == S_ASSIGN && nd[s].var == BREC { rgs_top = sv_rg; cur_pos = sv_pos; return; }   // done in brec_pass
   if k == S_ASSIGN && vbyte[nd[s].var] != vtag {
     let v = nd[s].var; let e = nd[s].a; let b = nd[e].b;
     let mut dig = A_ADD; if nd[e].op == O_SUB { dig = A_SUB; }
@@ -6086,6 +6201,7 @@ fn gen_vloop(s: i64, p: i64) -> i64 {
   let cnd = nd[s].a; let en = nd[cnd].b;
   to_scalar = vguards(p, iv, cnd, en, to_scalar);
   let st = vp_stream[p];
+  if byt && vp_brec[p] >= 0 { loc(vp_brec[p]); load(RAX, OK, ORR, OI); alui(A_CMP, RAX, 1); to_scalar = pl_add(to_scalar, jcc(CC_A)); }
   if st { vred_init(p); }
   let mut ex = -1;   // exits after the first block (stream loops: through the reduction epilogue)
   let vtop = clen;
@@ -6098,7 +6214,20 @@ fn gen_vloop(s: i64, p: i64) -> i64 {
   if byt {
     vex3(1, 0, 1, 1, 70, 7, 7, 7);   // kxnorq k7, k7, k7
     let body = nd[s].b; let mut c = nd[body].a; let mut i = 0;
+    BREC = vp_brec[p];
+    if BREC >= 0 {
+      vex3(1, 0, 1, 1, 71, 5, 5, 5);   // kxorq k5: after-mask
+      while i < vp_npre[p] { brec_pass(p, c, -1); c = nd[c].next; i += 1; }
+      vex3(3, 1, 1, 0, 51, 6, 0, 5); byte(1);           // kshiftlq k6, k5, 1
+      loc(BREC); load(RAX, OK, ORR, OI);
+      vex3(1, 3, 1, 0, 146, 0, 0, RAX);                 // kmovq k0, rax (carry in: 0 / 1)
+      kor64(6, 6, 0);
+      vex3(1, 3, 1, 0, 147, RAX, 0, 5); shift_ri(5, RAX, 63);   // flag after the block: lane 63
+      loc(BREC); store(OK, ORR, RAX);
+      c = nd[body].a; i = 0;
+    }
     while i < vp_npre[p] { bgen(p, c, -1); c = nd[c].next; i += 1; }
+    BREC = -1;
     loc(iv); alu(A_ADD, OK, ORR, K_IMM, 0, L as u64);
     rel32(jmp(), vtop);
     pl_patch(ex, clen);

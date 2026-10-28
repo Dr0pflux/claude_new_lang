@@ -149,7 +149,7 @@ def text_program(r):
             return f"if {cond()} {{ {body} }}"
         return "k3 += 1;"
     n = LEN * 4
-    L = [f"fn main() {{", f"  let n = {n} - 4 + argc() * {r.choice([1, 3, 37])};", "  let mut k3 = 0; let mut s0 = 0;"]
+    L = [f"fn main() {{", f"  let n = {n} - 4 + argc() * {r.choice([1, 3, 37])};", f"  let mut k3 = 0; let mut s0 = 0; let mut st = {r.choice([0, 1, 0, 2])};"]
     for nm, t in arrs:
         L.append(f"  let {nm} = alloc<{t}>({n + 200});")
         L.append(f"  let mut j{nm} = 0; while j{nm} < {n + 200} {{ {nm}[j{nm}] = ((j{nm} * 1103515245 + 12345 + j{nm} * j{nm} * 97) % 1000003) as {t}; j{nm} += 1; }}")
@@ -158,8 +158,16 @@ def text_program(r):
     L.append(f"  let mut i = {s0};")
     L.append(f"  while i < {end} {{")
     for _ in range(r.randrange(1, 4)): L.append("    " + stmt())
+    if r.random() < 0.5:   # 0/1 state flag (first-order recurrence), sometimes in shapes that must stay scalar
+        a, b = r.choice([(0, 1), (1, 0)])
+        use = f"if st == {r.choice([0, 1])} {{ {stmt(2)} }}"
+        shape = r.random()
+        if shape < 0.6: L.append(f"    if {cond()} {{ st = {a}; }} else {{ {use} st = {b}; }}")
+        elif shape < 0.75: L.append(f"    {use} if {cond()} {{ st = {a}; }} else {{ st = {b}; }}")
+        elif shape < 0.85: L.append(f"    if {cond()} {{ st = {a}; }} {use}")              # not assigned on every path
+        else: L.append(f"    if st == 0 {{ st = 1; }} else {{ st = 0; }}")                  # depends on itself
     L.append("    i += 1;\n  }")
-    L.append("  print(k3); print(s0);")
+    L.append("  print(k3); print(s0); print(st);")
     for nm, t in arrs:
         L.append(f"  let mut h{nm} = 0; let mut q{nm} = 0; while q{nm} < {n + 200} {{ h{nm} = h{nm} * 31 + {nm}[q{nm}]; q{nm} += 1; }} print(h{nm});")
     L.append("}")
