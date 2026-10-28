@@ -71,6 +71,8 @@ What makes skite fast (all bit-exact: strict IEEE floats, wrapping integers, tra
   Unproven bounds and possibly-aliased arrays are checked once before the vector loop; on failure
   the ordinary loop runs and traps exactly where scalar code would.
 - **Range analysis** removes bounds checks it can prove, including checks dominated by an earlier one.
+  Runtime-length facts also prove `a[i-k]` for constant `0 <= k <= i < len(a)`,
+  including value-preserving integer casts; unsafe offsets and lost facts retain checks.
 - **Calls**: bounded inlining (including recursive), callee-saved registers, tail recursion with
   accumulators turned into loops, register coalescing.
 - **If-conversion**: small integer `if`/`else` bodies in loops become branch-free `cmov` selects;

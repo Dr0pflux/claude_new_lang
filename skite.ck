@@ -946,7 +946,19 @@ fn env_widen(old: i64, nw: i64, use_thr: bool) {
 fn proven(a: i64, idx: i64, rlo: i64, rhi: i64, rbot: bool, env: i64) -> bool {
   if rbot || rlo < 0 { return false; }
   if vars[a].lenv < 0 { return rhi < vars[a].alen; }
-  if nd[idx].k == N_VAR && vars[a].aid >= 0 && ((envp[env + LV(nd[idx].var)].lt >> (vars[a].aid as u64)) & 1) != 0 { return true; }
+  let mut x = idx;
+  while nd[x].k == N_UN && nd[x].nn != 0 { x = nd[x].a; }
+  if vars[a].aid >= 0 {
+    if nd[x].k == N_VAR && ((envp[env + LV(nd[x].var)].lt >> (vars[a].aid as u64)) & 1) != 0 { return true; }
+    // If x is i-k, a proven i < len(a) also proves i-k < len(a), provided
+    // the inferred interval shows the subtraction cannot underflow or wrap.
+    if nd[x].k == N_BIN && nd[x].op == O_SUB && nd[nd[x].a].k == N_VAR && is_const(nd[x].b) {
+      let k = nd[nd[x].b].v as i64;
+      let v = nd[nd[x].a].var;
+      let vi = env + LV(v);
+      if k >= 0 && !envp[vi].bot && envp[vi].lo >= k && ((envp[vi].lt >> (vars[a].aid as u64)) & 1) != 0 { return true; }
+    }
+  }
   let L = env + LV(vars[a].lenv);
   return !envp[L].bot && rhi < envp[L].lo;
 }

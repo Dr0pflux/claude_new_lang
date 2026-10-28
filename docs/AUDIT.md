@@ -4,6 +4,16 @@ Updated 2026-10-28. Verified integration: `c4837cf83e284b588b30daaaa2d66824fffc4
 (PR #10); its tree matches tested head `5e86b4b06154452e3d517de4dabf828bffe96a6c`.
 The [team ledger](https://github.com/Dr0pflux/skite.ck/issues/3) records newer work.
 
+## Runtime predecessor proof (candidate)
+
+The candidate proves `a[i-k]` only with an existing fact for this array and
+`0 <= k <= i`, preserving the lower-bound and no-wrap checks. Identity casts
+are unwrapped only after range analysis marks them value-preserving.
+`tests/length_facts.py` checks 842 runtime-length cases with independent wrapping
+integer expectations and trap controls, under normal compilation and `--scalar`.
+It fails on the baseline for the missing predecessor proof. Publication/review
+status belongs to the PR; this section does not claim integration or provider approval.
+
 ## Integrated fixes and evidence
 
 - PR #1 fixes allocation/view strides for struct widths of 16 bytes and above.

@@ -139,3 +139,13 @@ Micro-measurements behind the merged changes (same host, single runs, ms; scratc
 - element-wise f64 update + i32 add loops: 557 scalar → 181 vector (gcc 163);
 - count spaces + conditional byte sum over 1 MiB × 1000: 1777 scalar → 71 byte-lane (gcc 1199, clang 265);
 - gcd sums + `x / k`, `x % k` with run-time `k`: 454 → 381 with the 32-bit divide (gcc 378, clang 365).
+
+## Runtime-length predecessor proof candidate (2026-10-28)
+
+The focused [length-fact record](../bench/length_facts/README.md) compares baseline
+`690f3b5` with code commit `57310f0`, recording both source/compiler hashes and 11-run
+raw samples. The window accumulator proves 3/3 rather than 2/3 bounds checks and
+shrinks 571 -> 559 code bytes. The prefix control is byte-identical. Runtime samples
+overlap; no reliable timing win or three-compiler ranking is claimed. The compiler
+ELF grows 512 bytes. Clang/Rust were unavailable on this host; GCC is a matched
+checksum/timing control only. See the record for exact flags, CPU and coverage.
