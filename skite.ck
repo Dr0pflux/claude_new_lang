@@ -2787,6 +2787,160 @@ fn inline_calls() {
     round += 1;
   }
 }
+// ---------------------------------------------------------------- self tail calls become loops
+// fn f(p..) { B } -> fn f(p..) { [let mut acc = id;] while true { B' } } where a self call in tail
+// position becomes `p = args..; continue;` (arguments still evaluated left to right; a parameter
+// read by a later argument goes through a temporary). `return X + f(a)` / `return X * f(a)` (and
+// longer +/* chains whose operands after the call are pure and cannot trap) fold X into an
+// accumulator: wrapping integer + and * are associative and commutative, so results are identical.
+// Tail sites inside inner loops are left as calls.
+let mut TC_F: i64 = -1;
+let mut TC_OP: i64 = -1;      // accumulator operation (O_ADD / O_MUL), -1: none
+let mut TC_ACC: i64 = -1;     // accumulator variable
+let mut TC_NPLAIN: i64 = 0;
+let mut TC_NADD: i64 = 0;
+let mut TC_NMUL: i64 = 0;
+let mut ntailcalls: i64 = 0;
+fn tc_self(e: i64) -> bool {
+  if e < 0 || nd[e].k != N_CALL || nd[e].var != TC_F { return false; }
+  // an array argument must be the same array parameter (a local array would not outlive the iteration)
+  let mut i = 0; let mut a = nd[e].a;
+  while a >= 0 {
+    if fpw[TC_F * 16 + i] != 0 && (nd[a].k != N_ARR || nd[a].var != fpvar[TC_F * 16 + i]) { return false; }
+    a = nd[a].next; i += 1;
+  }
+  return true;
+}
+// e: a chain of `op` nodes of the function's result type; returns the self call evaluated last in it
+// (everything evaluated after the call must be pure and trap-free, since it moves before the call)
+fn tc_chain(e: i64, op: i64) -> i64 {
+  if e < 0 || nd[e].k != N_BIN || nd[e].op != op || nd[e].ty != fns[TC_F].rett { return -1; }
+  let x = nd[e].a; let y = nd[e].b;
+  if tc_self(y) { return y; }
+  if !pure_nt(y) { return -1; }
+  if tc_self(x) { return x; }
+  return tc_chain(x, op);
+}
+fn tc_rest(e: i64, c: i64) -> i64 {   // e without its operand c (c is on the left spine of e)
+  let x = nd[e].a; let y = nd[e].b;
+  if y == c { return x; }
+  if x == c { return y; }
+  nd[e].a = tc_rest(x, c); return e;
+}
+fn tc_acc_ok() -> bool { let t = fns[TC_F].rett; return t == TY_I64 || t == TY_U64; }
+fn tc_count(s: i64, tail: bool, inloop: bool) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK {
+    let mut c = nd[s].a;
+    while c >= 0 {
+      let nx = nd[c].next;
+      tc_count(c, (nx < 0 && tail) || (nx >= 0 && nd[nx].k == S_RET && fns[TC_F].rett == TY_UNIT), inloop);
+      c = nx;
+    }
+    return;
+  }
+  if k == S_IF { tc_count(nd[s].b, tail, inloop); tc_count(nd[s].c, tail, inloop); return; }
+  if k == S_WHILE { tc_count(nd[s].b, false, true); return; }
+  if inloop { return; }
+  if k == S_EXPR && tail && tc_self(nd[s].a) { TC_NPLAIN += 1; return; }
+  if k == S_RET && fns[TC_F].rett != TY_UNIT {
+    let e = nd[s].a;
+    if tc_self(e) { TC_NPLAIN += 1; }
+    else if tc_acc_ok() && tc_chain(e, O_ADD) >= 0 { TC_NADD += 1; }
+    else if tc_acc_ok() && tc_chain(e, O_MUL) >= 0 { TC_NMUL += 1; }
+  }
+}
+// statement replacing a tail call: [acc = acc op rest;] parameter updates; continue
+fn tc_site(call: i64, pre: i64) -> i64 {
+  let blk = mk(S_BLOCK);
+  let mut tl = -1;
+  if pre >= 0 { nd[blk].a = pre; tl = pre; }
+  let dv = alloc<i64>(16); let dt = alloc<i64>(16);
+  let mut nd_ = 0;
+  let mut i = 0;
+  let mut a = nd[call].a;
+  while a >= 0 {
+    let nx = nd[a].next;
+    let pv = fpvar[TC_F * 16 + i];
+    if fpw[TC_F * 16 + i] == 0 && !(nd[a].k == N_VAR && nd[a].var == pv) {
+      // a later argument reads this parameter: keep its old value until every argument is evaluated
+      let mut later = false;
+      let mut b = nx;
+      while b >= 0 { if refs(b, pv) { later = true; } b = nd[b].next; }
+      vars[pv].mutv = 1;
+      nd[a].next = -1;
+      let st = mk(S_LET);
+      if later { let t = hidden(); vars[t].ty = vars[pv].ty; nd[st].var = t; dv[nd_] = pv; dt[nd_] = t; nd_ += 1; }
+      else { nd[st].k = S_ASSIGN; nd[st].var = pv; }
+      nd[st].a = a;
+      if tl < 0 { nd[blk].a = st; } else { nd[tl].next = st; }
+      tl = st;
+    }
+    a = nx; i += 1;
+  }
+  i = 0;
+  while i < nd_ {
+    let st = mk_assign(dv[i], mk_var(dt[i]));
+    if tl < 0 { nd[blk].a = st; } else { nd[tl].next = st; }
+    tl = st; i += 1;
+  }
+  let ct = mk(S_CONT);
+  if tl < 0 { nd[blk].a = ct; } else { nd[tl].next = ct; }
+  ntailcalls += 1;
+  return blk;
+}
+fn tc_rewrite(s: i64, tail: bool, inloop: bool) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK {
+    let mut c = nd[s].a;
+    while c >= 0 {
+      let nx = nd[c].next;
+      tc_rewrite(c, (nx < 0 && tail) || (nx >= 0 && nd[nx].k == S_RET && fns[TC_F].rett == TY_UNIT), inloop);
+      c = nx;
+    }
+    return;
+  }
+  if k == S_IF { tc_rewrite(nd[s].b, tail, inloop); tc_rewrite(nd[s].c, tail, inloop); return; }
+  if k == S_WHILE { tc_rewrite(nd[s].b, false, true); return; }
+  if k == S_EXPR && tail && !inloop && tc_self(nd[s].a) { set_block(s, nd[tc_site(nd[s].a, -1)].a, nd[s].next); return; }
+  if k != S_RET || fns[TC_F].rett == TY_UNIT { return; }
+  let e = nd[s].a;
+  if !inloop && tc_self(e) { set_block(s, nd[tc_site(e, -1)].a, nd[s].next); return; }
+  if TC_OP < 0 { return; }
+  let c = tc_chain(e, TC_OP);
+  if !inloop && c >= 0 {
+    let rest = tc_rest(e, c);
+    let up = mk_assign(TC_ACC, mk_bin(TC_OP, mk_var(TC_ACC), rest));
+    set_block(s, nd[tc_site(c, up)].a, nd[s].next);
+    return;
+  }
+  nd[s].a = mk_bin(TC_OP, mk_var(TC_ACC), e);   // any other return folds in the accumulator
+}
+fn tail_calls() {
+  let mut f = 0;
+  while f < nfn {
+    if f != mainfn && fns[f].body >= 0 {
+      TC_F = f; TC_NPLAIN = 0; TC_NADD = 0; TC_NMUL = 0; TC_OP = -1; TC_ACC = -1;
+      let bd = fns[f].body;
+      tc_count(bd, true, false);
+      if TC_NADD > 0 && TC_NADD >= TC_NMUL { TC_OP = O_ADD; } else if TC_NMUL > 0 { TC_OP = O_MUL; }
+      if TC_OP >= 0 || TC_NPLAIN > 0 {
+        let inner = mk(S_BLOCK); nd[inner].a = nd[bd].a;
+        let w = mk(S_WHILE); nd[w].a = mkconst_t(1, TY_BOOL); nd[w].b = inner; nd[w].c = -1;
+        nd[bd].a = w;
+        if TC_OP >= 0 {
+          TC_ACC = hidden(); vars[TC_ACC].ty = fns[f].rett; vars[TC_ACC].mutv = 1;
+          let l = mk(S_LET); nd[l].var = TC_ACC; nd[l].a = mkconst_t((TC_OP == O_MUL) as u64, fns[f].rett);
+          nd[l].next = w; nd[bd].a = l;
+        }
+        tc_rewrite(inner, true, false);
+      }
+    }
+    f += 1;
+  }
+}
 // ---------------------------------------------------------------- constant propagation, folding, full unrolling
 let acount = alloc<i64>(65536);
 fn count_assigns() {
@@ -3291,6 +3445,7 @@ fn allocate() {
   let mut g = 0;
   while g < nfn { fn_nr[g] = noreturn(g, 0); g += 1; }
   inline_calls();
+  tail_calls();
   g = 0;
   while g < nfn { if !starts2u(fns[g].noff, fns[g].nlen) { lift_calls(fns[g].body); } g += 1; }
   make_templates();
@@ -5316,7 +5471,8 @@ fn gen_stmt_body(s: i64, is_final: bool, rg: i64, n: i64) {
     let L = nloopctx; nloopctx += 1; brk_list[L] = -1; cont_list[L] = -1;
     if m >= 0 { loc(m); load(RAX, OK, ORR, OI); abs_op(137, RAX, ARENA_TOP); }
     gen_stmt(nd[s].b, false);
-    pl_patch(cont_list[L], clen); pl_patch(entry, clen);
+    if is_const(nd[s].a) { pl_patch(cont_list[L], top); } else { pl_patch(cont_list[L], clen); }   // while true: continue jumps straight to the top
+    pl_patch(entry, clen);
     back = cond_jump(nd[s].a, true, back, rg, n); pl_patch(back, top);
     pl_patch(brk_list[L], clen); nloopctx -= 1;
     if m >= 0 { loc(m); load(RAX, OK, ORR, OI); abs_op(137, RAX, ARENA_TOP); }
