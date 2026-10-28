@@ -4227,6 +4227,45 @@ fn gi_walk(s: i64) {
   if k == S_IF { gi_walk(nd[s].b); gi_walk(nd[s].c); return; }
   if k == S_WHILE { gi_walk(nd[s].b); return; }
 }
+// ---- short search loops: `c = c0; while c < K && C(c) { c += 1 }` with constants c0 < K,
+// K - c0 <= 16 and C free of calls becomes `if C(c0) { c = c0 + 1; if C(c0 + 1) { .. c = K } }`:
+// the same tests in the same order (so the same traps), with constant indices and no back jump
+fn su_try(p: i64, w: i64) -> bool {
+  if nd[w].k != S_WHILE || nd[w].c >= 0 { return false; }
+  if !((nd[p].k == S_LET || nd[p].k == S_ASSIGN) && is_const(nd[p].a)) { return false; }
+  let c = nd[p].var; let c0 = nd[nd[p].a].v as i64;
+  let cnd = nd[w].a;
+  if nd[cnd].k != N_BIN || nd[cnd].op != O_LAND { return false; }
+  let lim = nd[cnd].a; let C = nd[cnd].b;
+  if nd[lim].k != N_BIN || nd[lim].op != O_LT || nd[nd[lim].a].k != N_VAR || nd[nd[lim].a].var != c || !cfold_ok(nd[lim].b) || vars[c].ty != TY_I64 { return false; }
+  let K = cfold(nd[lim].b);
+  if c0 < 0 || K <= c0 || K - c0 > 16 || has_call(C) || stmt_size(C) > 12 { return false; }
+  let mut b = nd[w].b; if nd[b].k == S_BLOCK { b = nd[b].a; if b < 0 || nd[b].next >= 0 { return false; } }
+  if !is_inc1(b, c) { return false; }
+  // build from the innermost level out
+  let mut inner = mk_assign(c, mkconst_t(K as u64, TY_I64));
+  let mut k = K - 1;
+  while k >= c0 {
+    let ck = clone_expr(C); sm_subst(ck, c, k);
+    let f = mk(S_IF); nd[f].a = ck; nd[f].c = -1;
+    if k == K - 1 { nd[f].b = inner; }
+    else { let as1 = mk_assign(c, mkconst_t((k + 1) as u64, TY_I64)); nd[as1].next = inner; let blk = mk(S_BLOCK); set_block(blk, as1, -1); nd[f].b = blk; }
+    inner = f; k -= 1;
+  }
+  set_block(w, inner, nd[w].next);
+  return true;
+}
+fn su_walk(s: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK || k == S_INL {
+    let mut p = -1; let mut c = nd[s].a;
+    while c >= 0 { let nx = nd[c].next; if !(p >= 0 && su_try(p, c)) { su_walk(c); } p = c; c = nx; }
+    return;
+  }
+  if k == S_IF { su_walk(nd[s].b); su_walk(nd[s].c); return; }
+  if k == S_WHILE { su_walk(nd[s].b); return; }
+}
 fn cs_walk(s: i64) {
   if s < 0 { return; }
   let k = nd[s].k;
@@ -4250,7 +4289,7 @@ fn allocate() {
   mark_used();
   simplify();
   f = 0;
-  while f < nfn { if fns[f].used != 0 { CS_F = f; gi_walk(fns[f].body); sm_walk(fns[f].body); ss_walk(fns[f].body, false); cs_walk(fns[f].body); lh_walk(fns[f].body); bv_walk(fns[f].body); mm_walk(fns[f].body, false); dm_walk(fns[f].body); } f += 1; }
+  while f < nfn { if fns[f].used != 0 { CS_F = f; gi_walk(fns[f].body); sm_walk(fns[f].body); su_walk(fns[f].body); ss_walk(fns[f].body, false); cs_walk(fns[f].body); lh_walk(fns[f].body); bv_walk(fns[f].body); mm_walk(fns[f].body, false); dm_walk(fns[f].body); } f += 1; }
   let mut v = 0;
   while v < nv { if vars[v].owner >= 0 && fns[vars[v].owner].used == 0 { vars[v].reads = 0; } v += 1; }
   analyze();
@@ -5295,8 +5334,10 @@ fn cond_jump(e: i64, sense: bool, list0: i64, rg: i64, n: i64) -> i64 {
     return list;
   }
   if k == N_BIN && is_fcmp(op) && !has_call(e) && xtop <= XSTACK_TOP - 1 {
-    let bs = fop_base(op); let dbl = fop_dbl(op); let sw = bs == O_FLT || bs == O_FLE; let xa = xtop; let xb = xtop + 1;
-    genf(nd[e].a, xa, rg, n); genf(nd[e].b, xb, rg, n);
+    let bs = fop_base(op); let dbl = fop_dbl(op); let sw = bs == O_FLT || bs == O_FLE; let mut xa = xtop; let mut xb = xtop + 1;
+    // operands in xmm variables are compared in place (ucomis* only reads them)
+    if xvar_node(nd[e].a) { xa = vars[nd[nd[e].a].var].xr; } else { genf(nd[e].a, xa, rg, n); }
+    if xvar_node(nd[e].b) { xb = vars[nd[nd[e].b].var].xr; } else { genf(nd[e].b, xb, rg, n); }
     if sw { sse(ucpfx(dbl), 0, 46, xb, K_REG, xa); } else { sse(ucpfx(dbl), 0, 46, xa, K_REG, xb); }
     if bs == O_FEQ || bs == O_FNE {
       let eq = (bs == O_FEQ) == sense;
