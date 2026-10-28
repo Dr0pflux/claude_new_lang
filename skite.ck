@@ -4266,6 +4266,31 @@ fn su_walk(s: i64) {
   if k == S_IF { su_walk(nd[s].b); su_walk(nd[s].c); return; }
   if k == S_WHILE { su_walk(nd[s].b); return; }
 }
+// ---- flags: `let mut v = 0; if C { v = 1 }` becomes `let v = C` (a 0/1 value from setcc)
+fn bi_one(b: i64, v: i64) -> bool {
+  let mut x = b; if nd[x].k == S_BLOCK { x = nd[x].a; if x < 0 || nd[x].next >= 0 { return false; } }
+  return nd[x].k == S_ASSIGN && nd[x].var == v && is_const(nd[x].a) && nd[nd[x].a].v == 1;
+}
+fn bi_walk(s: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK || k == S_INL {
+    let mut c = nd[s].a;
+    while c >= 0 {
+      let x = nd[c].next;
+      if x >= 0 && nd[c].k == S_LET && is_const(nd[c].a) && nd[nd[c].a].v == 0 && ty_int(vars[nd[c].var].ty) && nd[x].k == S_IF && nd[x].c < 0 {
+        let v = nd[c].var; let C = nd[x].a;
+        if nd[C].ty == TY_BOOL && !has_call(C) && !refs(C, v) && bi_one(nd[x].b, v) {
+          nd[C].ty = vars[v].ty; nd[c].a = C; set_block(x, -1, nd[x].next);
+        }
+      }
+      bi_walk(c); c = x;
+    }
+    return;
+  }
+  if k == S_IF { bi_walk(nd[s].b); bi_walk(nd[s].c); return; }
+  if k == S_WHILE { bi_walk(nd[s].b); return; }
+}
 fn cs_walk(s: i64) {
   if s < 0 { return; }
   let k = nd[s].k;
@@ -4289,7 +4314,7 @@ fn allocate() {
   mark_used();
   simplify();
   f = 0;
-  while f < nfn { if fns[f].used != 0 { CS_F = f; gi_walk(fns[f].body); sm_walk(fns[f].body); su_walk(fns[f].body); ss_walk(fns[f].body, false); cs_walk(fns[f].body); lh_walk(fns[f].body); bv_walk(fns[f].body); mm_walk(fns[f].body, false); dm_walk(fns[f].body); } f += 1; }
+  while f < nfn { if fns[f].used != 0 { CS_F = f; gi_walk(fns[f].body); bi_walk(fns[f].body); sm_walk(fns[f].body); su_walk(fns[f].body); ss_walk(fns[f].body, false); cs_walk(fns[f].body); lh_walk(fns[f].body); bv_walk(fns[f].body); mm_walk(fns[f].body, false); dm_walk(fns[f].body); } f += 1; }
   let mut v = 0;
   while v < nv { if vars[v].owner >= 0 && fns[vars[v].owner].used == 0 { vars[v].reads = 0; } v += 1; }
   analyze();
@@ -7590,7 +7615,7 @@ fn ic_multi(s: i64, rg: i64, n: i64) -> bool {
   let mut rb = -1;   // b before a: generating b may use rax
   if !simple(nd[c].b) { gen(nd[c].b, rg + ib, n - ib); rb = RGS[rg + ib]; }
   let mut ra = RAX;
-  if simple(nd[c].a) { opnd(nd[c].a); load(RAX, OK, ORR, OI); }
+  if simple(nd[c].a) { opnd(nd[c].a); if OK == K_REG { ra = ORR; } else { load(RAX, OK, ORR, OI); } }   // a register variable is compared in place
   else { gen(nd[c].a, rg + ia, n - ia); ra = RGS[rg + ia]; }
   if rb < 0 { opnd(nd[c].b); alu(A_CMP, K_REG, ra, OK, ORR, OI); }
   else { alu(A_CMP, K_REG, ra, K_REG, rb, 0); }
@@ -7619,7 +7644,7 @@ fn ifconv(s: i64, rg: i64, n: i64) {
     if sb { rb = t; } else if !simple(nd[c].b) { gen(nd[c].b, rg + 1, n - 1); rb = RGS[rg + 1]; ia = 2; }
     let mut ra = RAX;
     if sa { ra = t; }
-    else if simple(nd[c].a) { opnd(nd[c].a); load(RAX, OK, ORR, OI); }
+    else if simple(nd[c].a) { opnd(nd[c].a); if OK == K_REG { ra = ORR; } else { load(RAX, OK, ORR, OI); } }
     else { gen(nd[c].a, rg + ia, n - ia); ra = RGS[rg + ia]; }
     if rb < 0 { opnd(nd[c].b); alu(A_CMP, K_REG, ra, OK, ORR, OI); }
     else { alu(A_CMP, K_REG, ra, K_REG, rb, 0); }
