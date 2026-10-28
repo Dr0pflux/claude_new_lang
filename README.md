@@ -38,6 +38,12 @@ Reusing analysis-copy indices also trims the compiler executable from 1,214,532 
 gain; generated Game binaries remain unchanged. See the compiler-size measurement
 in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
+Eliding pure index snapshots in general compound array assignments reduces the
+nbody executable from 10,705 to 8,855 bytes (17.3%). Measured runtime differences
+were within noise; all six Game outputs still match. This adds 24 bytes to the
+compiler itself. Details and regression coverage are in
+[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+
 What makes skite fast:
 
 - **Vectorization:** eligible loops can use AVX-512; CPUs without AVX-512 take the scalar path.

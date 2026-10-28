@@ -36,6 +36,12 @@ six Game programs and the unchanged compiler source. Its measured benefit is a
 3,316-byte smaller compiler executable; compile-time samples show no reliable
 speed gain. Exact integration/CI status is recorded in the ledger.
 
+General compound-assignment index-snapshot elision has independent parser review,
+fixed expected-output/status probes for evaluation/trap order, and 50 additional
+integer differential cases (13 expected traps, no mismatch). All six Game outputs
+match. Measured benefit is smaller nbody code, with a 24-byte compiler-size cost;
+no runtime-speed claim is made. Exact-head build/CI evidence is kept in the ledger.
+
 ## Open findings
 
 1. [Issue #9](https://github.com/Dr0pflux/skite.ck/issues/9) tracks mixed-width

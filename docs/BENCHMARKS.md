@@ -85,6 +85,32 @@ a reliable speed claim. Both compilers emitted byte-identical binaries for all
 six Game sources and the unchanged compiler source. This is a compiler-size
 improvement; no generated-program runtime or binary-size gain is claimed.
 
+## Nbody executable size: compound-index snapshots
+
+General compound array/field assignments can retain constant or stable local
+indices directly instead of creating a hidden index binding. Effectful/global
+indices still use a snapshot; RHS-first evaluation and trap order are preserved.
+This changes the compiler parser, not the benchmark algorithm or floating operations.
+
+Baseline compiler: `f09ec806427591b2e218315ac8ba2f3a6814a23d`; candidate compiler
+source SHA-256 `338aa881b876be10fad1358557206660863b9b7ce5205a88184de8519b233a9f`.
+Unchanged `bench/game/nbody.ck` SHA-256:
+`25788fb904106f3f2bb707016c1066e6e65976e7f7de11a1a1d0a0f06e687f9e`.
+The nbody ELF shrinks from 10,705 to 8,855 bytes (1,850 bytes, 17.3%); the compiler
+itself grows from 1,211,216 to 1,211,240 bytes (+24). Other five Game executable
+sizes are unchanged. Outputs match byte for byte for all six quick-size workloads.
+
+Ryzen 7 5700U, Linux x86-64, AVX2/no AVX-512, native Skite defaults, no affinity;
+nbody argument 5,000,000, one warmup each, five pairs in alternating order:
+
+- Baseline seconds: 0.391563, 0.394524, 0.395704, 0.394669, 0.393073; median 0.394524.
+- Candidate seconds: 0.393318, 0.393052, 0.395602, 0.392831, 0.393711; median 0.393318.
+
+The 0.31% runtime difference is within noise; no speedup is claimed. Both output
+hashes are `a209785651d3f855b56ffcac6bce1eda49dff67124f34418aedd4ddb91c384c8`.
+Fixed-oracle regressions cover global/effectful/direct indices, RHS mutation,
+integer division traps before bounds checks, and f32/u8 struct-field updates.
+
 ## Correctness scope
 
 Measured outputs match for the listed programs. This does not establish a universal bit-exact

@@ -2,6 +2,12 @@
 
 ### Unreleased (2026-10-28)
 
+- **Generated code size:** omit hidden compound-index snapshots for constants and
+  stable local scalars, while preserving RHS-first evaluation and snapshots for
+  effectful/global indices. Standard nbody ELF shrinks by 1,850 bytes (17.3%);
+  compiler grows by 24 bytes. Runtime differences were noise; all six Game outputs
+  match. Added fixed-output and trap-order regressions; see [BENCHMARKS.md](BENCHMARKS.md).
+
 - **Compiler size:** reuse analysis-copy indices across field accesses, reducing the
   compiler executable by 3,316 bytes (1,214,532 to 1,211,216). Generated Game and
   unchanged compiler-source binaries remain byte-identical. Five paired timings

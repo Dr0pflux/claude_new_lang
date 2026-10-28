@@ -2083,8 +2083,12 @@ fn parse_stmt() -> i64 {
           TB_A = probe; TB_B = r; type_bin(op); val = TB_B;
         } else {
           expect(';');
-          let ti = hidden(); vars[ti].ty = nd[idx].ty;
-          let l2 = mk(S_LET); nd[l2].var = ti; nd[l2].a = idx;
+          // The index runs after r. Constants and local scalars cannot change
+          // through r, so use them directly; snapshot all other expressions.
+          let direct = is_const(idx) || (nd[idx].k == N_VAR && vars[nd[idx].var].glob == 0);
+          let mut ti = -1;
+          let mut l2 = -1;
+          if !direct { ti = hidden(); vars[ti].ty = nd[idx].ty; l2 = mk(S_LET); nd[l2].var = ti; nd[l2].a = idx; }
           let mut head = l2;
           let mut rv = 0;
           if is_const(r) { rv = r; }
@@ -2092,14 +2096,18 @@ fn parse_stmt() -> i64 {
             let tv = hidden(); let r2 = deflt(r); vars[tv].ty = nd[r2].ty;
             let l1 = mk(S_LET); nd[l1].var = tv; nd[l1].a = r2; nd[l1].next = l2; head = l1; rv = mk_var(tv);
           }
-          let st = mk(S_STORE); nd[st].var = v; nd[st].a = mk_var(ti); nd[st].op = -1; nd[st].chk = 1; nd[st].c = fld;
-          let ld = mk_load(v, mk_var(ti));
+          let st = mk(S_STORE); nd[st].var = v; nd[st].op = -1; nd[st].chk = 1; nd[st].c = fld;
+          let mut ld = 0;
+          if direct { nd[st].a = idx; ld = mk_load(v, clone_expr(idx)); }
+          else { nd[st].a = mk_var(ti); ld = mk_load(v, mk_var(ti)); }
           if fld >= 0 { nd[ld].op = fld + 1; nd[ld].ty = et; } else if gidx >= 0 { nd[ld].ty = et; }
           let mut val2 = typed_bin(op, ld, rv);
           if !ty_int(et) || !ty_int(nd[val2].ty) { val2 = conv(val2, et); }
           nd[st].b = val2;
           vars[vars[v].basev].reads += 1; if vars[v].lenv >= 0 { vars[vars[v].lenv].reads += 1; }
-          nd[l2].next = st;
+          if head < 0 { head = st; }
+          else if l2 >= 0 { nd[l2].next = st; }
+          else { nd[head].next = st; }
           s = mk(S_BLOCK); nd[s].a = head;
           depth -= 1; return s;
         }
