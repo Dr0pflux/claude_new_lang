@@ -2,6 +2,11 @@
 
 ### Unreleased (2026-10-28)
 
+- **Compiler size:** reuse analysis-copy indices across field accesses, reducing the
+  compiler executable by 3,316 bytes (1,214,532 to 1,211,216). Generated Game and
+  unchanged compiler-source binaries remain byte-identical. Five paired timings
+  showed no reliable compile-time gain; see [BENCHMARKS.md](BENCHMARKS.md).
+
 - **Correctness and tooling fixes:** reject invalid `view<S>` element layouts (PR #2), bound fuzz
   runs and preserve artifacts on failure (PR #5), reject failed or unknown benchmark runs (PR #6),
   and align scoped buffers to 64 bytes (PR #8).
