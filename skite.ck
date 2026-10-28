@@ -2329,7 +2329,10 @@ fn walk_expr(e: i64) {
   let k = nd[e].k;
   if k == N_VAR { touch(nd[e].var); }
   else if k == N_ARR { touch_arr(nd[e].var); }
-  else if k == N_CALL { let mut a = nd[e].a; while a >= 0 { walk_expr(a); a = nd[a].next; } }
+  else if k == N_CALL {
+    let mut a = nd[e].a; while a >= 0 { walk_expr(a); a = nd[a].next; }
+    if ncallpc < 1048576 { callpc[ncallpc] = pc; ncallpc += 1; }
+  }
   else if k == N_LOAD {
     touch_arr(nd[e].var); walk_expr(nd[e].a);
     nchecks += 1; if nd[e].chk == 0 { nelided += 1; }
@@ -3263,6 +3266,27 @@ fn is_xvar(v: i64) -> bool {
   return (t == TY_F64 || t == TY_F32) && vars[v].arr == 0 && vars[v].garr == 0 && vars[v].glob == 0 && v > 1;
 }
 let fn_nr = alloc<bool>(4096);   // function never returns (always exits)
+// calling convention: rbx, rbp, r12..r15 are preserved by the callee (saved in its prologue when it
+// writes them); rsi, rdi, r8..r11 are saved by the caller around a call when live
+fn nop_fill(at0: i64, n0: i64) {   // multi-byte NOPs over code[at0 .. at0 + n0)
+  let mut at = at0; let mut n = n0;
+  while n > 0 {
+    if n >= 7 { code[at] = 15; code[at + 1] = 31; code[at + 2] = 128; code[at + 3] = 0; code[at + 4] = 0; code[at + 5] = 0; code[at + 6] = 0; at += 7; n -= 7; }
+    else if n >= 4 { code[at] = 15; code[at + 1] = 31; code[at + 2] = 64; code[at + 3] = 0; at += 4; n -= 4; }
+    else if n == 3 { code[at] = 15; code[at + 1] = 31; code[at + 2] = 0; at += 3; n -= 3; }
+    else if n == 2 { code[at] = 102; code[at + 1] = 144; at += 2; n -= 2; }
+    else { code[at] = 144; at += 1; n -= 1; }
+  }
+}
+fn callee_saved(r: i64) -> bool { return r == RBX || r == RBP || r >= 12; }
+let callpc = alloc<i64>(1048576);   // pcs of statements containing a real call (non-decreasing)
+let mut ncallpc: i64 = 0;
+fn crosses_call(v: i64) -> bool {
+  let st = vars[v].start; let en = vars[v].end;
+  let mut lo = 0; let mut hi = ncallpc;
+  while lo < hi { let m = (lo + hi) / 2; if callpc[m] <= st { lo = m + 1; } else { hi = m; } }
+  return lo < ncallpc && callpc[lo] <= en;
+}
 fn allocate() {
   let mut g = 0;
   while g < nfn { fn_nr[g] = noreturn(g, 0); g += 1; }
@@ -3352,7 +3376,15 @@ fn allocate() {
       if vars[active[j]].end < vars[vv].start { freer[nf] = vars[active[j]].reg; nf += 1; na -= 1; active[j] = active[na]; }
       else { j += 1; }
     }
-    if na < MAX_ACTIVE { nf -= 1; vars[vv].reg = freer[nf]; active[na] = vv; na += 1; }
+    if na < MAX_ACTIVE {
+      // values live across a call prefer callee-saved registers, others caller-saved ones
+      let want = crosses_call(vv);
+      let mut pick = nf - 1;
+      let mut q = nf - 1;
+      while q >= 0 { if callee_saved(freer[q]) == want { pick = q; break; } q -= 1; }
+      let tr = freer[pick]; freer[pick] = freer[nf - 1]; freer[nf - 1] = tr;
+      nf -= 1; vars[vv].reg = freer[nf]; active[na] = vv; na += 1;
+    }
     else {
       let mut vi = -1;
       j = 0;
@@ -3986,7 +4018,7 @@ fn gen_call(e: i64, rg: i64, n: i64) {
   let mut i = 0;
   while i < 12 {
     let r = allregs[i];
-    let mut fr = false;
+    let mut fr = callee_saved(r);
     let mut j = 0;
     while j < n { if RGS[rg + j] == r { fr = true; } j += 1; }
     if !fr { svr[ns] = r; ns += 1; }
@@ -4147,8 +4179,10 @@ fn genf(e: i64, x: i64, rg: i64, n: i64) {
 let XSTACK_TOP = 7;   // expression stack xmm2..xmm7
 fn xroom(e: i64) -> bool { return ftree(e) && !has_call(e) && xtop <= XSTACK_TOP - 2; }
 fn genf_root(e: i64, r: i64, rg: i64, n: i64) { let x = xtop; genf(e, x, rg, n); fstore(r, x, fprec(e)); }
+let mut clobm: i64 = 0;   // callee-saved registers written while generating the current function
 fn gen(e: i64, rg: i64, n: i64) {
   let r0 = RGS[rg];
+  clobm = clobm | (1 << r0);
   if xroom(e) { genf_root(e, r0, rg, n); return; }
   let k = nd[e].k;
   if k == N_CONST { if hoisted(e) >= 0 { mov_rr(r0, hoisted(e)); } else { mov_ri(r0, nd[e].v); } return; }
@@ -5636,6 +5670,8 @@ fn generate() {
     if f != mainfn && fns[f].used != 0 {
       nfuncs += 1; curfn = f; fns[f].addr = clen;
       let rc = regconv(f);
+      clobm = 0;
+      let pro = clen; emh("90909090909090909090");   // room for push rbx, rbp, r12..r15
       let site = clen; emh("4881ec"); u32_(0);
       tbase = fslot[f]; tdepth = 0; tmax = 0;
       if rc {
@@ -5676,11 +5712,25 @@ fn generate() {
       pl_patch(fns[f].exit_list, clen);
       if fns[f].mark >= 0 { loc(fns[f].mark); load(RCX, OK, ORR, OI); abs_op(137, RCX, ARENA_TOP); }
       let ff = ((fslot[f] + tmax) * 8 + 15) & ~15;
+      // callee-saved registers this function writes: its variables' registers and expression temporaries
+      let mut v = 0;
+      while v < nv { if vars[v].reg >= 0 && vars[v].start > fpc_lo[f] && vars[v].start <= fpc_hi[f] { clobm = clobm | (1 << vars[v].reg); } v += 1; }
+      let mut np = 0;
+      let mut pp = pro;
+      let mut q = 0;
+      while q < 12 {
+        let r = allregs[q];
+        if callee_saved(r) && ((clobm >> r) & 1) != 0 { if (r & 8) != 0 { code[pp] = 65; pp += 1; } code[pp] = (80 | (r & 7)) as u8; pp += 1; np += 1; }
+        q += 1;
+      }
+      nop_fill(pp, pro + 10 - pp);
       if ff == 0 { code[site] = 15; code[site + 1] = 31; code[site + 2] = 128; patch32(site + 3, 0); }   // 7-byte nop
       else { patch32(site + 3, ff); emh("4881c4"); u32_(ff); }
-      // stack-argument loads come after the frame reservation: rebase their displacements
-      let mut q = 0;
-      while q < nframefix { let at = FRAME_FIX[q]; patch32(at, (code[at] as i64) + ((code[at + 1] as i64) << 8) + ff); q += 1; }
+      q = 11;
+      while q >= 0 { let r = allregs[q]; if callee_saved(r) && ((clobm >> r) & 1) != 0 { pop_r(r); } q -= 1; }
+      // stack-argument loads come after the frame and the saved registers: rebase their displacements
+      q = 0;
+      while q < nframefix { let at = FRAME_FIX[q]; patch32(at, (code[at] as i64) + ((code[at + 1] as i64) << 8) + ff + 8 * np); q += 1; }
       nframefix = 0;
       byte(195);
     }
