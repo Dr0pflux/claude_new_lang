@@ -60,6 +60,17 @@ decimal text, including midpoint parity, subnormal/normal and overflow boundarie
 constant aliases, signed zero and explicit narrowing controls. The old compiler fails
 the above-midpoint case. Exact-head build, review and CI evidence is recorded in the ledger.
 
+## If-conversion logical-tree register pressure (issue #18)
+
+Deep `&&`/`||` conditions could exhaust the temporary-register budget during
+branch-free lowering and overwrite live values, silently selecting the wrong
+branch. `ic_bool` now spills the left result when fewer than two temporary
+registers remain, then combines it with the right result. `tests/ifconv_depth.py`
+checks deep OR, AND, mixed and negated conditions against fixed expected output;
+the confirmed 20-comparison repro fails on the frozen baseline and passes with
+the spill fix. The ordinary shallow case still emits `cmov`. The ledger records
+full-suite, exact-head review and CI evidence for integration.
+
 ## Open findings
 
 1. [Issue #9](https://github.com/Dr0pflux/skite.ck/issues/9) is resolved: Claude
