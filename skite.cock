@@ -4011,16 +4011,19 @@ fn vexpr_ok(e: i64, t: i64, iv: i64) -> bool {
   }
   return false;
 }
-// a condition evaluated into mask level lvl (|| needs lvl + 1)
-fn vcond_ok(e: i64, lvl: i64, iv: i64) -> bool {
-  if lvl + 1 > VK_DEPTH { VK_DEPTH = lvl + 1; }
+// a condition evaluated into mask level dst under mask level pm (OR-like nodes use fresh levels)
+fn vcond_ok(e: i64, dst: i64, pm: i64, neg: bool, iv: i64) -> bool {
+  if dst + 1 > VK_DEPTH { VK_DEPTH = dst + 1; }
   let k = nd[e].k;
   if !refs_v(e) { return !has_call(e); }
-  if k == N_UN && nd[e].op == U_LNOT { return vcond_ok(nd[e].a, lvl, iv); }
+  if k == N_UN && nd[e].op == U_LNOT { return vcond_ok(nd[e].a, dst, pm, !neg, iv); }
   if k != N_BIN { return false; }
   let op = nd[e].op;
-  if op == O_LAND { return vcond_ok(nd[e].a, lvl, iv) && vcond_ok(nd[e].b, lvl, iv); }
-  if op == O_LOR { return vcond_ok(nd[e].a, lvl, iv) && vcond_ok(nd[e].b, lvl + 1, iv); }
+  if (op == O_LAND && !neg) || (op == O_LOR && neg) { return vcond_ok(nd[e].a, dst, pm, neg, iv) && vcond_ok(nd[e].b, dst, dst, neg, iv); }
+  if op == O_LAND || op == O_LOR {
+    let t = mx(dst, pm) + 1;
+    return vcond_ok(nd[e].a, t, pm, neg, iv) && vcond_ok(nd[e].b, t + 1, pm, neg, iv);
+  }
   if is_cmp_op(op) { return vexpr_ok(nd[e].a, 0, iv) && vexpr_ok(nd[e].b, 1, iv) && int8_type(nd[nd[e].a].ty); }
   if op >= O_FEQ && op <= O_FGE { return vexpr_ok(nd[e].a, 0, iv) && vexpr_ok(nd[e].b, 1, iv); }
   return false;
@@ -4063,7 +4066,7 @@ fn vpre_ok(s: i64, lvl: i64, ld: i64, iv: i64) -> bool {
       return vpre_ok(nd[s].b, -1, ld, iv) && vpre_ok(nd[s].c, -1, ld, iv);
     }
     let nl = lvl + 1;
-    if !vcond_ok(nd[s].a, nl, iv) { return false; }
+    if !vcond_ok(nd[s].a, nl, lvl, false, iv) || !vcond_ok(nd[s].a, nl, nl, false, iv) { return false; }
     return vpre_ok(nd[s].b, nl, ld, iv) && vpre_ok(nd[s].c, nl, ld, iv);
   }
   if k == S_WHILE {
@@ -4076,7 +4079,7 @@ fn vpre_ok(s: i64, lvl: i64, ld: i64, iv: i64) -> bool {
     }
     if has_trap(nd[s].a) { return false; }   // re-evaluated under the loop's own mask
     let nl = lvl + 1;
-    if !vcond_ok(nd[s].a, nl, iv) { return false; }
+    if !vcond_ok(nd[s].a, nl, lvl, false, iv) || !vcond_ok(nd[s].a, nl, nl, false, iv) { return false; }
     return vpre_ok(nd[s].b, nl, ld + 1, iv);
   }
   if k == S_BRK || k == S_CONT { return lvl < 0 && ld > 0; }
@@ -4167,7 +4170,7 @@ fn plan_loop(s: i64) {
   }
   // registers: groups of U zmm registers among zmm16..zmm31; masks k1..k6 (k7 = all lanes)
   let mut u = 2;
-  if (nvar + VK_TMP + 1) * 2 > 16 || (VK_DEPTH + 1) * 2 > 6 { u = 1; }
+  if (nvar + VK_TMP + 1) * 2 > 16 || VK_DEPTH * 2 > 6 { u = 1; }
   if (nvar + VK_TMP + 1) * u > 16 || VK_DEPTH * u > 6 { return; }
   if nvlist + nvar > 65536 || nvneed + nvar > 65536 { return; }
   let p = nplans; nplans += 1;
@@ -4335,21 +4338,24 @@ fn vcmp_pred(op: i64) -> i64 {
   if op == O_FGT { return 14; } if op == O_FGE { return 13; }
   if op == O_GE || op == O_GEU { return 5; } return 6;
 }
-fn vcond(e: i64, lvl: i64, pm: i64) {
+fn vcond(e: i64, dst: i64, pm: i64, neg: bool) {
   let k = nd[e].k;
   if !refs_v(e) {
     gen(e, VRG, VN); let r = RGS[VRG];
+    if neg { alui(A_XOR, r, 1); }
     unop(3, K_REG, r);
+    kmov_kr(0, r);
     let mut h = 0;
-    while h < VU { kmov_kr(kreg(lvl, h), r); if pm >= 0 { kand(kreg(lvl, h), kreg(lvl, h), kreg(pm, h)); } h += 1; }
+    while h < VU { kand(kreg(dst, h), 0, kpar(pm, h)); h += 1; }
     return;
   }
-  if k == N_UN { vcond(nd[e].a, lvl, pm); let mut h = 0; while h < VU { kandn(kreg(lvl, h), kreg(lvl, h), kpar(pm, h)); h += 1; } return; }
+  if k == N_UN { vcond(nd[e].a, dst, pm, !neg); return; }
   let op = nd[e].op;
-  if op == O_LAND { vcond(nd[e].a, lvl, pm); vcond(nd[e].b, lvl, lvl); return; }
-  if op == O_LOR {
-    vcond(nd[e].a, lvl, pm); vcond(nd[e].b, lvl + 1, pm);
-    let mut h = 0; while h < VU { kor(kreg(lvl, h), kreg(lvl, h), kreg(lvl + 1, h)); h += 1; }
+  if (op == O_LAND && !neg) || (op == O_LOR && neg) { vcond(nd[e].a, dst, pm, neg); vcond(nd[e].b, dst, dst, neg); return; }
+  if op == O_LAND || op == O_LOR {
+    let t = mx(dst, pm) + 1;
+    vcond(nd[e].a, t, pm, neg); vcond(nd[e].b, t + 1, pm, neg);
+    let mut h = 0; while h < VU { kor(kreg(dst, h), kreg(t, h), kreg(t + 1, h)); h += 1; }
     return;
   }
   let a = nd[e].a; let b = nd[e].b;
@@ -4362,15 +4368,17 @@ fn vcond(e: i64, lvl: i64, pm: i64) {
   }
   let fl = op >= O_FEQ && op <= O_FGE;
   let uns = op == O_LTU || op == O_LEU || op == O_GTU || op == O_GEU;
+  let mut pred = vcmp_pred(o);
+  if neg { pred = pred ^ 4; }
   let mut h = 0;
   while h < VU {
     VM_TAIL = 1;
     if bk == 1 { vm_pool(br); }
     let rr = if_sel(bk == 0, br + h, 0);
-    if fl { evx(1, 1, 1, 2, 194, kreg(lvl, h), ar + h, bk, rr, kreg(pm, h), false, bk == 1); }
-    else if uns { evx(3, 1, 1, 2, 30, kreg(lvl, h), ar + h, bk, rr, kreg(pm, h), false, bk == 1); }
-    else { evx(3, 1, 1, 2, 31, kreg(lvl, h), ar + h, bk, rr, kreg(pm, h), false, bk == 1); }
-    byte(vcmp_pred(o));
+    if fl { evx(1, 1, 1, 2, 194, kreg(dst, h), ar + h, bk, rr, kreg(pm, h), false, bk == 1); }
+    else if uns { evx(3, 1, 1, 2, 30, kreg(dst, h), ar + h, bk, rr, kreg(pm, h), false, bk == 1); }
+    else { evx(3, 1, 1, 2, 31, kreg(dst, h), ar + h, bk, rr, kreg(pm, h), false, bk == 1); }
+    byte(pred);
     VM_TAIL = 0;
     h += 1;
   }
@@ -4420,7 +4428,7 @@ fn vstmt_body(s: i64, lvl: i64) {
       return;
     }
     let nl = lvl + 1;
-    vcond(nd[s].a, nl, lvl);
+    vcond(nd[s].a, nl, lvl, false);
     let mut h = 0;
     kortest(kreg(nl, 0), kreg(nl, VU - 1));
     let sk = jcc(CC_E);
@@ -4450,13 +4458,13 @@ fn vstmt_body(s: i64, lvl: i64) {
       return;
     }
     let nl = lvl + 1;
-    vcond(nd[s].a, nl, lvl);
+    vcond(nd[s].a, nl, lvl, false);
     kortest(kreg(nl, 0), kreg(nl, VU - 1));
     let ex = jcc(CC_E);
     let top = clen;
     vstmt(nd[s].b, nl);
     vtemps(s);
-    vcond(nd[s].a, nl, nl);
+    vcond(nd[s].a, nl, nl, false);
     kortest(kreg(nl, 0), kreg(nl, VU - 1));
     rel32(jcc(CC_NE), top);
     rel32(ex, clen);
