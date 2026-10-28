@@ -133,6 +133,53 @@ SRC
 rc=0; got=$( ( "$T/fpe" ) 2>/dev/null ) || rc=$?
 [[ $rc -eq 136 && "$got" == "9" ]] || { echo "FAIL: div trap rc=$rc out=[$got]" >&2; exit 1; }
 echo 'PASS: division trap flushes output (SIGFPE handler)'
+# R marks RHS evaluation and I marks index evaluation. The runtime's
+# installed SIGFPE handler exits 136; SIGILL's shell status is 132.
+
+cat > "$T/opeq_rhs_divzero.ck" <<'SRC'
+let arr = alloc<f64>(2);
+let mut zero: i64 = 0;
+fn rhs() -> f64 { putc(82); return (1 / zero) as f64; }
+fn index() -> i64 { putc(73); return 99; }
+fn main() { arr[index()] += rhs(); }
+SRC
+"$SKITE" "$T/opeq_rhs_divzero.ck" "$T/prog" > /dev/null
+rc=0; got=$("$T/prog" 2>/dev/null) || rc=$?
+[[ $rc -eq 136 && "$got" == "R" ]] || { echo "FAIL: RHS divzero/order rc=$rc out=[$got]" >&2; exit 1; }
+
+cat > "$T/opeq_oob.ck" <<'SRC'
+let arr = alloc<f64>(2);
+fn rhs() -> f64 { putc(82); return 3.0; }
+fn index() -> i64 { putc(73); return 99; }
+fn main() { arr[index()] += rhs(); }
+SRC
+"$SKITE" "$T/opeq_oob.ck" "$T/prog" > /dev/null
+rc=0; got=$("$T/prog" 2>/dev/null) || rc=$?
+[[ $rc -eq 132 && "$got" == "RI" ]] || { echo "FAIL: OOB/index order rc=$rc out=[$got]" >&2; exit 1; }
+
+cat > "$T/opeq_index_divzero.ck" <<'SRC'
+let arr = alloc<f64>(2);
+let mut zero: i64 = 0;
+fn rhs() -> f64 { putc(82); return 1.0; }
+fn index() -> i64 { putc(73); return 1 / zero; }
+fn main() { arr[index()] /= rhs(); }
+SRC
+"$SKITE" "$T/opeq_index_divzero.ck" "$T/prog" > /dev/null
+rc=0; got=$("$T/prog" 2>/dev/null) || rc=$?
+[[ $rc -eq 136 && "$got" == "RI" ]] || { echo "FAIL: index divzero/order rc=$rc out=[$got]" >&2; exit 1; }
+
+# A direct constant index (the optimized branch) must also leave RHS traps first:
+cat > "$T/opeq_direct_rhs_divzero.ck" <<'SRC'
+let arr = alloc<f64>(2);
+let mut zero: i64 = 0;
+fn rhs() -> f64 { putc(82); return (1 / zero) as f64; }
+fn main() { arr[99] += rhs(); }
+SRC
+"$SKITE" "$T/opeq_direct_rhs_divzero.ck" "$T/prog" > /dev/null
+rc=0; got=$("$T/prog" 2>/dev/null) || rc=$?
+[[ $rc -eq 136 && "$got" == "R" ]] || { echo "FAIL: direct-index RHS trap rc=$rc out=[$got]" >&2; exit 1; }
+
+echo 'PASS: compound assignment RHS/index evaluation and trap order'
 for bad in 'let mut a = alloc8(4);' 'let a = alloc8(0);' 'let a = file(1); a[0] = 1;' 'let a = alloc8(4); let x = a;' 'let mut i = 0; while i < 2 { let a = file(1); i += 1; }'; do
   printf 'fn main() -> i64 { %s return 0; }' "$bad" > "$T/bad.ck"
   if "$SKITE" "$T/bad.ck" "$T/prog" 2>/dev/null; then echo "FAIL: accepted [$bad]" >&2; exit 1; fi
@@ -271,6 +318,7 @@ echo 'PASS: structs, globals, scoped heap, save(), 16/32/64-byte struct alloc an
 "$SKITE" tests/features/for_form.ck "$T/for_form" > /dev/null
 "$SKITE" tests/features/while_form.ck "$T/while_form" > /dev/null
 cmp -s "$T/for_form" "$T/while_form" || { echo "FAIL: for loops must compile to the same machine code as their while form" >&2; exit 1; }
+check tests/features/compound_index.ck "$(cat tests/features/compound_index.expected)" dummy
 "$SKITE" tests/features/tail_acc.ck "$T/tail_acc" > /dev/null
 "$T/tail_acc" | cmp -s - tests/features/tail_acc.expected || { echo "FAIL: tail recursion modulo +" >&2; "$T/tail_acc" | diff - tests/features/tail_acc.expected >&2; exit 1; }
 while IFS='|' read -r msg bad; do

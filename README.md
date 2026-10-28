@@ -21,27 +21,41 @@ Contributors (people and AI agents): read [`AGENTS.md`](AGENTS.md),
 
 ## Performance
 
-Benchmarks Game programs, the same algorithm in skite, C and Rust, byte-identical output
-required (`bench/game/`). gcc/clang `-O3 -march=native`, rustc `-C opt-level=3 -C target-cpu=native`.
-Results and methodology: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md); latest quick-size table in
-[`docs/HANDOFF.md`](docs/HANDOFF.md). Today skite is about 3.8x faster than the best of
-gcc/clang/rustc on mandelbrot, on par on fasta, spectralnorm and fannkuchredux, and behind on
-nbody (1.5x) and binarytrees (2.5x).
+Performance depends on the machine and compiler versions. The historical Xeon results and the
+current Ryzen results are separate snapshots in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+On the Ryzen 7 5700U quick-size run, Skite was 2.02x slower than the fastest reference on nbody,
+1.01x on spectralnorm, 1.04x on mandelbrot, 1.26x on fannkuchredux, 1.10x on fasta, and 1.86x
+on binarytrees. These are matched implementations with byte-identical output, not rankings against
+every implementation. The 3.9x mandelbrot lead in the older Xeon snapshot is specific to that host.
+
+Merged PR #10 reduced compiler self-compilation median time on the same Ryzen from 2.520167 s to
+2.221176 s (11.9% lower across three paired runs after warmup). It did not improve generated
+program runtime; binaries for the six Game programs remained byte-identical. See the measurement
+method and compiler versions in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+
+Reusing analysis-copy indices also trims the compiler executable from 1,214,532 to
+1,211,216 bytes (3,316 bytes). Paired measurements showed no reliable compile-time
+gain; generated Game binaries remain unchanged. See the compiler-size measurement
+in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+
+Eliding pure index snapshots in general compound array assignments reduces the
+nbody executable from 10,705 to 8,855 bytes (17.3%). Measured runtime differences
+were within noise; all six Game outputs still match. This adds 24 bytes to the
+compiler itself. Details and regression coverage are in
+[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
 What makes skite fast:
 
-- **Bit-exact auto-vectorization.** Loops whose bodies start with pure computation (including
-  inner loops with data-dependent exits) run 8 or 16 iterations at once in AVX-512 registers
-  under k-masks; the rest of the body runs per lane in order. Results are bit-identical to scalar
-  execution (no reassociation, no FMA contraction). CPUs without AVX-512 take the scalar path.
-- **Element-wise loops and integer reductions** (`b[i] = b[i] * k + a[i]`, fills, copies,
-  `s += a[i]`, `x ^= b[i]`, narrow `u8`..`u32` elements) also run 8 or 16 lanes at once. Unproven
-  bounds are checked once before the vector loop, and array parameters that might be the same
-  array are compared at run time; when a check fails, the ordinary loop runs and traps exactly
-  where scalar code would.
-- **Proven-safe indexing:** every array access is bounds-checked unless range analysis proves it.
-- **Zero-cost helpers:** non-recursive functions are inlined; bounds proofs flow through them.
-- Floats in XMM registers, periodic-index strength reduction, magic-number division.
+- **Vectorization:** eligible loops can use AVX-512; CPUs without AVX-512 take the scalar path.
+  Lane-parallel loops (outer loops with inner loops) and element-wise loops / integer reductions
+  (`b[i] = b[i] * k + a[i]`, fills, copies, `s += a[i]`, narrow `u8`..`u32` elements) run 8 or 16
+  iterations at once. Unproven bounds and possibly-aliased array parameters are checked once
+  before the vector loop; on failure the ordinary loop runs. Tested programs match their
+  `--scalar` and reference outputs; a global bit-exact guarantee has not been proven
+  ([issue #9](https://github.com/Dr0pflux/skite.ck/issues/9) tracked a mixed-width alias case).
+- **Proven-safe indexing:** array accesses are bounds-checked unless range analysis proves them safe.
+- **Bounded inlining:** small helpers can be inlined within size budgets; bounds proofs flow through them.
+- Floats in XMM registers, periodic-index strength reduction, and magic-number division.
 
 ## Layout
 

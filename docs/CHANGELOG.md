@@ -1,5 +1,37 @@
 # Changelog
 
+### Unreleased (2026-10-28)
+
+- **Generated code size:** omit hidden compound-index snapshots for constants and
+  stable local scalars, while preserving RHS-first evaluation and snapshots for
+  effectful/global indices. Standard nbody ELF shrinks by 1,850 bytes (17.3%);
+  compiler grows by 24 bytes. Runtime differences were noise; all six Game outputs
+  match. Added fixed-output and trap-order regressions; see [BENCHMARKS.md](BENCHMARKS.md).
+
+- **Compiler size:** reuse analysis-copy indices across field accesses, reducing the
+  compiler executable by 3,316 bytes (1,214,532 to 1,211,216). Generated Game and
+  unchanged compiler-source binaries remain byte-identical. Five paired timings
+  showed no reliable compile-time gain; see [BENCHMARKS.md](BENCHMARKS.md).
+
+- **Correctness and tooling fixes:** reject invalid `view<S>` element layouts (PR #2), bound fuzz
+  runs and preserve artifacts on failure (PR #5), reject failed or unknown benchmark runs (PR #6),
+  and align scoped buffers to 64 bytes (PR #8).
+- **Calls and recursion:** avoid saving caller registers that are dead after a call and reuse
+  already-passed bounds checks (`e872829`); add bounded tail-recursion modulo addition, copy
+  coalescing, and one additional inline level for tiny recursive functions (`027a8d9`).
+- **Compiler build time:** PR #10 skips redundant zeroing before full range-analysis environment
+  copies. On a Ryzen 7 5700U, median self-compilation fell from 2.520167 s to 2.221176 s (11.9%)
+  across three paired runs after warmup. The compiler executable is 1,836 bytes smaller; generated
+  binaries for the six Game programs remain byte-identical. This change affects compile time, not
+  program runtime. See [`BENCHMARKS.md`](BENCHMARKS.md) for host, flags, versions, and measurements.
+- Performance comparisons are hardware-specific; the historical Xeon and current Ryzen tables are
+  reported separately. No global bit-exact guarantee is claimed for all programs. Issue #9 records
+  an unresolved alias-proof gap in experimental stream-vectorization work.
+
+
+Entries below are historical release snapshots. Their measurements, limitations
+and future-work lists describe those versions; see [LIMITATIONS.md](LIMITATIONS.md)
+and [HANDOFF.md](HANDOFF.md) for current status.
 
 ### v0.9
 

@@ -760,11 +760,16 @@ let mut pool_top: i64 = 16000000;    // loop-entry snapshots (kept for strength 
 let freeb = alloc<i64>(1048576);     // free temporary blocks (all of size env_n+1 within a function)
 let mut nfreeb: i64 = 0;
 fn pool_reset() { pool_bump = 0; nfreeb = 0; }
-fn env_new() -> i64 {
+fn env_alloc() -> i64 { // raw block: caller must initialize every entry before reading it
   let bs = env_n + 1;
   let mut e = 0;
   if nfreeb > 0 { nfreeb -= 1; e = freeb[nfreeb]; }
   else { e = pool_bump; pool_bump += bs; if pool_bump > pool_top { fail("analysis memory exhausted"); } }
+  return e;
+}
+fn env_new() -> i64 {
+  let e = env_alloc();
+  let bs = env_n + 1;
   let mut i = 0;
   while i < bs { envp[e + i].lo = 0; envp[e + i].hi = 0; envp[e + i].lt = 0; envp[e + i].bot = false; i += 1; }
   return e;
@@ -784,7 +789,8 @@ fn set_dead(e: i64) { envp[e + env_n].lo = 1; }
 fn env_copy(d: i64, s: i64) {
   let mut i = 0;
   while i <= env_n {
-    envp[d + i].lo = envp[s + i].lo; envp[d + i].hi = envp[s + i].hi; envp[d + i].lt = envp[s + i].lt; envp[d + i].bot = envp[s + i].bot;
+    let j = d + i; let k = s + i;
+    envp[j].lo = envp[k].lo; envp[j].hi = envp[k].hi; envp[j].lt = envp[k].lt; envp[j].bot = envp[k].bot;
     i += 1;
   }
 }
@@ -987,7 +993,7 @@ fn er(e: i64, env: i64) { // range of expression e -> R*
   let op = nd[e].op;
   if op == O_LAND || op == O_LOR {
     er(nd[e].a, env);
-    let t = env_new(); env_copy(t, env); refine(t, nd[e].a, op == O_LAND);
+    let t = env_alloc(); env_copy(t, env); refine(t, nd[e].a, op == O_LAND);
     if !dead(t) { er(nd[e].b, t); }
     env_free(t); ret_rg(0, 1); return;
   }
@@ -1135,7 +1141,7 @@ fn as_stmt(s: i64, env: i64) {
     let alo = RLO; let abot = RBOT;
     er(nd[s].b, env);
     let blo = RLO; let bhi = RHI; let bbot = RBOT;
-    let t = env_new(); env_copy(t, env);
+    let t = env_alloc(); env_copy(t, env);
     let mut klo = INT64_MIN; let mut khi = INT64_MAX;
     if !abot && !bbot && bhi > INT64_MIN { klo = alo; khi = bhi - 1; }
     if klo <= khi {
@@ -1161,7 +1167,7 @@ fn as_stmt(s: i64, env: i64) {
   if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { as_stmt(c, env); c = nd[c].next; } return; }
   if k == S_IF {
     er(nd[s].a, env);
-    let t = env_new(); let f = env_new(); env_copy(t, env); env_copy(f, env);
+    let t = env_alloc(); let f = env_alloc(); env_copy(t, env); env_copy(f, env);
     refine(t, nd[s].a, true); refine(f, nd[s].a, false);
     as_stmt(nd[s].b, t); if nd[s].c >= 0 { as_stmt(nd[s].c, f); }
     env_copy(env, t); env_join(env, f);
@@ -1169,7 +1175,7 @@ fn as_stmt(s: i64, env: i64) {
     env_free(t); env_free(f); return;
   }
   if k == S_WHILE {
-    let entry = env_new(); let head = env_new(); let bdy = env_new(); let nh = env_new();
+    let entry = env_alloc(); let head = env_alloc(); let bdy = env_new(); let nh = env_new();
     env_copy(entry, env); env_copy(head, env);
     if wcache[s] != 0 { env_join(head, wcache[s] - 1); }
     if an_loops >= MAX_LOOPS { fail("loops nested too deeply"); }
@@ -2077,8 +2083,12 @@ fn parse_stmt() -> i64 {
           TB_A = probe; TB_B = r; type_bin(op); val = TB_B;
         } else {
           expect(';');
-          let ti = hidden(); vars[ti].ty = nd[idx].ty;
-          let l2 = mk(S_LET); nd[l2].var = ti; nd[l2].a = idx;
+          // The index runs after r. Constants and local scalars cannot change
+          // through r, so use them directly; snapshot all other expressions.
+          let direct = is_const(idx) || (nd[idx].k == N_VAR && vars[nd[idx].var].glob == 0);
+          let mut ti = -1;
+          let mut l2 = -1;
+          if !direct { ti = hidden(); vars[ti].ty = nd[idx].ty; l2 = mk(S_LET); nd[l2].var = ti; nd[l2].a = idx; }
           let mut head = l2;
           let mut rv = 0;
           if is_const(r) { rv = r; }
@@ -2086,14 +2096,18 @@ fn parse_stmt() -> i64 {
             let tv = hidden(); let r2 = deflt(r); vars[tv].ty = nd[r2].ty;
             let l1 = mk(S_LET); nd[l1].var = tv; nd[l1].a = r2; nd[l1].next = l2; head = l1; rv = mk_var(tv);
           }
-          let st = mk(S_STORE); nd[st].var = v; nd[st].a = mk_var(ti); nd[st].op = -1; nd[st].chk = 1; nd[st].c = fld;
-          let ld = mk_load(v, mk_var(ti));
+          let st = mk(S_STORE); nd[st].var = v; nd[st].op = -1; nd[st].chk = 1; nd[st].c = fld;
+          let mut ld = 0;
+          if direct { nd[st].a = idx; ld = mk_load(v, clone_expr(idx)); }
+          else { nd[st].a = mk_var(ti); ld = mk_load(v, mk_var(ti)); }
           if fld >= 0 { nd[ld].op = fld + 1; nd[ld].ty = et; } else if gidx >= 0 { nd[ld].ty = et; }
           let mut val2 = typed_bin(op, ld, rv);
           if !ty_int(et) || !ty_int(nd[val2].ty) { val2 = conv(val2, et); }
           nd[st].b = val2;
           vars[vars[v].basev].reads += 1; if vars[v].lenv >= 0 { vars[vars[v].lenv].reads += 1; }
-          nd[l2].next = st;
+          if head < 0 { head = st; }
+          else if l2 >= 0 { nd[l2].next = st; }
+          else { nd[head].next = st; }
           s = mk(S_BLOCK); nd[s].a = head;
           depth -= 1; return s;
         }
@@ -4700,6 +4714,15 @@ let vldp = alloc<i64>(65536);        // == tag: loaded at i + c, c > 0; vldp_at:
 let vldp_at = alloc<i64>(65536);
 let vst_at = alloc<i64>(65536);      // first statement storing the leader
 let mut VK_SNO: i64 = 0;             // statement number (stream checks, in execution order)
+// element widths per leader: lane j of a[i] is the same memory as lane j of b[i] only when a and b
+// have the same width (a view<u64> of bytes shares the leader of the bytes)
+let vlw = alloc<i64>(65536);
+let vlw_w = alloc<i64>(65536);
+let vlwx = alloc<i64>(65536);        // == tag: leader accessed with two element widths
+fn vnote_w(a: i64) {
+  let L = arr_leader[a]; let w = vars[a].arr;
+  if vlw[L] != vtag { vlw[L] = vtag; vlw_w[L] = w; } else if vlw_w[L] != w { vlwx[L] = vtag; }
+}
 // bounds guards of the plan being checked: a[i + c] with an unproven check runs vectorized only
 // while i + c .. i + c + L - 1 is inside a (tested per block; otherwise the scalar loop takes over)
 let vg_arr = alloc<i64>(64);
@@ -5098,6 +5121,7 @@ fn vscan_loads(e: i64, iv: i64) {
   let k = nd[e].k;
   if k == N_LOAD {
     let x = nd[e].a; let L = arr_leader[nd[e].var];
+    vnote_w(nd[e].var);
     if nd[e].op > 0 { vldx[L] = vtag; }
     else if nd[x].k == N_VAR && nd[x].var == iv { }
     else if nd[x].k == N_BIN && nd[x].op == O_ADD && nd[nd[x].a].k == N_VAR && nd[nd[x].a].var == iv && is_const(nd[x].b) && (nd[nd[x].b].v as i64) > 0 {
@@ -5150,6 +5174,7 @@ fn sst_ok(s: i64, iv: i64) -> bool {
     if nd[s].op >= 0 && !(et != TY_F64 && is_alu_op(nd[s].op)) { return false; }
     if nd[s].chk != 0 && !add_guard(a, 0) { return false; }
     VK_SNO += 1;
+    vnote_w(a);
     if vast[arr_leader[a]] != vtag { vst_at[arr_leader[a]] = VK_SNO; }
     vast[arr_leader[a]] = vtag;
     vscan_loads(nd[s].b, iv);
@@ -5200,7 +5225,7 @@ fn plan_stream(s: i64, body: i64, inc: i64, iv: i64, nb: i64) {
   let mut vv = 0;
   while vv < nv {
     if vprw[vv] == t0 && vdecl[vv] != t0 { return; }
-    if vast[vv] == t0 { nst += 1; if vldx[vv] == t0 || (vldp[vv] == t0 && vldp_at[vv] > vst_at[vv]) { return; } }
+    if vast[vv] == t0 { nst += 1; if vldx[vv] == t0 || vlwx[vv] == t0 || (vldp[vv] == t0 && vldp_at[vv] > vst_at[vv]) { return; } }
     if vred[vv] == t0 { if count_assign(body, vv) != 1 || st_reads(body, vv) != 1 { return; } nred += 1; }
     if is_v(vv) && vv != iv && vdecl[vv] != t0 && vred[vv] != t0 { return; }
     if is_v(vv) && (vars[vv].reads != 0 || vv == iv) { let t = vars[vv].ty; if !(f64_type(t) || int8_type(t)) { return; } nvar += 1; }
