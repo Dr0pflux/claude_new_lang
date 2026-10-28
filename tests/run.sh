@@ -242,6 +242,24 @@ let a = alloc<f64>(2); let i = a[1.0];
 while 1 < 2 && 3 { }
 BAD
 echo 'PASS: ill-typed programs rejected'
+# Reinterpreting bytes as a bool field violates the canonical 0/1 invariant.
+# Include a mixed layout so rejection does not depend on element width.
+for fields in 'ok: bool' 'value: u64, ok: bool'; do
+  cat > "$T/bad.ck" <<SRC
+struct Flag { $fields }
+fn main() {
+  let bytes = alloc<u8>(argc() + 32);
+  bytes[0] = 2;
+  let flags = view<Flag>(bytes);
+  if flags[0].ok { print(1); }
+}
+SRC
+  if "$SKITE" "$T/bad.ck" "$T/prog" 2> "$T/error"; then
+    echo 'FAIL: accepted byte view of bool-containing struct' >&2; exit 1
+  fi
+  grep -q 'no views of structs containing bool' "$T/error"
+done
+echo 'PASS: views cannot create invalid bool fields'
 for t in structs heap structsz; do
   "$SKITE" tests/data/$t.ck "$T/$t" > /dev/null
   "$T/$t" "$T/$t.saved" | cmp -s - tests/data/$t.expected || { echo "FAIL: $t" >&2; exit 1; }

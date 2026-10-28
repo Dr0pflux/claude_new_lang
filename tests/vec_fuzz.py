@@ -2,8 +2,11 @@
 """Differential fuzzer for the SIMD vectorizer: random loop nests built to be
 vectorizable (varying masks, inner loops, int/float mixes) are compiled twice,
 normally and with --scalar, and must print identical output.
-usage: tests/vec_fuzz.py [CASES] [SEED]"""
-import os, random, subprocess, sys, tempfile
+usage: tests/vec_fuzz.py [CASES] [SEED]
+SKITE_COMPILE_TIMEOUT bounds each compilation in seconds (default 10).
+Failures are retained under SKITE_ARTIFACT_DIR, or the system temporary directory.
+Scalar/vector execution limits are 10/60 seconds; either timeout fails the run."""
+import json, math, os, random, shutil, subprocess, sys, tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKITE = os.environ.get("SKITE", os.path.join(ROOT, "skite"))
@@ -127,29 +130,79 @@ class Gen:
 def main():
     cases = int(sys.argv[1]) if len(sys.argv) > 1 else 200
     seed = int(sys.argv[2]) if len(sys.argv) > 2 else 1
+    compile_timeout = float(os.environ.get("SKITE_COMPILE_TIMEOUT", "10"))
+    if not math.isfinite(compile_timeout) or compile_timeout <= 0:
+        raise SystemExit("SKITE_COMPILE_TIMEOUT must be a finite positive number")
     rnd = random.Random(seed)
-    tmp = tempfile.mkdtemp()
+    temporary = tempfile.TemporaryDirectory()
+    tmp = temporary.name
     vec = 0
     for c in range(cases):
         src = Gen(rnd).program()
         p = os.path.join(tmp, "v.ck")
         open(p, "w").write(src)
-        r1 = subprocess.run([SKITE, p, os.path.join(tmp, "a")], capture_output=True, text=True)
-        r2 = subprocess.run([SKITE, p, os.path.join(tmp, "b"), "--scalar"], capture_output=True, text=True)
-        if r1.returncode or r2.returncode:
-            print("COMPILE FAIL", r1.stderr, r2.stderr); print(src); sys.exit(1)
-        if " 0 loops vectorized" not in r1.stdout: vec += 1
-        try: o2 = subprocess.run([os.path.join(tmp, "b")], capture_output=True, timeout=10)
-        except subprocess.TimeoutExpired: continue
-        try: o1 = subprocess.run([os.path.join(tmp, "a")], capture_output=True, timeout=60)
+        metadata = {"seed": seed, "case": c, "compiler": SKITE,
+                    "compile_timeout": compile_timeout, "commands": {}}
+
+        def preserve(reason):
+            metadata["reason"] = reason
+            with open(os.path.join(tmp, "metadata.json"), "w") as out:
+                json.dump(metadata, out, indent=2)
+            destination = os.environ.get("SKITE_ARTIFACT_DIR")
+            if destination:
+                os.makedirs(destination, exist_ok=True)
+            saved = tempfile.mkdtemp(prefix=f"vec-seed{seed}-case{c}-", dir=destination)
+            shutil.copytree(tmp, saved, dirs_exist_ok=True)
+            print(f"{reason} case {c}; artifacts: {saved}")
+
+        def run_logged(label, command, timeout):
+            metadata["commands"][label] = {"argv": command, "timeout": timeout}
+            with open(os.path.join(tmp, label + ".stdout"), "wb") as stdout, \
+                 open(os.path.join(tmp, label + ".stderr"), "wb") as stderr:
+                try:
+                    result = subprocess.run(command, stdout=stdout, stderr=stderr, timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    metadata["commands"][label]["timed_out"] = True
+                    raise
+                except OSError as error:
+                    metadata["commands"][label]["error"] = str(error)
+                    preserve("EXECUTION FAIL")
+                    sys.exit(1)
+            metadata["commands"][label]["returncode"] = result.returncode
+            with open(os.path.join(tmp, label + ".stdout"), "rb") as output:
+                result.stdout = output.read()
+            return result
+
+        # Remove logs/binaries from earlier cases before recording a reproducer.
+        for name in os.listdir(tmp):
+            if name != "v.ck": os.unlink(os.path.join(tmp, name))
+        compiled = []
+        for label, binary, flags in (("compile-vector", "a", []), ("compile-scalar", "b", ["--scalar"])):
+            try:
+                result = run_logged(label, [SKITE, p, os.path.join(tmp, binary)] + flags, compile_timeout)
+            except subprocess.TimeoutExpired:
+                preserve("COMPILE TIMEOUT")
+                sys.exit(1)
+            if result.returncode:
+                preserve("COMPILE FAIL")
+                sys.exit(1)
+            compiled.append(result)
+        if b" 0 loops vectorized" not in compiled[0].stdout: vec += 1
+        try:
+            o2 = run_logged("run-scalar", [os.path.join(tmp, "b")], 10)
         except subprocess.TimeoutExpired:
-            print(f"VECTOR HANG case {c}"); print(src); open(os.path.join(ROOT, "vec_fail.ck"), "w").write(src); sys.exit(1)
-        if o1.stdout != o2.stdout or o1.returncode != o2.returncode:
-            print(f"MISMATCH case {c} (rc {o1.returncode} vs {o2.returncode})")
-            print(src)
-            print("vector:", o1.stdout[-300:]); print("scalar:", o2.stdout[-300:])
-            open(os.path.join(ROOT, "vec_fail.ck"), "w").write(src)
+            preserve("SCALAR HANG")
             sys.exit(1)
+        try:
+            o1 = run_logged("run-vector", [os.path.join(tmp, "a")], 60)
+        except subprocess.TimeoutExpired:
+            preserve("VECTOR HANG")
+            sys.exit(1)
+        if o1.stdout != o2.stdout or o1.returncode != o2.returncode:
+            preserve(f"MISMATCH (rc {o1.returncode} vs {o2.returncode})")
+            print("vector:", o1.stdout[-300:]); print("scalar:", o2.stdout[-300:])
+            sys.exit(1)
+    temporary.cleanup()
     print(f"PASS {cases} programs ({vec} vectorized), seed {seed}")
 
 main()
