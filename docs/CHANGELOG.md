@@ -27,6 +27,10 @@
   refinement re-evaluated it under the assumption that the check had already passed (pre-existing;
   `tests/data/refine_trap.ck`). The if-conversion operand reorder in `7b6f7bb` also reused a
   register for both compare operands when both were non-trivial (miscompile on `84ff0e4`; fixed).
+- **Codegen details:** global counters (`let v = g; g += c`), loads into the indexed variable,
+  direct call arguments, `movsd` spills, in-place compares, `v = C` flags, constant-bound search loops
+  as nested ifs (fasta −25% instructions), division with register divisors and an out-of-line
+  64-bit path (gcdsum −4%), deeper inlining of tiny recursive bodies (binarytrees 1.62x → 1.26x gcc).
 - **Nested unrolling:** a loop start left as constant arithmetic by an unrolled outer loop
   (`j = 0 + 1`) is folded, so the inner loop unrolls too (nbody 308 → 253 ms, rust 210).
 - **Rotates and in-place updates:** `(x << c) | (x >> (64 - c))` on 64-bit values is one `rol`;

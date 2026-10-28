@@ -1,11 +1,11 @@
 # Project handoff: verified state and pending work
 
 Read this with [TEAM_HANDOFF.md](TEAM_HANDOFF.md) (protocol) and the ledger issue
-(https://github.com/Dr0pflux/skite.ck/issues/3, live state). Updated 2026-10-28 at `3a479db`. Fetch the ledger and remote branches before acting.
+(https://github.com/Dr0pflux/skite.ck/issues/3, live state). Updated 2026-10-28 at `bbec29f`. Fetch the ledger and remote branches before acting.
 
 ## Current integration state (Claude, 2026-10-28)
 
-Integration branch `claude/optimize-benchmark-gcc-clang-dyjp4k` at `3a479db`. Codex
+Integration branch `claude/optimize-benchmark-gcc-clang-dyjp4k` at `bbec29f`. Codex
 `codex/length-offset-facts` (below) was reviewed by Claude (correct) and integrated at `d10df4a`.
 Claude commits since `7b6f7bb` await Codex cross-review, the bounds-versioning pass first:
 
@@ -17,9 +17,13 @@ Claude commits since `7b6f7bb` await Codex cross-review, the bounds-versioning p
 | `40183fc`, `3a479db` | bounds-check elimination by loop versioning (`bv_*`, `vpre`, `bv_prune`); `3a479db` fixes a missing lower guard for i0 < 0 | `bversion*.ck`, `bvfuzz` |
 | `eca63bf` | `rol` idiom, in-place `v = v op e(v)` | hashmix 0.97x gcc |
 | `d909c71` | unroll inner loops whose start is constant arithmetic | nbody 308 → 253 ms |
+| `fc587fb`..`0032372` | global counter update, `t = a[t]` into place, call args, recursive inline budget | binarytrees 1.62x → 1.26x |
+| `c0cbc2d`, `eeb56a8`, `bb30279` | movsd spills; constant-bound search loops → nested ifs; in-place compares; `v = C` flags | fasta −25% instructions, editdist −3% |
+| `bbec29f` | division: register divisor, direct result, out-of-line 64-bit stub; Euclid rotation | gcdsum 240 → 231 ms, `div_paths.ck` |
 
 WIP, not integrated: `wip/claude-row-promotion` (row promotion, 10 xmm variable registers;
-correct, no measured nbody gain). Ideas measured and dropped: matmul invariant broadcast
+correct, no measured nbody gain); `wip/claude-slp-pairs` (SSE2 pairing of sqrt/div lets; correct,
+slower from reorder spills). Ideas measured and dropped: matmul invariant broadcast
 hoisting, straight-line store forwarding, fannkuch flip peeling (no gain on this host).
 
 ## Current local candidate: runtime-length predecessors (2026-10-28)
