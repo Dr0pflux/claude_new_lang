@@ -106,6 +106,65 @@ class Gen:
         if r.random() < 0.15: c = f"!{c}"
         return c
 
+def text_program(r):
+    """byte-lane loops: u8/i8 arrays, comparisons with in-range constants, counts, byte sums"""
+    na = r.randrange(1, 4)
+    arrs = [(f"a{j}", r.choice(["u8", "u8", "i8"])) for j in range(na)]
+    stored = arrs[:r.randrange(1, na + 1)]
+    def load():
+        nm, t = r.choice(arrs)
+        c = r.random()
+        off = "" if c < 0.7 else f" + {r.choice([1, 2, 3])}"
+        return f"{nm}[i{off}]", t
+    def const(t):
+        return str(r.randrange(0, 256) if t == "u8" else r.randrange(-128, 128))
+    def bval(d=0):
+        if d > 1 or r.random() < 0.4:
+            x, t = load(); return x
+        op = r.choice(["+", "-", "&", "|", "^"])
+        x, t = load()
+        return f"({x} {op} {bval(d + 1) if r.random() < 0.5 else const(t)})"
+    def cond():
+        x, t = load()
+        c = f"({x} {r.choice(['==', '!=', '<', '<=', '>', '>='])} {const(t)})"
+        if r.random() < 0.3:
+            y, u = load()
+            if u == t: c = f"({c} {r.choice(['&&', '||'])} ({y} {r.choice(['==', '<', '>='])} {const(u)}))"
+        if r.random() < 0.15: c = f"!{c}"
+        return c
+    def stmt(d=0):
+        c = r.random()
+        if c < 0.3:
+            nm, t = r.choice(stored)
+            if r.random() < 0.3: return f"{nm}[i] {r.choice(['+', '-', '^', '|', '&'])}= {bval()};"
+            return f"{nm}[i] = ({bval()}) as {t};"
+        if c < 0.5: return f"k3 {r.choice(['+', '-'])}= {r.choice([1, 2, 7])};"
+        if c < 0.65:
+            u = [a for a in arrs if a[1] == "u8"]
+            if u: return f"s0 += {r.choice(u)[0]}[i];"
+            return "k3 += 1;"
+        if d < 2:
+            body = " ".join(stmt(d + 1) for _ in range(r.randrange(1, 3)))
+            if r.random() < 0.4: return f"if {cond()} {{ {body} }} else {{ {stmt(d + 1)} }}"
+            return f"if {cond()} {{ {body} }}"
+        return "k3 += 1;"
+    n = LEN * 4
+    L = [f"fn main() {{", f"  let n = {n} - 4 + argc() * {r.choice([1, 3, 37])};", "  let mut k3 = 0; let mut s0 = 0;"]
+    for nm, t in arrs:
+        L.append(f"  let {nm} = alloc<{t}>({n + 200});")
+        L.append(f"  let mut j{nm} = 0; while j{nm} < {n + 200} {{ {nm}[j{nm}] = ((j{nm} * 1103515245 + 12345 + j{nm} * j{nm} * 97) % 1000003) as {t}; j{nm} += 1; }}")
+    s0 = r.choice([0, 0, 1, 5])
+    end = r.choice(["n", "n", "n - 7", "n + 300"])   # n + 300 runs past the arrays: traps
+    L.append(f"  let mut i = {s0};")
+    L.append(f"  while i < {end} {{")
+    for _ in range(r.randrange(1, 4)): L.append("    " + stmt())
+    L.append("    i += 1;\n  }")
+    L.append("  print(k3); print(s0);")
+    for nm, t in arrs:
+        L.append(f"  let mut h{nm} = 0; let mut q{nm} = 0; while q{nm} < {n + 200} {{ h{nm} = h{nm} * 31 + {nm}[q{nm}]; q{nm} += 1; }} print(h{nm});")
+    L.append("}")
+    return "\n".join(L) + "\n"
+
 def program(r, fn_mode):
     g = Gen(r)
     na = r.randrange(2, 5)
@@ -178,10 +237,10 @@ def main():
     seed = int(sys.argv[2]) if len(sys.argv) > 2 else 1
     r = random.Random(seed)
     d = tempfile.mkdtemp()
-    vec = 0; traps = 0; skipped = 0
+    vec = 0; traps = 0; skipped = 0; byt = 0
     try:
         for c in range(cases):
-            src = program(r, r.random() < 0.4)
+            src = text_program(r) if r.random() < 0.3 else program(r, r.random() < 0.4)
             f = os.path.join(d, "p.ck"); open(f, "w").write(src)
             res = []
             for flag in ([], ["--scalar"]):
@@ -192,7 +251,8 @@ def main():
                         res = None; break   # generator produced an ill-typed program: skip it
                     print("COMPILE FAIL", flag, p.stdout, p.stderr); print(src); sys.exit(1)
                 if not flag:
-                    if "(0 element-wise)" not in p.stdout: vec += 1
+                    if "(0 element-wise," not in p.stdout: vec += 1
+                    if " 0 byte-lane" not in p.stdout: byt += 1
                 res.append(run(exe))
             if res is None: skipped += 1; continue
             if res[0] != res[1]:
@@ -203,7 +263,7 @@ def main():
             if res[0][0] != 0: traps += 1
     finally:
         shutil.rmtree(d, ignore_errors=True)
-    print(f"PASS {cases - skipped} programs ({vec} with element-wise vector loops, {traps} trapped, {skipped} ill-typed skipped), seed {seed}")
+    print(f"PASS {cases - skipped} programs ({vec} with element-wise vector loops, {byt} byte-lane, {traps} trapped, {skipped} ill-typed skipped), seed {seed}")
     if skipped * 4 > cases: print("too many ill-typed programs"); sys.exit(1)
 
 main()

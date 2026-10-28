@@ -5294,6 +5294,7 @@ fn plan_stream(s: i64, body: i64, inc: i64, iv: i64, nb: i64) {
   if nd[inc].next >= 0 || nb == 0 { return; }
   let mut c = nd[body].a; let mut i = 0;
   while i < nb { ivcopies(body, c, iv); c = nd[c].next; i += 1; }
+  if bplan(s, body, iv, nb) { return; }
   pre_classify(body, nb, iv);
   VK_LOOPS = 0; VK_DEPTH = 0; VK_TMP = 0; VK_NG = 0; VK_SNO = 0;
   let t0 = vtag;
@@ -5328,11 +5329,284 @@ fn plan_stream(s: i64, body: i64, inc: i64, iv: i64, nb: i64) {
     vv += 1;
   }
 }
+// ---- byte lanes: loops over u8/i8 arrays only run 64 iterations per zmm register
+// Values are tracked as bytes. A value is "exact" when the 64-bit value the program computes fits
+// the byte (class 1: unsigned 0..255, 2: signed -128..127, 3: both, 0: only its low byte is known).
+// Comparisons need exact operands of one signedness; stores and wrapping + - & | ^ need only low bytes.
+let vp_byte = alloc<bool>(4096);
+let bclass = alloc<i64>(65536);      // byte let temporaries: class
+let vbyte = alloc<i64>(65536);       // == tag: byte let temporary
+let vcnt = alloc<i64>(65536);        // == tag: count reduction (s += k / s -= k with constant k)
+fn bx(e: i64, iv: i64) -> i64 {      // class, or -1 when e is not a byte-lane value
+  let k = nd[e].k;
+  if k == N_CONST {
+    let v = nd[e].v as i64;
+    if v >= 0 && v <= 127 { return 3; } if v >= 128 && v <= 255 { return 1; } if v >= -128 && v < 0 { return 2; }
+    return 0;
+  }
+  if k == N_LOAD {
+    if nd[e].op > 0 || vars[nd[e].var].arr != 1 { return -1; }
+    let x = nd[e].a;
+    if !(nd[x].k == N_VAR && nd[x].var == iv) && !(nd[x].k == N_BIN && nd[x].op == O_ADD && nd[nd[x].a].k == N_VAR && nd[nd[x].a].var == iv && is_const(nd[x].b)) { return -1; }
+    if nd[e].chk != 0 { let mut c = 0; if nd[x].k == N_BIN { c = nd[nd[x].b].v as i64; } if !add_guard(nd[e].var, c) { return -1; } }
+    let et = vars[nd[e].var].et;
+    if et == TY_U8 { return 1; } if et == TY_I8 { return 2; } return -1;
+  }
+  if k == N_VAR { if vbyte[nd[e].var] == vtag { return bclass[nd[e].var]; } return -1; }
+  if k == N_UN {
+    let a = bx(nd[e].a, iv); if a < 0 { return -1; }
+    let op = nd[e].op;
+    if op == U_ZX8 { return 1; } if op == U_SX8 { return 2; }
+    if op >= U_SX8 && op <= U_ZX32 { if a == 0 { return 0; } if op == U_ZX16 || op == U_ZX32 { if a == 2 { return 0; } } return a; }
+    if op == U_NOT || op == U_NEG { return 0; }
+    return -1;
+  }
+  if k == N_BIN {
+    let op = nd[e].op;
+    if !(op == O_ADD || op == O_SUB || op == O_AND || op == O_OR || op == O_XOR) { return -1; }
+    let a = bx(nd[e].a, iv); let b = bx(nd[e].b, iv);
+    if a < 0 || b < 0 { return -1; }
+    if op == O_ADD || op == O_SUB { return 0; }
+    if (a == 1 || a == 3) && (b == 1 || b == 3) { if a == 3 && b == 3 { return 3; } return 1; }
+    if (a == 2 || a == 3) && (b == 2 || b == 3) { if a == 3 && b == 3 { return 3; } return 2; }
+    return 0;
+  }
+  return -1;
+}
+fn bxc(e: i64) -> i64 {   // class of an accepted byte-lane value (codegen; no checks)
+  let k = nd[e].k;
+  if k == N_CONST { let v = nd[e].v as i64; if v >= 0 && v <= 127 { return 3; } if v >= 128 && v <= 255 { return 1; } if v >= -128 && v < 0 { return 2; } return 0; }
+  if k == N_LOAD { if vars[nd[e].var].et == TY_U8 { return 1; } return 2; }
+  if k == N_VAR { return bclass[nd[e].var]; }
+  if k == N_UN {
+    let a = bxc(nd[e].a); let op = nd[e].op;
+    if op == U_ZX8 { return 1; } if op == U_SX8 { return 2; }
+    if op >= U_SX8 && op <= U_ZX32 { if a == 0 { return 0; } if op == U_ZX16 || op == U_ZX32 { if a == 2 { return 0; } } return a; }
+    return 0;
+  }
+  let op = nd[e].op; let a = bxc(nd[e].a); let b = bxc(nd[e].b);
+  if op == O_ADD || op == O_SUB { return 0; }
+  if (a == 1 || a == 3) && (b == 1 || b == 3) { if a == 3 && b == 3 { return 3; } return 1; }
+  if (a == 2 || a == 3) && (b == 2 || b == 3) { if a == 3 && b == 3 { return 3; } return 2; }
+  return 0;
+}
+fn bcond_ok(e: i64, dst: i64, pm: i64, iv: i64) -> bool {
+  if dst + 1 > VK_DEPTH { VK_DEPTH = dst + 1; }
+  if !refs_v(e) { return false; }
+  let k = nd[e].k;
+  if k == N_UN && nd[e].op == U_LNOT { return bcond_ok(nd[e].a, dst, pm, iv); }
+  if k != N_BIN { return false; }
+  let op = nd[e].op;
+  if op == O_LAND || op == O_LOR { let t = mx(dst, pm) + 1; return bcond_ok(nd[e].a, t, pm, iv) && bcond_ok(nd[e].b, t + 1, pm, iv) && bcond_ok(nd[e].b, dst, dst, iv); }
+  if !(op == O_EQ || op == O_NE || op == O_LT || op == O_LE || op == O_GT || op == O_GE) { return false; }
+  let a = bx(nd[e].a, iv); let b = bx(nd[e].b, iv);
+  return (a == 1 || a == 3) && (b == 1 || b == 3) || (a == 2 || a == 3) && (b == 2 || b == 3);
+}
+fn bst_ok(s: i64, iv: i64, lvl: i64) -> bool {
+  let k = nd[s].k;
+  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { if !bst_ok(c, iv, lvl) { return false; } c = nd[c].next; } return true; }
+  if k == S_IF {
+    let cnd = nd[s].a;
+    VK_SNO += 1; vscan_loads(cnd, iv);
+    let nl = lvl + 1;
+    if !bcond_ok(cnd, nl, lvl, iv) { return false; }
+    return bst_ok(nd[s].b, iv, nl) && (nd[s].c < 0 || bst_ok(nd[s].c, iv, nl));
+  }
+  if k == S_STORE {
+    let a = nd[s].var;
+    if nd[s].c >= 0 || vars[a].arr != 1 || vars[a].ro != 0 || (vars[a].et != TY_U8 && vars[a].et != TY_I8) { return false; }
+    let x = nd[s].a;
+    if nd[x].k != N_VAR || nd[x].var != iv { return false; }
+    if nd[s].op >= 0 && !is_alu_op(nd[s].op) { return false; }
+    if nd[s].chk != 0 && !add_guard(a, 0) { return false; }
+    VK_SNO += 1;
+    vnote_w(a);
+    if vast[arr_leader[a]] != vtag { vst_at[arr_leader[a]] = VK_SNO; }
+    vast[arr_leader[a]] = vtag;
+    vscan_loads(nd[s].b, iv);
+    return bx(nd[s].b, iv) >= 0;
+  }
+  if k == S_ASSIGN && vbyte[nd[s].var] != vtag {   // s += k (count) or s += byte (sum), s -= ...
+    let v = nd[s].var; let e = nd[s].a;
+    if (vars[v].ty != TY_I64 && vars[v].ty != TY_U64) || vars[v].xr >= 0 || v == iv || vars[v].glob != 0 { return false; }
+    if nd[e].k != N_BIN || (nd[e].op != O_ADD && nd[e].op != O_SUB) || nd[nd[e].a].k != N_VAR || nd[nd[e].a].var != v { return false; }
+    if vred[v] == vtag || vcnt[v] == vtag || refs(nd[e].b, v) { return false; }
+    VK_SNO += 1; vscan_loads(nd[e].b, iv);
+    let b = nd[e].b;
+    if is_const(b) { vcnt[v] = vtag; return true; }
+    let c = bx(b, iv);
+    if c != 1 && c != 3 { return false; }
+    vred[v] = vtag; vredop[v] = nd[e].op; vmark[v] = vtag;
+    return true;
+  }
+  if k == S_LET {
+    let v = nd[s].var;
+    VK_SNO += 1; vscan_loads(nd[s].a, iv);
+    let c = bx(nd[s].a, iv);
+    if c < 0 || !ty_int(vars[v].ty) { return false; }
+    vbyte[v] = vtag; bclass[v] = c; vdecl[v] = vtag;
+    return true;
+  }
+  return false;
+}
+fn bplan(s: i64, body: i64, iv: i64, nb: i64) -> bool {
+  pre_classify(body, nb, iv);
+  VK_LOOPS = 0; VK_DEPTH = 0; VK_TMP = 0; VK_NG = 0; VK_SNO = 0;
+  let t0 = vtag;
+  let mut c = nd[body].a; let mut i = 0;
+  while i < nb { if !bst_ok(c, iv, -1) { return false; } c = nd[c].next; i += 1; }
+  let mut nvar = 0; let mut nst = 0; let mut nred = 0;
+  let mut vv = 0;
+  while vv < nv {
+    if vast[vv] == t0 { nst += 1; if vldx[vv] == t0 || vlwx[vv] == t0 || (vldp[vv] == t0 && vldp_at[vv] > vst_at[vv]) { return false; } }
+    if vred[vv] == t0 || vcnt[vv] == t0 { if count_assign(body, vv) != 1 || st_reads(body, vv) != 1 { return false; } nred += 1; }
+    if vbyte[vv] == t0 && vars[vv].reads != 0 { nvar += 1; }
+    if vred[vv] == t0 { nvar += 1; }
+    vv += 1;
+  }
+  if nst + nred == 0 || nvar + 4 > 16 || VK_DEPTH > 6 { return false; }
+  if nvlist + nvar > 65536 || nvrl + nred > 65536 { return false; }
+  if !plan_extra(true, t0) { return false; }
+  let p = nplans; nplans += 1;
+  vplan[s] = p + 1; vp_byte[p] = true;
+  vp_loop[p] = s; vp_iv[p] = iv; vp_npre[p] = nb; vp_u[p] = 1; vp_nv[p] = nvar;
+  vp_need0[p] = nvneed; vp_nneed[p] = 0; vp_v0[p] = nvlist; vp_scr[p] = vec_bytes;
+  let mut g = 0;
+  vv = 0;
+  while vv < nv {
+    if (vbyte[vv] == t0 && vars[vv].reads != 0) || vred[vv] == t0 { vp_vlist[nvlist] = vv; vp_vreg[nvlist] = 16 + g; nvlist += 1; g += 1; }
+    if vred[vv] == t0 { vrl_var[nvrl] = vv; vrl_op[nvrl] = vredop[vv]; nvrl += 1; vp_nr[p] += 1; }
+    vv += 1;
+  }
+  return true;
+}
+// byte-lane code generation (VU = 1, masks are 64 bits wide)
+fn kand64(d: i64, a: i64, b: i64) { vex3(1, 0, 1, 1, 65, d, a, b); }
+fn kandn64(d: i64, a: i64, b: i64) { vex3(1, 0, 1, 1, 66, d, a, b); }
+fn kor64(d: i64, a: i64, b: i64) { vex3(1, 0, 1, 1, 69, d, a, b); }
+fn ktest64(a: i64) { vex3(1, 0, 1, 0, 152, a, 0, a); }     // kortestq a, a
+fn bbcast(d: i64, c: u64) { VM_TAIL = 0; vm_pool(cp_u64(c)); evx(2, 1, 0, 2, 120, d, 0, 1, 0, 0, false, false); }   // vpbroadcastb
+fn bval(e: i64, d: i64, t: i64) {    // byte value of e into zmm d (all lanes), temporaries vr(t)..
+  let k = nd[e].k;
+  if k == N_CONST { bbcast(d, nd[e].v & 255); return; }
+  if k == N_VAR { let r = VREG[nd[e].var]; if r != d { evx(1, 1, 1, 2, 111, d, 0, 0, r, 0, false, false); } return; }
+  if k == N_LOAD {
+    let a = nd[e].var;
+    gen(nd[e].a, VRG, VN); let ri = RGS[VRG];
+    let b = base_reg(a);
+    vm_mem(b, ri, 0, 0); evx(1, 2, 1, 2, 111, d, 0, 1, 0, 0, false, false);   // vmovdqu64
+    return;
+  }
+  if k == N_UN {
+    let op = nd[e].op;
+    bval(nd[e].a, d, t);
+    if op == U_NOT { evx(3, 1, 1, 2, 37, d, d, 0, d, 0, false, false); byte(51); return; }   // vpternlogq ~
+    if op == U_NEG { let z = vr(t); evx(1, 1, 1, 2, 239, z, z, 0, z, 0, false, false); evx(1, 1, 0, 2, 248, d, z, 0, d, 0, false, false); }   // 0 - x
+    return;   // narrowing / widening casts: the low byte is unchanged
+  }
+  let op = nd[e].op;
+  bval(nd[e].a, d, t);
+  let b = nd[e].b;
+  let mut r = 0;
+  if nd[b].k == N_VAR && vbyte[nd[b].var] == vtag && vars[nd[b].var].reads != 0 { r = VREG[nd[b].var]; }
+  else { r = vr(t); bval(b, r, t + 1); }
+  if op == O_ADD { evx(1, 1, 0, 2, 252, d, d, 0, r, 0, false, false); }        // vpaddb
+  else if op == O_SUB { evx(1, 1, 0, 2, 248, d, d, 0, r, 0, false, false); }   // vpsubb
+  else { evx(1, 1, 1, 2, viop(op), d, d, 0, r, 0, false, false); }
+}
+fn bcmp_pred(op: i64) -> i64 { if op == O_EQ { return 0; } if op == O_LT { return 1; } if op == O_LE { return 2; } if op == O_NE { return 4; } if op == O_GE { return 5; } return 6; }
+fn bcond(e: i64, dst: i64, pm: i64, neg: bool) {
+  let k = nd[e].k;
+  if k == N_UN { bcond(nd[e].a, dst, pm, !neg); return; }
+  let op = nd[e].op;
+  if (op == O_LAND && !neg) || (op == O_LOR && neg) { bcond(nd[e].a, dst, pm, neg); bcond(nd[e].b, dst, dst, neg); return; }
+  if op == O_LAND || op == O_LOR {
+    let t = mx(dst, pm) + 1;
+    bcond(nd[e].a, t, pm, neg); bcond(nd[e].b, t + 1, pm, neg);
+    kor64(kreg(dst, 0), kreg(t, 0), kreg(t + 1, 0));
+    return;
+  }
+  let ca = bxc(nd[e].a); let cb = bxc(nd[e].b);
+  let uns = (ca == 1 || ca == 3) && (cb == 1 || cb == 3);
+  let A = vr(0); let B = vr(1);
+  bval(nd[e].a, A, 2); bval(nd[e].b, B, 2);
+  let mut pred = bcmp_pred(op); if neg { pred = pred ^ 4; }
+  let mut opc = 63; if uns { opc = 62; }
+  evx(3, 1, 0, 2, opc, kreg(dst, 0), A, 0, B, kpar(pm, 0), false, false); byte(pred);   // vpcmp[u]b
+}
+fn bgen(p: i64, s: i64, lvl: i64) {
+  let k = nd[s].k;
+  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { bgen(p, c, lvl); c = nd[c].next; } return; }
+  let sv_rg = rgs_top; let sv_pos = cur_pos;
+  vtemps(s); rgs_top += 12; cur_pos = nd[s].pos;
+  if k == S_IF {
+    let nl = lvl + 1;
+    bcond(nd[s].a, nl, lvl, false);
+    rgs_top = sv_rg; cur_pos = sv_pos;
+    ktest64(kreg(nl, 0)); let sk = jcc(CC_E);
+    bgen(p, nd[s].b, nl);
+    rel32(sk, clen);
+    if nd[s].c >= 0 {
+      kandn64(kreg(nl, 0), kreg(nl, 0), kpar(lvl, 0));
+      ktest64(kreg(nl, 0)); let sk2 = jcc(CC_E);
+      bgen(p, nd[s].c, nl);
+      rel32(sk2, clen);
+    }
+    return;
+  }
+  if k == S_STORE {
+    let a = nd[s].var;
+    let D = vr(0);
+    bval(nd[s].b, D, 2);
+    gen(nd[s].a, VRG, VN); let ri = RGS[VRG];
+    let b = base_reg(a);
+    if nd[s].op >= 0 {
+      vm_mem(b, ri, 0, 0); evx(1, 2, 1, 2, 111, vr(1), 0, 1, 0, 0, false, false);
+      let op = nd[s].op;
+      if op == O_ADD { evx(1, 1, 0, 2, 252, D, vr(1), 0, D, 0, false, false); }
+      else if op == O_SUB { evx(1, 1, 0, 2, 248, D, vr(1), 0, D, 0, false, false); }
+      else { evx(1, 1, 1, 2, viop(op), D, vr(1), 0, D, 0, false, false); }
+    }
+    vm_mem(b, ri, 0, 0);
+    if lvl < 0 { evx(1, 2, 1, 2, 127, D, 0, 1, 0, 0, false, false); }           // vmovdqu64
+    else { evx(1, 3, 0, 2, 127, D, 0, 1, 0, kreg(lvl, 0), false, false); }      // vmovdqu8 {k}
+    rgs_top = sv_rg; cur_pos = sv_pos;
+    return;
+  }
+  if k == S_ASSIGN && vbyte[nd[s].var] != vtag {
+    let v = nd[s].var; let e = nd[s].a; let b = nd[e].b;
+    let mut dig = A_ADD; if nd[e].op == O_SUB { dig = A_SUB; }
+    if is_const(b) {   // count: active lanes x k
+      if lvl < 0 { mov_ri(RAX, 64 * nd[b].v); }
+      else { vex3(1, 3, 1, 0, 147, RAX, 0, kreg(lvl, 0)); emh("f3480fb8c0"); if nd[b].v != 1 { imul_r(RAX, K_IMM, 0, nd[b].v); } }   // kmovq, popcnt
+      loc(v); alu(dig, OK, ORR, K_REG, RAX, 0);
+    } else {           // sum of bytes: vpsadbw against zero, into the 64-bit accumulator lanes
+      let T = vr(0); let Z = vr(1);
+      bval(b, T, 2);
+      if lvl >= 0 { evx(1, 3, 0, 2, 111, T, 0, 0, T, kreg(lvl, 0), true, false); }   // vmovdqu8 T{k}{z}
+      evx(1, 1, 1, 2, 239, Z, Z, 0, Z, 0, false, false);
+      evx(1, 1, 0, 2, 246, T, T, 0, Z, 0, false, false);                         // vpsadbw
+      evx(1, 1, 1, 2, 212, VREG[v], VREG[v], 0, T, 0, false, false);             // vpaddq
+    }
+    rgs_top = sv_rg; cur_pos = sv_pos;
+    return;
+  }
+  if k == S_LET {
+    let v = nd[s].var;
+    if vars[v].reads != 0 {
+      if lvl < 0 { bval(nd[s].a, VREG[v], 0); }
+      else { let T = vr(0); bval(nd[s].a, T, 1); evx(1, 3, 0, 2, 111, VREG[v], 0, 0, T, kreg(lvl, 0), false, false); }   // merge into active lanes
+    }
+    rgs_top = sv_rg; cur_pos = sv_pos;
+    return;
+  }
+  fail("internal: statement in a byte-lane loop");
+}
 // make plan p's varying set current (marks and registers)
 fn plan_enter(p: i64) {
   vtag += 1;
   let mut i = 0;
-  while i < vp_nv[p] { let v = vp_vlist[vp_v0[p] + i]; vmark[v] = vtag; VREG[v] = vp_vreg[vp_v0[p] + i]; i += 1; }
+  while i < vp_nv[p] { let v = vp_vlist[vp_v0[p] + i]; vmark[v] = vtag; VREG[v] = vp_vreg[vp_v0[p] + i]; if vp_byte[p] && !red_of(p, v) { vbyte[v] = vtag; } i += 1; }
 }
 fn plan_all() {
   let mut s = 0;
@@ -5343,7 +5617,7 @@ let mut VP: i64 = 0;
 let mut VU: i64 = 1;
 let mut VRG: i64 = 0;       // scalar temporaries of the statement being generated
 let mut VN: i64 = 0;
-let HAS_AVX = 268435496;      // BSS byte: AVX-512F+DQ usable (set at start)
+let HAS_AVX = 268435496;      // BSS byte: AVX-512F+DQ+BW+VL usable (set at start)
 fn vec_base() -> i64 { return GLOB_BASE + ((glob_bytes + 63) & ~63); }
 fn vr(t: i64) -> i64 { return 16 + (vp_nv[VP] + t) * VU; }
 fn kreg(lvl: i64, h: i64) -> i64 { if lvl < 0 { return 0; } return 1 + lvl * VU + h; }
@@ -5791,7 +6065,9 @@ fn lane_load(dst: i64, x: bool, abs: i64) {
 fn gen_vloop(s: i64, p: i64) -> i64 {
   VP = p; VU = vp_u[p];
   plan_enter(p);
-  let L = 8 * VU;
+  let mut L = 8 * VU;
+  let byt = vp_byte[p];
+  if byt { L = 64; }
   let iv = vp_iv[p];
   let mut to_scalar = -1;
   emh("803c25"); u32_(HAS_AVX); byte(0); to_scalar = pl_add(to_scalar, jcc(CC_E));
@@ -5807,6 +6083,16 @@ fn gen_vloop(s: i64, p: i64) -> i64 {
   alui(A_ADD, RAX, (L - 1) as u64); ex = pl_add(ex, jcc(0));
   alu(A_CMP, K_REG, RAX, K_REG, RCX, 0);
   if nd[cnd].op == O_LT { ex = pl_add(ex, jcc(CC_GE)); } else { ex = pl_add(ex, jcc(CC_G)); }
+  if byt {
+    vex3(1, 0, 1, 1, 70, 7, 7, 7);   // kxnorq k7, k7, k7
+    let body = nd[s].b; let mut c = nd[body].a; let mut i = 0;
+    while i < vp_npre[p] { bgen(p, c, -1); c = nd[c].next; i += 1; }
+    loc(iv); alu(A_ADD, OK, ORR, K_IMM, 0, L as u64);
+    rel32(jmp(), vtop);
+    pl_patch(ex, clen);
+    vred_fini(p);
+    return to_scalar;
+  }
   vex3(1, 0, 0, 1, 70, 7, 7, 7);   // kxnorw k7, k7, k7
   // lanes of the induction variable: i + (0, 1, ..)
   loc(iv); load(RAX, OK, ORR, OI);
@@ -6452,10 +6738,10 @@ fn generate() {
   while i < nn { if nd[i].k == S_PAR { use_bss = true; } i += 1; }
   if nplans > 0 {
     use_bss = true;
-    // AVX-512F+DQ usable? (cpuid.1:ecx.OSXSAVE, xgetbv: opmask/zmm state enabled, cpuid.7:ebx bits 16, 17)
+    // AVX-512 F, DQ, BW and VL usable? (cpuid.1:ecx.OSXSAVE, xgetbv: opmask/zmm state, cpuid.7:ebx bits 16, 17, 30, 31)
     emh("53"); emh("b80100000031c90fa2"); emh("0fbae11b"); let n1 = j8(115);
     emh("31c90f01d0"); emh("25e6000000"); emh("3de6000000"); let n2 = j8(117);
-    emh("b80700000031c90fa2"); emh("81e300000300"); emh("81fb00000300"); let n3 = j8(117);
+    emh("b80700000031c90fa2"); emh("81e3000003c0"); emh("81fb000003c0"); let n3 = j8(117);
     emh("c60425"); u32_(HAS_AVX); byte(1);
     p8(n1, clen); p8(n2, clen); p8(n3, clen);
     emh("5b");
@@ -6652,7 +6938,7 @@ fn write_map() {
 fn report(total: i64, out: [u8]) {
   write("skite: wrote "); write(out); write(" ("); putnum(total); write(" bytes, "); putnum(clen); write(" machine-code bytes, ");
   putnum(nv - 2); write(" vars, "); putnum(spilled); write(" spills, "); putnum(peak_active); write(" peak registers, "); putnum(xpeak); write(" xmm, ");
-  putnum(nelided); putc('/'); putnum(nchecks); write(" bounds checks elided, "); putnum(nsr); write(" modulo reduced, "); putnum(nplans); write(" loops vectorized ("); let mut ns_ = 0; let mut q_ = 0; while q_ < nplans { if vp_stream[q_] { ns_ += 1; } q_ += 1; } putnum(ns_); write(" element-wise), ");
+  putnum(nelided); putc('/'); putnum(nchecks); write(" bounds checks elided, "); putnum(nsr); write(" modulo reduced, "); putnum(nplans); write(" loops vectorized ("); let mut ns_ = 0; let mut q_ = 0; while q_ < nplans { if vp_stream[q_] { ns_ += 1; } q_ += 1; } putnum(ns_); write(" element-wise, "); ns_ = 0; q_ = 0; while q_ < nplans { if vp_byte[q_] { ns_ += 1; } q_ += 1; } putnum(ns_); write(" byte-lane), ");
   putnum(ninlined + ninl_stmt); write(" calls inlined, "); putnum(nunrolled); write(" loops unrolled)\n");
 }
 fn main() {

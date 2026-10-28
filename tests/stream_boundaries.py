@@ -57,7 +57,7 @@ with tempfile.TemporaryDirectory(prefix="stream-boundaries-") as td:
             if cp.returncode:
                 raise RuntimeError(f"compile failed {op} {flag}:\n{cp.stdout}\n{cp.stderr}")
             if suffix == "vec":
-                m = re.search(r"(\d+) loops vectorized \((\d+) element-wise\)", cp.stdout)
+                m = re.search(r"(\d+) loops vectorized \((\d+) element-wise", cp.stdout)
                 if not m or int(m.group(2)) < 1:
                     raise AssertionError(f"reduction loop did not emit an element-wise plan for {op}: {cp.stdout}")
             exes.append(exe)
