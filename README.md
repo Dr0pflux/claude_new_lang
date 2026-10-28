@@ -45,7 +45,7 @@ Arithmetic and text kernels (`bench/kernels`, `run.py 3`):
 | textscan | **0.40** | divmod | 1.00 | matmul | 1.26 |
 | wordcount | **0.64** | polyeval | 1.03 | prefixsum | 1.28 |
 | collatz | **0.70** | nqueens | 1.08 | ngramhash | 1.32 |
-| caseconv | **0.82** | hashmix | 1.08 | intsort | 1.51 |
+| caseconv | **0.82** | hashmix | 1.08 | intsort | 1.18 |
 | | | gcdsum | 1.18 | editdist | 1.72 |
 
 The compiler fixes rare decimal-to-`f32` double rounding (issue #14)
@@ -73,7 +73,9 @@ What makes skite fast (all bit-exact: strict IEEE floats, wrapping integers, tra
 - **Range analysis** removes bounds checks it can prove, including checks dominated by an earlier one.
 - **Calls**: bounded inlining (including recursive), callee-saved registers, tail recursion with
   accumulators turned into loops, register coalescing.
-- **If-conversion**: small integer `if`/`else` bodies in loops become branch-free `cmov` selects.
+- **If-conversion**: small integer `if`/`else` bodies in loops become branch-free `cmov` selects;
+  `if C { a[k] = X; .. } else { a[k] = Y; .. }` (merges) becomes one store of a selected value,
+  and `v += 1` under the predicate adds the `setcc` result.
 - **Loop-carried stores**: `a[i] += a[i - 1]` (prefix sums, DP rows) keeps the previous value in a register.
 - Floats in XMM registers, magic-number division by constants, fast 32-bit division when
   operands fit, periodic-index strength reduction.

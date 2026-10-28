@@ -3730,6 +3730,89 @@ fn dm_walk(s: i64) {
   if k == S_WHILE { dm_walk(nd[s].b); return; }
   dm_stmt(s);
 }
+// ---- select stores: in a loop, `if C { a[k] = X; S1 } else { a[k] = Y; S2 }` (S1, S2 a few
+// if-convertible assignments that leave k alone) becomes `let u = X; let t = Y; if C' { t = u; S1 }
+// else { S2 } a[k] = t`, which if-conversion makes branch-free (merges). X and Y are pure or are
+// loads C itself performs unconditionally; C may only trap by bounds checks, so every trap is the
+// same SIGILL whichever load runs first, and C' reads u/t in place of those loads.
+fn ss_cok(e: i64) -> bool {
+  if e < 0 { return true; }
+  let k = nd[e].k;
+  if k == N_VAR || k == N_CONST { return true; }
+  if !ty_int(nd[e].ty) { return false; }
+  if k == N_LOAD { return ss_cok(nd[e].a); }
+  if k == N_UN { return ss_cok(nd[e].a); }
+  if k != N_BIN || nd[e].op == O_LAND || nd[e].op == O_LOR || nd[e].op == O_DIV || nd[e].op == O_MOD || nd[e].op == O_DIVU || nd[e].op == O_MODU { return false; }
+  return ss_cok(nd[e].a) && ss_cok(nd[e].b);
+}
+fn ss_in(e: i64, x: i64) -> bool {
+  if e < 0 { return false; }
+  if expr_same(e, x) { return true; }
+  let k = nd[e].k;
+  if k == N_VAR || k == N_CONST { return false; }
+  return ss_in(nd[e].a, x) || ss_in(nd[e].b, x);
+}
+fn ss_sub(e: i64, x: i64, v: i64) -> i64 {   // e with subtrees equal to x replaced by v
+  if e < 0 { return e; }
+  if expr_same(e, x) { return mk_var(v); }
+  let k = nd[e].k;
+  if k == N_VAR || k == N_CONST { return e; }
+  nd[e].a = ss_sub(nd[e].a, x, v); nd[e].b = ss_sub(nd[e].b, x, v);
+  return e;
+}
+fn ss_store(b: i64) -> i64 {   // the leading plain store of branch b, or -1
+  if b < 0 || nd[b].k != S_BLOCK { return -1; }
+  let st = nd[b].a;
+  if st < 0 || nd[st].k != S_STORE || nd[st].op >= 0 || nd[st].c >= 0 || !ty_int(vars[nd[st].var].et) { return -1; }
+  return st;
+}
+fn ss_keeps(s: i64, idx: i64) -> bool {   // statements s.. assign nothing idx reads
+  let mut c = s;
+  while c >= 0 {
+    if nd[c].k == S_ASSIGN && ex_reads(idx, nd[c].var) != 0 { return false; }
+    if nd[c].k == S_IF && !(ss_keeps(nd[c].b, idx) && ss_keeps(nd[c].c, idx)) { return false; }
+    if nd[c].k == S_BLOCK && !ss_keeps(nd[c].a, idx) { return false; }
+    c = nd[c].next;
+  }
+  return true;
+}
+fn ss_val(x: i64, c: i64) -> bool { return ic_pure(x) || (nd[x].k == N_LOAD && ss_in(c, x)); }
+fn ss_try(s: i64) {
+  if nd[s].k != S_IF || nd[s].c < 0 { return; }
+  let c = nd[s].a;
+  if nd[c].k != N_BIN || !is_cmp(nd[c].op) || !ss_cok(nd[c].a) || !ss_cok(nd[c].b) { return; }
+  let s1 = ss_store(nd[s].b); let s2 = ss_store(nd[s].c);
+  if s1 < 0 || s2 < 0 || nd[s1].var != nd[s2].var || !expr_same(nd[s1].a, nd[s2].a) || !ic_pure(nd[s1].a) { return; }
+  let x = nd[s1].b; let y = nd[s2].b;
+  if !ss_val(x, c) || !ss_val(y, c) || nd[x].ty != nd[y].ty { return; }
+  let r1 = nd[s1].next; let r2 = nd[s2].next;
+  IC_NEST = false;
+  let n1 = ic_count_list(r1); let n2 = ic_count_list(r2);
+  if n1 < 0 || n2 < 0 || n1 + n2 > 3 || !ss_keeps(r1, nd[s1].a) || !ss_keeps(r2, nd[s1].a) { return; }
+  let u = hidden(); vars[u].ty = nd[x].ty; vars[u].owner = CS_F;
+  let t = hidden(); vars[t].ty = nd[x].ty; vars[t].mutv = 1; vars[t].owner = CS_F;
+  let lu = mk(S_LET); nd[lu].var = u; nd[lu].a = clone_expr(x);
+  let lt = mk(S_LET); nd[lt].var = t; nd[lt].a = clone_expr(y); nd[lu].next = lt;
+  let f = mk(S_IF); copy_node(f, s); nd[lt].next = f;
+  nd[f].a = ss_sub(ss_sub(c, x, u), y, t);
+  let au = mk_assign(t, mk_var(u)); nd[au].next = r1;
+  let b1 = mk(S_BLOCK); set_block(b1, au, -1); nd[f].b = b1;
+  let b2 = mk(S_BLOCK); set_block(b2, r2, -1); nd[f].c = b2;
+  nd[s1].b = mk_var(t); nd[s1].next = -1; nd[f].next = s1;
+  set_block(s, lu, nd[s].next);
+}
+fn ic_count_list(c0: i64) -> i64 {
+  let mut t = 0; let mut c = c0;
+  while c >= 0 { let x = ic_count(c, 0); if x < 0 { return -1; } t += x; c = nd[c].next; }
+  return t;
+}
+fn ss_walk(s: i64, inl: bool) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { let nx = nd[c].next; ss_walk(c, inl); c = nx; } return; }
+  if k == S_IF { if inl { ss_try(s); } if nd[s].k == S_IF { ss_walk(nd[s].b, inl); ss_walk(nd[s].c, inl); } return; }
+  if k == S_WHILE { ss_walk(nd[s].b, true); return; }
+}
 fn cs_walk(s: i64) {
   if s < 0 { return; }
   let k = nd[s].k;
@@ -3753,7 +3836,7 @@ fn allocate() {
   mark_used();
   simplify();
   f = 0;
-  while f < nfn { if fns[f].used != 0 { CS_F = f; sm_walk(fns[f].body); cs_walk(fns[f].body); dm_walk(fns[f].body); } f += 1; }
+  while f < nfn { if fns[f].used != 0 { CS_F = f; sm_walk(fns[f].body); ss_walk(fns[f].body, false); cs_walk(fns[f].body); dm_walk(fns[f].body); } f += 1; }
   let mut v = 0;
   while v < nv { if vars[v].owner >= 0 && fns[vars[v].owner].used == 0 { vars[v].reads = 0; } v += 1; }
   analyze();
@@ -6934,6 +7017,85 @@ fn ic_single(s: i64) -> i64 {   // the assignment statement, or -1
   if nd[b].k != S_ASSIGN { return -1; }
   return b;
 }
+// flat branches under one comparison: every value first, then the compare, then the cmovs
+// (mov and store keep the flags); needs no assignment to read a variable its branch set earlier
+fn ic_list(b: i64) -> i64 { if nd[b].k == S_BLOCK { return nd[b].a; } return b; }
+fn ic_indep(b: i64) -> bool {
+  let mut c = ic_list(b);
+  while c >= 0 {
+    if nd[c].k != S_ASSIGN { return false; }
+    let mut q = ic_list(b);
+    while q != c { if nd[q].var == nd[c].var || ex_reads(nd[c].a, nd[q].var) != 0 { return false; } q = nd[q].next; }
+    c = nd[c].next;
+  }
+  return true;
+}
+fn ic_nlist(b: i64) -> i64 { if b < 0 { return 0; } let mut t = 0; let mut c = ic_list(b); while c >= 0 { t += 1; c = nd[c].next; } return t; }
+let IC_SRC = alloc<i64>(16);   // per assignment: source register, or -1 for v += 1 (added from setcc)
+fn ic_reg_src(e: i64) -> bool { return nd[e].k == N_VAR && vars[nd[e].var].reg >= 0; }
+fn ic_vals(b: i64, i0: i64, rg: i64, n: i64, j0: i64) -> i64 {   // sources into IC_SRC[i0..]; returns regs used
+  if b < 0 { return j0; }
+  let mut i = i0; let mut j = j0; let mut c = ic_list(b);
+  while c >= 0 {
+    let e = nd[c].a;
+    if is_inc1(c, nd[c].var) { IC_SRC[i] = -1; }
+    else if ic_reg_src(e) { IC_SRC[i] = vars[nd[e].var].reg; }
+    else { gen(e, rg + j, n - j); IC_SRC[i] = RGS[rg + j]; j += 1; }
+    i += 1; c = nd[c].next;
+  }
+  return j;
+}
+fn ic_need(b: i64) -> i64 {
+  if b < 0 { return 0; }
+  let mut m = 0; let mut c = ic_list(b);
+  while c >= 0 { if !is_inc1(c, nd[c].var) && !ic_reg_src(nd[c].a) { m += 1; } c = nd[c].next; }
+  return m;
+}
+fn ic_cmovs(b: i64, i0: i64, cc: i64) -> i64 {
+  if b < 0 { return i0; }
+  let mut i = i0; let mut c = ic_list(b);
+  while c >= 0 {
+    let t = IC_SRC[i]; let v = nd[c].var;
+    if t >= 0 {
+      loc(v);
+      if OK == K_REG { if ORR != t { cmov_rr(cc, ORR, t); } }
+      else { mov_rr(RAX, t); enc(1, false, 2, 15, 64 | (cc ^ 1), RAX, OK, ORR); loc(v); store(OK, ORR, RAX); }
+    }
+    i += 1; c = nd[c].next;
+  }
+  return i;
+}
+fn ic_incs(b: i64, i0: i64) -> i64 {   // v += rax for the v += 1 assignments (rax = predicate 0/1)
+  if b < 0 { return i0; }
+  let mut i = i0; let mut c = ic_list(b);
+  while c >= 0 { if IC_SRC[i] < 0 { loc(nd[c].var); alu(A_ADD, OK, ORR, K_REG, RAX, 0); } i += 1; c = nd[c].next; }
+  return i;
+}
+fn ic_multi(s: i64, rg: i64, n: i64) -> bool {
+  let c = nd[s].a;
+  if IC_NEST || nd[c].k != N_BIN || !is_cmp(nd[c].op) { return false; }
+  let k1 = ic_nlist(nd[s].b); let k = k1 + ic_nlist(nd[s].c);
+  if k > 16 || !ic_indep(nd[s].b) || (nd[s].c >= 0 && !ic_indep(nd[s].c)) { return false; }
+  let m = ic_need(nd[s].b) + ic_need(nd[s].c);   // registers the values need
+  let ia = m; let mut ib = m; if !simple(nd[c].a) { ib += 1; }
+  let mut need = ib; if !simple(nd[c].b) { need += 1; }
+  if n < need + 1 { return false; }
+  let j = ic_vals(nd[s].b, 0, rg, n, 0);
+  ic_vals(nd[s].c, k1, rg, n, j);
+  let mut rb = -1;   // b before a: generating b may use rax
+  if !simple(nd[c].b) { gen(nd[c].b, rg + ib, n - ib); rb = RGS[rg + ib]; }
+  let mut ra = RAX;
+  if simple(nd[c].a) { opnd(nd[c].a); load(RAX, OK, ORR, OI); }
+  else { gen(nd[c].a, rg + ia, n - ia); ra = RGS[rg + ia]; }
+  if rb < 0 { opnd(nd[c].b); alu(A_CMP, K_REG, ra, OK, ORR, OI); }
+  else { alu(A_CMP, K_REG, ra, K_REG, rb, 0); }
+  let cc = cc_of(nd[c].op);
+  ic_cmovs(nd[s].c, ic_cmovs(nd[s].b, 0, cc), cc ^ 1);
+  setcc_zx(cc, RAX);   // the flags survive the cmovs
+  ic_incs(nd[s].b, 0);
+  if nd[s].c >= 0 { alui(A_XOR, RAX, 1); ic_incs(nd[s].c, k1); }
+  return true;
+}
 fn ifconv(s: i64, rg: i64, n: i64) {
   let one = ic_single(s);
   let c0 = nd[s].a;
@@ -6941,17 +7103,20 @@ fn ifconv(s: i64, rg: i64, n: i64) {
     let c = nd[s].a;
     gen(nd[one].a, rg, n);
     let t = RGS[rg];
+    let mut rb = -1;   // b before a: generating b may use rax
+    if !simple(nd[c].b) { gen(nd[c].b, rg + 2, n - 2); rb = RGS[rg + 2]; }
     let mut ra = RAX;
     if simple(nd[c].a) { opnd(nd[c].a); load(RAX, OK, ORR, OI); }
     else { gen(nd[c].a, rg + 1, n - 1); ra = RGS[rg + 1]; }
-    if simple(nd[c].b) { opnd(nd[c].b); alu(A_CMP, K_REG, ra, OK, ORR, OI); }
-    else { gen(nd[c].b, rg + 2, n - 2); alu(A_CMP, K_REG, ra, K_REG, RGS[rg + 2], 0); }
+    if rb < 0 { opnd(nd[c].b); alu(A_CMP, K_REG, ra, OK, ORR, OI); }
+    else { alu(A_CMP, K_REG, ra, K_REG, rb, 0); }
     let cc = cc_of(nd[c].op);
     loc(nd[one].var);
     if OK == K_REG { cmov_rr(cc, ORR, t); }
     else { enc(1, false, 2, 15, 64 | (cc ^ 1), t, OK, ORR); loc(nd[one].var); store(OK, ORR, t); }
     return;
   }
+  if ic_multi(s, rg, n) { return; }
   ic_bool(nd[s].a, rg, n);
   let sl = tslot_push(); store(K_MEM, sl, RGS[rg]);
   ic_gen(nd[s].b, sl, rg, n, true);
