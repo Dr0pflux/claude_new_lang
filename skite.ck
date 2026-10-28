@@ -7224,7 +7224,9 @@ fn assign(v: i64, e: i64, rg: i64, n: i64) {
   let Lk = OK; let Lr = ORR;
   if is_xk(Lk) { assign_x(Lr, Lk == K_XMM, v, e, rg, n); return; }
   if xroom(e) {
-    if Lk == K_REG { genf_root(e, Lr, rg, n); } else { genf_root(e, RAX, rg, n); store(Lk, Lr, RAX); }
+    if Lk == K_REG { genf_root(e, Lr, rg, n); }
+    else if Lk == K_MEM && vars[v].ty == TY_F64 && fprec(e) { let x = xtop; genf(e, x, rg, n); sse(242, 0, 17, x, K_MEM, Lr); }   // movsd [slot], x
+    else { genf_root(e, RAX, rg, n); store(Lk, Lr, RAX); }
     return;
   }
   let k = nd[e].k;
