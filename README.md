@@ -30,23 +30,23 @@ Benchmarks Game (`bench/game`):
 
 | workload | skite ms | best other | ratio |
 |---|---|---|---|
-| mandelbrot | 340 | gcc 947 | **0.36** |
-| fasta | 320 | rust 305 | 1.05 |
-| spectralnorm | 284 | gcc 240 | 1.19 |
-| fannkuchredux | 2874 | rust 2268 | 1.27 |
-| nbody | 309 | rust 204 | 1.51 |
-| binarytrees | 537 | gcc 328 | 1.64 |
+| mandelbrot | 334 | clang 955 | **0.35** |
+| spectralnorm | 256 | gcc 261 | **0.98** |
+| fannkuchredux | 2821 | clang 2557 | 1.10 |
+| binarytrees | 562 | gcc 488 | 1.15 |
+| fasta | 391 | rust 332 | 1.18 |
+| nbody | 324 | rust 228 | 1.42 |
 
 Arithmetic and text kernels (`bench/kernels`, `run.py 3`):
 
 | kernel | ratio | kernel | ratio | kernel | ratio |
 |---|---|---|---|---|---|
-| textscan | **0.54** | nqueens | 1.02 | gcdsum | 1.27 |
-| wordcount | **0.66** | histogram | 1.05 | matmul | 1.29 |
-| collatz | **0.81** | polyeval | 1.10 | intsort | 1.62 |
-| caseconv | **0.84** | hashmix | 1.12 | editdist | 1.71 |
-| sieve | **0.90** | prefixsum | 1.12 | divmod | 2.02 |
-| | | ngramhash | 1.23 | strsearch | 2.17 |
+| strsearch | **0.26** | sieve | **0.99** | histogram | 1.25 |
+| textscan | **0.40** | divmod | 1.00 | matmul | 1.26 |
+| wordcount | **0.64** | polyeval | 1.03 | prefixsum | 1.28 |
+| collatz | **0.70** | nqueens | 1.08 | ngramhash | 1.32 |
+| caseconv | **0.82** | hashmix | 1.08 | intsort | 1.51 |
+| | | gcdsum | 1.18 | editdist | 1.72 |
 
 The goal is to lead on every arithmetic and text workload; the slower rows are open work
 (see [`docs/HANDOFF.md`](docs/HANDOFF.md)). Full history, other hosts (including a Ryzen host
@@ -60,7 +60,8 @@ What makes skite fast (all bit-exact: strict IEEE floats, wrapping integers, tra
     integer `+ - & | ^` reductions, max/min, narrow `u8`..`u32` elements, 2-D indexing `a[i * n + j]`;
   - *byte lanes*: `u8`/`i8` loops (text scanning, character classes, counts, case conversion,
     word-boundary state machines) run 64 characters per instruction: counts via mask popcount,
-    byte sums via `vpsadbw`, a 0/1 state flag carried between characters by shifting its mask.
+    byte sums via `vpsadbw`, a 0/1 state flag carried between characters by shifting its mask,
+    and short pattern searches (`while j < m && t[i + j] == p[j]`) turned into byte comparisons.
   Unproven bounds and possibly-aliased arrays are checked once before the vector loop; on failure
   the ordinary loop runs and traps exactly where scalar code would.
 - **Range analysis** removes bounds checks it can prove, including checks dominated by an earlier one.
