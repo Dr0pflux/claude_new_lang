@@ -11,6 +11,7 @@ selfcheck: skite
 test: skite selfcheck
 	./tests/run.sh
 	python3 tests/zero_divisor.py
+	python3 tests/fuzz_harness_test.py
 	./tests/run_cf_fuzz.sh 100 1 1 1 1 1
 	./tests/run_ty_fuzz.sh 100 1
 	python3 tests/vec_fuzz.py 100 1
