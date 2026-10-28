@@ -4693,7 +4693,37 @@ fn plan_enter(p: i64) {
   let mut i = 0;
   while i < vp_nv[p] { let v = vp_vlist[vp_v0[p] + i]; vmark[v] = vtag; VREG[v] = vp_vreg[vp_v0[p] + i]; i += 1; }
 }
+fn dmp_e(e: i64) {
+  if e < 0 { em_s("_"); return; }
+  let k = nd[e].k;
+  if k == N_CONST { em_s("#"); em_n(nd[e].v as i64); if nd[e].c >= 0 { em_s("h"); } return; }
+  if k == N_VAR { em_src(vars[nd[e].var].noff, vars[nd[e].var].nlen); em_c('@'); em_n(nd[e].var); return; }
+  if k == N_LOAD { em_s("L("); em_src(vars[nd[e].var].noff, vars[nd[e].var].nlen); em_c('['); dmp_e(nd[e].a); em_s("]."); em_n(nd[e].op); em_s(" chk"); em_n(nd[e].chk); em_c(')'); return; }
+  if k == N_BIN { em_c('('); dmp_e(nd[e].a); em_s(" o"); em_n(nd[e].op); em_c(' '); dmp_e(nd[e].b); em_c(')'); return; }
+  if k == N_UN { em_s("u"); em_n(nd[e].op); em_c('('); dmp_e(nd[e].a); em_c(')'); return; }
+  em_s("k"); em_n(k);
+}
+fn dmp_s(s0: i64, d: i64) {
+  let mut s = s0;
+  while s >= 0 {
+    emlen = 0; let mut i = 0; while i < d { em_s("  "); i += 1; }
+    let k = nd[s].k;
+    em_s("S"); em_n(k); em_c(' ');
+    if k == S_LET || k == S_ASSIGN { em_src(vars[nd[s].var].noff, vars[nd[s].var].nlen); em_c('@'); em_n(nd[s].var); em_s(" r"); em_n(vars[nd[s].var].reads); em_s(" = "); dmp_e(nd[s].a); }
+    else if k == S_STORE { em_src(vars[nd[s].var].noff, vars[nd[s].var].nlen); em_c('['); dmp_e(nd[s].a); em_s("]."); em_n(nd[s].c); em_s(" op"); em_n(nd[s].op); em_s(" chk"); em_n(nd[s].chk); em_s(" = "); dmp_e(nd[s].b); }
+    else if k == S_WHILE { em_s("while "); dmp_e(nd[s].a); }
+    else if k == S_IF { em_s("if "); dmp_e(nd[s].a); }
+    else { dmp_e(nd[s].a); }
+    ewrite(emsg, 0, emlen); ewrite("\n");
+    if k == S_WHILE { dmp_s(nd[s].b, d + 1); }
+    if k == S_BLOCK || k == S_INL { dmp_s(nd[s].a, d + 1); }
+    if k == S_IF { dmp_s(nd[s].b, d + 1); dmp_s(nd[s].c, d + 1); }
+    s = nd[s].next;
+  }
+}
 fn plan_all() {
+  let mut s0 = 0;
+  while s0 < nn { if nd[s0].k == S_WHILE && stmt_size(nd[s0].b) > 300 { dmp_s(s0, 0); ewrite("----\n"); } s0 += 1; }
   let mut s = 0;
   while s < nn { if nd[s].k == S_WHILE { plan_loop(s); } s += 1; }
 }
