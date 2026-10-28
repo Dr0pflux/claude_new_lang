@@ -87,7 +87,8 @@ class Gen:
 def program(r, fn_mode):
     g = Gen(r)
     na = r.randrange(2, 5)
-    if fn_mode:
+    mixed = fn_mode and r.random() < 0.4      # parameters of different widths, passed views of one buffer
+    if fn_mode and not mixed:
         t = r.choice(TYPES); types = [t] * na
     else:
         types = [r.choice(TYPES) for _ in range(na)]
@@ -114,7 +115,7 @@ def program(r, fn_mode):
     lines.append("fn main() {")
     lines.append(f"  let n = {LEN} - 4 + argc();")   # 45: not a multiple of the vector width
     lines.append("  let k1 = argc() + 2; let k2 = 0 - argc() * 3; let kf = (argc() as f64) * 0.5;")
-    views = not fn_mode and r.random() < 0.3   # arrays share one byte buffer through views of different widths
+    views = (not fn_mode and r.random() < 0.3) or mixed   # arrays share one byte buffer through views of different widths
     if views: lines.append(f"  let buf = alloc<u8>({LEN * 8});")
     for nm, t in arrs:
         if views: lines.append(f"  let {nm} = view<{t}>(buf);")
@@ -124,9 +125,9 @@ def program(r, fn_mode):
         else: lines.append(f"  let mut j = 0; while j < {LEN} {{ {nm}[j] = ((j * 1103515245 + 12345 + j * j * 97) % 1000003) as {t}; j += 1; }}")
         lines[-1] = lines[-1].replace("let mut j", "let mut j" if nm == "a0" else "j").replace("j = 0; while", "j = 0; while", 1)
     if fn_mode:
-        alias = r.random() < 0.6
+        alias = r.random() < 0.6 and not mixed   # mixed: the views alias by construction
         args = [r.choice(names) if alias else nm for nm in names]
-        lines.append(f"  let res = kern({', '.join(args)}, n, k1, k2, kf, 1);")
+        lines.append(f"  let res = kern({', '.join(args)}, n, k1, k2, kf, {r.choice([1, 8])});")
         lines.append("  print(res);")
     else:
         lines.append("  let mut k3 = 0;")

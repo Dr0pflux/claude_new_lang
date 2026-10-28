@@ -5082,16 +5082,22 @@ fn plan_extra(stream: bool, t0: i64) -> bool {
   while v < nv {
     if vars[v].arr != 0 && arr_leader[v] == v {
       if vast[v] == t0 { if ns >= 64 { return false; } vst_tmp[ns] = v; ns += 1; }
-      if (stream && (vldx[v] == t0 || vldp[v] == t0)) || (!stream && vald[v] == t0) { if nl >= 64 { return false; } vld_tmp[nl] = v; nl += 1; }
+      if (stream && vlw[v] == t0) || (!stream && vald[v] == t0) { if nl >= 64 { return false; } vld_tmp[nl] = v; nl += 1; }
     }
     v += 1;
   }
-  if ns * nl > 16 || nval + ns * nl > 65536 { return false; }
+  if nval + ns * nl > 65536 { return false; }
   vp_a0[p] = nval; vp_na[p] = 0;
   i = 0;
   while i < ns {
     let mut j = 0;
-    while j < nl { if vst_tmp[i] != vld_tmp[j] { val_s[nval] = vst_tmp[i]; val_l[nval] = vld_tmp[j]; nval += 1; vp_na[p] += 1; } j += 1; }
+    while j < nl {
+      let S = vst_tmp[i]; let L = vld_tmp[j];
+      // stream loops: lane j of S[i] and L[i] is the same memory only for equal widths, both at index i
+      let need = S != L && (!stream || vldx[L] == t0 || vldp[L] == t0 || vlw_w[L] != vlw_w[S] || vlwx[L] == t0);
+      if need { if vp_na[p] >= 16 { return false; } val_s[nval] = S; val_l[nval] = L; nval += 1; vp_na[p] += 1; }
+      j += 1;
+    }
     i += 1;
   }
   nvgl += VK_NG;
