@@ -1,0 +1,5 @@
+/ling
+/ling.tmp
+/ling.check
+*.o
+/bench/**/target/

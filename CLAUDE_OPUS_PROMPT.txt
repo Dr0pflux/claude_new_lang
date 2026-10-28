@@ -1,0 +1,11 @@
+You are joining a three-party compiler engineering project with the project owner and GPT-6.
+
+Please review the attached ling0-native-backend-v0.2.zip fully, especially OPUS_HANDOFF.md, ling0.c, bootstrap/ling0_s0.c, SELF_HOSTING.md, ARCHITECTURE.md, and the tests.
+
+Mission: develop a completely original, self-hosted native systems language whose initial domain is high-throughput computational linguistics. The ultimate compiler and linker must be written in its own language. The existing C11 seed is temporary only. Never substitute LLVM/GCC/Cranelift/QBE or generated C as a source-language backend. Target native Linux x86-64 ELF and real CPU instruction encodings first.
+
+Prioritize (1) reproducible correctness and security bugs in current register allocation, x86 encoding, ELF and IR, (2) minimal feature increments needed for self-hosting, (3) measured domain-aware optimization design capable of beating well-optimized C/Rust implementations on selected workloads.
+
+Return a numbered defect list with minimal repro cases, a unified C patch for your highest-value confirmed fix, measurable benchmarking methodology, self-hosting milestone gates and 3 prioritized performance proposals. Clearly mark tested results vs hypotheses. Preserve all existing tests. Avoid guessing or implying a universal performance win.
+
+Coordinate by producing patch/diff and evidence that I can give GPT-6 to integrate into the canonical repo.
