@@ -27,6 +27,8 @@
   refinement re-evaluated it under the assumption that the check had already passed (pre-existing;
   `tests/data/refine_trap.ck`). The if-conversion operand reorder in `7b6f7bb` also reused a
   register for both compare operands when both were non-trivial (miscompile on `84ff0e4`; fixed).
+- **Nested unrolling:** a loop start left as constant arithmetic by an unrolled outer loop
+  (`j = 0 + 1`) is folded, so the inner loop unrolls too (nbody 308 → 253 ms, rust 210).
 - **Rotates and in-place updates:** `(x << c) | (x >> (64 - c))` on 64-bit values is one `rol`;
   `v = v op e` updates v's register in place even when e reads v (hashmix 241 → 212 ms, now 0.97x gcc).
 - **Bounds versioning:** a call-free loop `while i < E { ..; i += 1 }` whose `a[i + k]` checks the

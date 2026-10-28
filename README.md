@@ -35,7 +35,7 @@ Benchmarks Game (`bench/game`):
 | fannkuchredux | 2821 | clang 2557 | 1.10 |
 | binarytrees | 454 | gcc 296 | 1.53 |
 | fasta | 391 | rust 332 | 1.18 |
-| nbody | 324 | rust 228 | 1.42 |
+| nbody | 253 | rust 210 | 1.20 |
 
 Arithmetic and text kernels (`bench/kernels`, `run.py 3`):
 

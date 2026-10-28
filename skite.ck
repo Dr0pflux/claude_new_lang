@@ -3054,14 +3054,25 @@ fn has_jump0(s: i64, d: i64) -> bool {   // break/continue that leaves the loop 
   if k == S_PAR || k == S_ARR || k == S_SAVE { return true; }
   return false;
 }
+fn cfold_ok(e: i64) -> bool {   // small constant +, -, * arithmetic
+  if is_const(e) { let v = nd[e].v as i64; return v > -1000000000 && v < 1000000000; }
+  if nd[e].k != N_BIN || nd[e].ty != TY_I64 || !(nd[e].op == O_ADD || nd[e].op == O_SUB || nd[e].op == O_MUL) { return false; }
+  if !cfold_ok(nd[e].a) || !cfold_ok(nd[e].b) { return false; }
+  let v = cfold(e); return v > -1000000000 && v < 1000000000;
+}
+fn cfold(e: i64) -> i64 {
+  if is_const(e) { return nd[e].v as i64; }
+  let a = cfold(nd[e].a); let b = cfold(nd[e].b);
+  if nd[e].op == O_ADD { return a + b; } if nd[e].op == O_SUB { return a - b; } return a * b;
+}
 fn try_unroll(prev: i64, s: i64) -> bool {
   if nd[s].k != S_WHILE || nd[s].c >= 0 { return false; }
   let cnd = nd[s].a;
   if nd[cnd].k != N_BIN || (nd[cnd].op != O_LT && nd[cnd].op != O_LE) || nd[nd[cnd].a].k != N_VAR || !is_const(nd[cnd].b) { return false; }
   let iv = nd[nd[cnd].a].var;
   if vars[iv].ty != TY_I64 || vars[iv].xr >= 0 { return false; }
-  if prev < 0 || (nd[prev].k != S_LET && nd[prev].k != S_ASSIGN) || nd[prev].var != iv || !is_const(nd[prev].a) { return false; }
-  let c0 = nd[nd[prev].a].v as i64;
+  if prev < 0 || (nd[prev].k != S_LET && nd[prev].k != S_ASSIGN) || nd[prev].var != iv || !cfold_ok(nd[prev].a) { return false; }
+  let c0 = cfold(nd[prev].a);   // a constant, or constant arithmetic left by an outer unrolled loop (j = 0 + 1)
   let mut c1 = nd[nd[cnd].b].v as i64;
   if nd[cnd].op == O_LE { if c1 == INT64_MAX { return false; } c1 += 1; }
   let trip = c1 - c0;
