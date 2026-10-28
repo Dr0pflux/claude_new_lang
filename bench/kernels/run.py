@@ -28,6 +28,7 @@ def benches(tmp):
     return [
         ("ngram29",    os.path.join(B, "kernels", "ngram29"),    [], "c"),
         ("vigenere29", os.path.join(B, "kernels", "vigenere29"), [], "c"),
+        ("textscan",   os.path.join(B, "kernels", "textscan"),   [], "c"),
         ("vig-solver", os.path.join(V, "vig"),  [quad, c4k], "c"),
         ("vig-par",    os.path.join(V, "vigp"), [quad, c4k], "omp"),
     ]
