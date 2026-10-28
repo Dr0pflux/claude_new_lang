@@ -54,6 +54,7 @@ class Gen:
         return f"({a} {op} {self.fval(arrs, ftemps, d + 1)})"
     def off(self):
         r = self.r.random()
+        if r < 0.12: return self.r.choice([" + k1", " + k2", " + k1 * 2"])   # i + U, U loop-invariant
         if r < 0.6: return ""
         c = self.r.choice([1, 2, 3, -1, -2, -3])
         return f" + {c}" if c > 0 else f" - {-c}"
@@ -72,15 +73,16 @@ class Gen:
                 out.append(f"{s} {op}= {self.ival(arrs, temps)};")
             else:
                 nm, t = r.choice(stored)
+                ix = "i + k1" if r.random() < 0.15 else "i"
                 if t == "f64":
-                    if r.random() < 0.3: out.append(f"{nm}[i] {r.choice(['+', '*', '-'])}= {self.fval(arrs, ftemps)};")
-                    else: out.append(f"{nm}[i] = {self.fval(arrs, ftemps)};")
+                    if r.random() < 0.3: out.append(f"{nm}[{ix}] {r.choice(['+', '*', '-'])}= {self.fval(arrs, ftemps)};")
+                    else: out.append(f"{nm}[{ix}] = {self.fval(arrs, ftemps)};")
                 else:
                     v = self.ival(arrs, temps)
                     if t == "u64": v = f"({v}) as u64"
-                    if r.random() < 0.35: out.append(f"{nm}[i] {r.choice(['+', '-', '^', '|', '&', '*'])}= {v};")
-                    elif t in ("i64", "u64"): out.append(f"{nm}[i] = {v};")
-                    else: out.append(f"{nm}[i] = ({v}) as {t};")
+                    if r.random() < 0.35: out.append(f"{nm}[{ix}] {r.choice(['+', '-', '^', '|', '&', '*'])}= {v};")
+                    elif t in ("i64", "u64"): out.append(f"{nm}[{ix}] = {v};")
+                    else: out.append(f"{nm}[{ix}] = ({v}) as {t};")
         if r.random() < 0.08: out.append("if i == 5 { k3 += 1; }")   # uniform-free branch on i: masked
         if r.random() < 0.3:   # masked block: stores / reductions under a varying condition
             inner = self.body(arrs, stored, reds, depth + 1) if depth < 1 else []

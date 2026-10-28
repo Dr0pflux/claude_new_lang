@@ -4834,6 +4834,7 @@ fn vnote_w(a: i64) {
 // while i + c .. i + c + L - 1 is inside a (tested per block; otherwise the scalar loop takes over)
 let vg_arr = alloc<i64>(64);
 let vg_off = alloc<i64>(64);
+let vg_offe = alloc<i64>(64);        // offset expression (U in a[i + U]) or -1
 let mut VK_NG: i64 = 0;
 let mut vtag: i64 = 0;
 let mut VK_OK: bool = true;          // legality accumulator
@@ -4865,9 +4866,16 @@ fn vload(a: i64, t: i64, b: i64, ri: i64, d: i64, lvl: i64) {
 fn add_guard(a: i64, c: i64) -> bool {
   if c < -1048576 || c > 1048576 { return false; }
   let mut i = 0;
-  while i < VK_NG { if vg_arr[i] == a && vg_off[i] == c { return true; } i += 1; }
+  while i < VK_NG { if vg_arr[i] == a && vg_off[i] == c && vg_offe[i] < 0 { return true; } i += 1; }
   if VK_NG >= 64 { return false; }
-  vg_arr[VK_NG] = a; vg_off[VK_NG] = c; VK_NG += 1;
+  vg_arr[VK_NG] = a; vg_off[VK_NG] = c; vg_offe[VK_NG] = -1; VK_NG += 1;
+  return true;
+}
+fn add_guard_e(a: i64, u: i64) -> bool {
+  let mut i = 0;
+  while i < VK_NG { if vg_arr[i] == a && vg_offe[i] >= 0 && expr_same(vg_offe[i], u) { return true; } i += 1; }
+  if VK_NG >= 64 { return false; }
+  vg_arr[VK_NG] = a; vg_off[VK_NG] = 0; vg_offe[VK_NG] = u; VK_NG += 1;
   return true;
 }
 fn refs_v(e: i64) -> bool {
@@ -4922,6 +4930,8 @@ fn vexpr_ok(e: i64, t: i64, iv: i64) -> bool {
     if vars[nd[e].var].arr < 8 && !int8_type(nd[e].ty) { return false; }   // (a widening cast may retype the load)
     let x = nd[e].a;
     if nd[x].k == N_VAR && nd[x].var == iv { return nd[e].chk == 0 || add_guard(nd[e].var, 0); }
+    let u = iv_u(x, iv);
+    if u >= 0 { return nd[e].chk == 0 || add_guard_e(nd[e].var, u); }
     if nd[x].k == N_BIN && (nd[x].op == O_ADD || nd[x].op == O_SUB) && nd[nd[x].a].k == N_VAR && nd[nd[x].a].var == iv && !refs_v(nd[x].b) && !has_call(nd[x].b) {
       if nd[e].chk == 0 { return true; }
       if !is_const(nd[x].b) { return false; }
@@ -5101,6 +5111,7 @@ fn plan_loop(s: i64) {
   if bound_var(en, iv) >= 0 && count_assign(nd[s].b, bound_var(en, iv)) != 0 { return; }
   let body = nd[s].b;
   if nd[body].k != S_BLOCK { return; }
+  IVU_BODY = body;
   let mut inc = -1;
   let mut nbefore = 0;
   let mut c = nd[body].a;
@@ -5161,6 +5172,7 @@ let vp_g0 = alloc<i64>(4096);
 let vp_ng = alloc<i64>(4096);
 let vgl_arr = alloc<i64>(65536);
 let vgl_off = alloc<i64>(65536);
+let vgl_offe = alloc<i64>(65536);
 let mut nvgl: i64 = 0;
 let vp_a0 = alloc<i64>(4096);
 let vp_na = alloc<i64>(4096);
@@ -5182,7 +5194,7 @@ fn plan_extra(stream: bool, t0: i64) -> bool {
   if nvgl + VK_NG > 65536 { return false; }
   vp_g0[p] = nvgl; vp_ng[p] = VK_NG;
   let mut i = 0;
-  while i < VK_NG { vgl_arr[nvgl + i] = vg_arr[i]; vgl_off[nvgl + i] = vg_off[i]; i += 1; }
+  while i < VK_NG { vgl_arr[nvgl + i] = vg_arr[i]; vgl_off[nvgl + i] = vg_off[i]; vgl_offe[nvgl + i] = vg_offe[i]; i += 1; }
   // stored leaders x leaders loaded where a different memory layout could see another lane's store
   let mut ns = 0; let mut nl = 0;
   let mut v = 0;
@@ -5235,6 +5247,10 @@ fn vscan_loads(e: i64, iv: i64) {
   if k == N_LOAD {
     let x = nd[e].a; let L = arr_leader[nd[e].var];
     vnote_w(nd[e].var);
+    if vstit[L] == vtag && !(nd[vsti[L]].k == N_VAR && nd[vsti[L]].var == iv) {   // stored at i + U: only that index is lane-local
+      if nd[e].op > 0 || !expr_same(x, vsti[L]) { vldx[L] = vtag; }
+      vscan_loads(x, iv); return;
+    }
     if nd[e].op > 0 { vldx[L] = vtag; }
     else if nd[x].k == N_VAR && nd[x].var == iv { }
     else if nd[x].k == N_BIN && nd[x].op == O_ADD && nd[nd[x].a].k == N_VAR && nd[nd[x].a].var == iv && is_const(nd[x].b) && (nd[nd[x].b].v as i64) > 0 {
@@ -5247,6 +5263,20 @@ fn vscan_loads(e: i64, iv: i64) {
   if k == N_CONST || k == N_VAR || k == N_ARR || k == N_NCPU { return; }
   if k == N_CALL { let mut a = nd[e].a; while a >= 0 { vscan_loads(a, iv); a = nd[a].next; } return; }
   vscan_loads(nd[e].a, iv); vscan_loads(nd[e].b, iv);
+}
+// the index each stored array is stored at (one per leader in a stream loop)
+let vsti = alloc<i64>(65536);
+let vstit = alloc<i64>(65536);
+let vstib = alloc<i64>(65536);
+fn st_prescan(s: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { st_prescan(c); c = nd[c].next; } return; }
+  if k == S_IF { st_prescan(nd[s].b); st_prescan(nd[s].c); return; }
+  if k == S_STORE {
+    let L = arr_leader[nd[s].var];
+    if vstit[L] != vtag { vstit[L] = vtag; vsti[L] = nd[s].a; } else if !expr_same(vsti[L], nd[s].a) { vstib[L] = vtag; }
+  }
 }
 // hidden immutable copies `let t = i` (compound stores a[i] op= e index a[t]): read i instead
 fn ivcopy_e(e: i64, t: i64, iv: i64) {
@@ -5267,11 +5297,46 @@ fn ivcopy_s(s: i64, t: i64, iv: i64) {
   if k == S_LET && nd[s].var == t { return; }
   ivcopy_e(nd[s].a, t, iv);
 }
+fn inv_u(e: i64, body: i64, iv: i64) -> bool {
+  if e < 0 { return true; }
+  let k = nd[e].k;
+  if k == N_LOAD || k == N_CALL || k == N_NCPU { return false; }
+  if k == N_VAR { return nd[e].var != iv && count_assign(body, nd[e].var) == 0 && vars[nd[e].var].xr < 0 && ty_int(vars[nd[e].var].ty); }
+  if k == N_CONST || k == N_ARR { return k == N_CONST; }
+  if has_trap(e) { return false; }
+  return inv_u(nd[e].a, body, iv) && inv_u(nd[e].b, body, iv);
+}
+let mut IVU_BODY: i64 = -1;          // loop body for iv_u checks (stream planning)
+fn iv_u(x: i64, iv: i64) -> i64 {    // x = iv + U or U + iv: U, else -1
+  if nd[x].k != N_BIN || nd[x].op != O_ADD || IVU_BODY < 0 { return -1; }
+  if nd[nd[x].a].k == N_VAR && nd[nd[x].a].var == iv && inv_u(nd[x].b, IVU_BODY, iv) && !is_const(nd[x].b) { return nd[x].b; }
+  if nd[nd[x].b].k == N_VAR && nd[nd[x].b].var == iv && inv_u(nd[x].a, IVU_BODY, iv) && !is_const(nd[x].a) { return nd[x].a; }
+  return -1;
+}
+fn ivcopy_x(e: i64, t: i64, x: i64) {   // N_VAR t -> a copy of x
+  if e < 0 { return; }
+  let k = nd[e].k;
+  if k == N_VAR { if nd[e].var == t { let cl = clone_expr(x); copy_node(e, cl); vars[t].reads -= 1; } return; }
+  if k == N_CONST || k == N_ARR || k == N_NCPU { return; }
+  if k == N_CALL { let mut a = nd[e].a; while a >= 0 { ivcopy_x(a, t, x); a = nd[a].next; } return; }
+  ivcopy_x(nd[e].a, t, x); ivcopy_x(nd[e].b, t, x);
+}
+fn ivcopy_sx(s: i64, t: i64, x: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { ivcopy_sx(c, t, x); c = nd[c].next; } return; }
+  if k == S_IF { ivcopy_x(nd[s].a, t, x); ivcopy_sx(nd[s].b, t, x); ivcopy_sx(nd[s].c, t, x); return; }
+  if k == S_STORE || k == S_WRITE || k == S_SAVE { ivcopy_x(nd[s].a, t, x); ivcopy_x(nd[s].b, t, x); return; }
+  if k == S_LET && nd[s].var == t { return; }
+  if k == S_WHILE { return; }
+  ivcopy_x(nd[s].a, t, x);
+}
 fn ivcopies(body: i64, s: i64, iv: i64) {
   if s < 0 { return; }
   let k = nd[s].k;
   if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { ivcopies(body, c, iv); c = nd[c].next; } return; }
   if k == S_LET && nd[nd[s].a].k == N_VAR && nd[nd[s].a].var == iv && vars[nd[s].var].ty == TY_I64 && count_assign(body, nd[s].var) == 1 { ivcopy_s(body, nd[s].var, iv); }
+  else if k == S_LET && vars[nd[s].var].ty == TY_I64 && count_assign(body, nd[s].var) == 1 && iv_u(nd[s].a, iv) >= 0 { ivcopy_sx(body, nd[s].var, nd[s].a); }
 }
 // a statement of a stream loop: lane-parallel lets, vector stores a[i] = e / a[i] op= e (8-byte
 // elements), integer reductions s op= e (op: + - & | ^; wrapping, so any grouping gives the same sum)
@@ -5298,9 +5363,11 @@ fn sst_ok(s: i64, iv: i64, lvl: i64) -> bool {
     let et = vars[a].et;
     if nd[s].c >= 0 || !velem_ok(vars[a].arr, et) || vars[a].ro != 0 || has_call(nd[s].b) { return false; }
     let x = nd[s].a;
-    if nd[x].k != N_VAR || nd[x].var != iv { return false; }
+    let at_i = nd[x].k == N_VAR && nd[x].var == iv;
+    if !at_i && iv_u(x, iv) < 0 { return false; }
+    if vstib[arr_leader[a]] == vtag { return false; }
     if nd[s].op >= 0 && !(et != TY_F64 && is_alu_op(nd[s].op)) { return false; }
-    if nd[s].chk != 0 && !add_guard(a, 0) { return false; }
+    if nd[s].chk != 0 { if at_i { if !add_guard(a, 0) { return false; } } else if !add_guard_e(a, iv_u(x, iv)) { return false; } }
     VK_SNO += 1;
     vnote_w(a);
     if vast[arr_leader[a]] != vtag { vst_at[arr_leader[a]] = VK_SNO; }
@@ -5405,6 +5472,8 @@ fn plan_stream(s: i64, body: i64, inc: i64, iv: i64, nb: i64) {
   pre_classify(body, nb, iv);
   VK_LOOPS = 0; VK_DEPTH = 0; VK_TMP = 0; VK_NG = 0; VK_SNO = 0;
   let t0 = vtag;
+  c = nd[body].a; i = 0;
+  while i < nb { st_prescan(c); c = nd[c].next; i += 1; }
   c = nd[body].a; i = 0;
   while i < nb { if !sst_ok(c, iv, -1) { return; } c = nd[c].next; i += 1; }
   if VK_LOOPS != 0 { return; }
@@ -6126,7 +6195,18 @@ fn vguards(p: i64, iv: i64, cnd: i64, en: i64, ts0: i64) -> i64 {
   // (last = E - 1 for <, E for <=; i only grows by 1 per iteration)
   let mut g = 0;
   while g < vp_ng[p] {
-    let a = vgl_arr[vp_g0[p] + g]; let c = vgl_off[vp_g0[p] + g];
+    let a = vgl_arr[vp_g0[p] + g]; let c = vgl_off[vp_g0[p] + g]; let u = vgl_offe[vp_g0[p] + g];
+    if u >= 0 {   // a[i + U]: 0 <= U + i0 and U + last < len (U is loop-invariant)
+      gen(u, VRG, VN); let ru = RGS[VRG];
+      mov_rr(RAX, ru); loc(iv); alu(A_ADD, K_REG, RAX, OK, ORR, OI); ts = pl_add(ts, jcc(0));
+      alen_cmp(a); ts = pl_add(ts, jcc(CC_AE));
+      bound_rcx(en);
+      mov_rr(RAX, ru); alu(A_ADD, K_REG, RAX, K_REG, RCX, 0); ts = pl_add(ts, jcc(0));
+      if nd[cnd].op == O_LT { alui(A_SUB, RAX, 1); ts = pl_add(ts, jcc(0)); }
+      alen_cmp(a); ts = pl_add(ts, jcc(CC_GE));
+      g += 1;
+      continue;
+    }
     loc(iv); load(RAX, OK, ORR, OI);
     if c != 0 { alui(A_ADD, RAX, c as u64); ts = pl_add(ts, jcc(0)); }
     alen_cmp(a); ts = pl_add(ts, jcc(CC_AE));
@@ -6294,6 +6374,7 @@ fn gen_vloop(s: i64, p: i64) -> i64 {
   let mut to_scalar = -1;
   emh("803c25"); u32_(HAS_AVX); byte(0); to_scalar = pl_add(to_scalar, jcc(CC_E));
   let cnd = nd[s].a; let en = nd[cnd].b;
+  vtemps(s);
   to_scalar = vguards(p, iv, cnd, en, to_scalar);
   let st = vp_stream[p];
   if byt && vp_brec[p] >= 0 { loc(vp_brec[p]); load(RAX, OK, ORR, OI); alui(A_CMP, RAX, 1); to_scalar = pl_add(to_scalar, jcc(CC_A)); }
