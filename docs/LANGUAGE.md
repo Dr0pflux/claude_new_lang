@@ -150,7 +150,7 @@ par w in 0..ncpu() {              // ncpu() workers, w = 0..ncpu()-1
 | `save(k, a, n);` | writes the first `n` bytes of `[u8]` `a` to the file named by `argv[k]` (created or truncated, mode 0755); traps if `k ≥ argc`, `n > len(a)` or the write fails; `main` only |
 | `let f = file(k);` | maps `argv[k]` read-only as `[u8]`; traps if `k ≥ argc` or open/map fails; an empty file has length 0 |
 | `let s = argv(k);` | the text of command-line argument `k` as a read-only `[u8]` (no copy); traps if `k ≥ argc`; `main` only |
-| `let w = view<T>(bytes);` | reinterprets a `[u8]` as `[T]` (length = bytes ÷ width, any `T` but `bool`); shares memory; read-only if the source is |
+| `let w = view<T>(bytes);` | reinterprets a `[u8]` as `[T]` (length = bytes ÷ width, any `T` except `bool` or a struct containing a `bool` field); shares memory; read-only if the source is |
 | `alloc8/16/32/64`, `shared8..64`, `view16/32/64` | v0.6 spellings for `u8 i16 i32 i64` |
 | `let a: [T] = …;` | optional annotation, checked |
 | `let s = "text\n";` | read-only `[u8]` in the program image; escapes `\n \t \r \0 \\ \" \xHH` |
