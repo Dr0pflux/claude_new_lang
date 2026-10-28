@@ -18,6 +18,10 @@ The [team ledger](https://github.com/Dr0pflux/skite.ck/issues/3) records newer w
 - `e872829` reuses dominating bounds checks and avoids saving registers that die
   at calls. `027a8d9` adds integer tail-recursion accumulation and copy coalescing.
   Clean suites and targeted call/order/wrapping regressions passed.
+- Paired quotient/remainder commoning stops at short-circuit `&&` and `||` nodes,
+  keeping division traps inside the branch where the source evaluates them.
+  `tests/divmod_pair.py` covers skipped and evaluated branches, cross-branch matches,
+  signed overflow, and unconditional signed/unsigned pairs.
 - PR #10 removes redundant initialization before full analysis-state copies.
   Independent review, clean bootstrap, byte-identical self-hosting fixed point,
   regressions and fuzz smoke tests passed on its exact head. Additional control-flow
@@ -27,8 +31,9 @@ The [team ledger](https://github.com/Dr0pflux/skite.ck/issues/3) records newer w
 
 Claude's genuine ledger cross-audit found no defects in merged PRs #1/#2/#4/#5/#6/#8.
 Codex independently reviewed `e872829` and `027a8d9`. PR #10 received independent
-Luna and parent Codex review; Claude review remains pending after its CLI-reported
-2026-10-28 11:40 a.m. America/Chicago reset. Do not describe pending review as approval.
+Luna and parent Codex review; Claude subsequently cross-audited PRs #10–#13
+with no defects found (ledger comment6475114698). PR #15 also received a genuine
+Claude review; exact verdicts and conditions are recorded in its PR and the ledger.
 
 The subsequent analysis-copy index reuse has the same copy/access order and
 passed independent static review and generated-binary equivalence checks for all
@@ -57,10 +62,12 @@ the above-midpoint case. Exact-head build, review and CI evidence is recorded in
 
 ## Open findings
 
-1. [Issue #9](https://github.com/Dr0pflux/skite.ck/issues/9) tracks mixed-width
-   overlapping views accepted by the WIP stream vectorizer. Native AVX-512
-   differential execution and a verified fix remain pending. Parameter aliasing
-   is also an outstanding dependence-analysis concern; do not assume noalias for views.
+1. [Issue #9](https://github.com/Dr0pflux/skite.ck/issues/9) is resolved: Claude
+   reproduced the mixed-width alias hazard natively, rejected same-leader mixed widths
+   and added runtime parameter guards. Codex/Luna scoped review and integrated CI
+   passed afterward; the issue records exact evidence and the post-integration review
+   ordering. Broader newer vectorizer changes still need independent audits; views
+   do not grant general noalias assumptions.
 2. The Codex Ryzen host has AVX2 but lacks AVX-512 and ARM. A vector plan plus
    passing scalar fallback does not validate vector execution. Claude reported
    native AVX-512 coverage on its Xeon; identify the exact head/cases covered.

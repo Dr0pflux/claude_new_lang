@@ -12,7 +12,7 @@
 - **If-conversion:** small integer `if`/`else` bodies in loops become `cmov` selects.
 - **Loop-carried stores:** `a[i - 1]` after a store `a[i]` reads a register (prefixsum 994 → 204 ms).
 - **String matching:** small search loops become conjunctions vectorized in byte lanes (strsearch 334 → 43 ms, clang 172).
-- **Paired division:** `a / b` and `a % b` share one divide (divmod 390 → 201 ms).
+- **Paired division:** `a / b` and `a % b` share one divide when both are unconditionally evaluated (divmod 390 → 201 ms). The transformation stops at short-circuit `&&`/`||`, so skipped branches cannot introduce division traps.
 - **2-D vector indexing:** loads/stores at `i + U` (loop-invariant `U`) vectorize (matmul 654 → 264 ms).
 - **Byte-lane recurrences:** a 0/1 state flag (word boundaries) is carried between lanes by mask
   shifts; wordcount kernel 249 → 45 ms (clang 72). 16 new kernels in `bench/kernels` (GAPS.md).
