@@ -3,3 +3,4 @@
 /skite.check
 *.o
 /bench/**/target/
+/.claude/

@@ -3652,6 +3652,7 @@ fn magic(d: i64) {
 }
 fn divconst(r: i64, dv: u64, mod_: bool, nn_: bool) {
   let d = dv as i64;
+  if d == 0 { mov_ri(RCX, 0); mov_rr(RAX, r); cqo(); unop(7, K_REG, RCX); return; }   // constant-propagated zero: trap at run time
   if d == 1 { if mod_ { mov_ri(r, 0); } return; }
   if d == -1 || d == INT64_MIN {
     mov_ri(RCX, dv); mov_rr(RAX, r); cqo(); unop(7, K_REG, RCX);
@@ -3743,8 +3744,8 @@ fn has_trap(e: i64) -> bool {
   if nd[e].k == N_CALL { return true; }
   let b = nd[e].b;
   if nd[e].k == N_LOAD && nd[e].chk != 0 { return true; }
-  if nd[e].k == N_BIN && (nd[e].op == O_DIV || nd[e].op == O_MOD) && (!is_const(b) || (nd[b].v as i64) == -1) { return true; }
-  if nd[e].k == N_BIN && (nd[e].op == O_DIVU || nd[e].op == O_MODU) && !is_const(b) { return true; }
+  if nd[e].k == N_BIN && (nd[e].op == O_DIV || nd[e].op == O_MOD) && (!is_const(b) || (nd[b].v as i64) == -1 || nd[b].v == 0) { return true; }
+  if nd[e].k == N_BIN && (nd[e].op == O_DIVU || nd[e].op == O_MODU) && (!is_const(b) || nd[b].v == 0) { return true; }
   return has_trap(nd[e].a) || has_trap(nd[e].b);
 }
 let mut div_nn: bool = false;
