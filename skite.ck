@@ -5168,9 +5168,24 @@ fn ivcopies(body: i64, s: i64, iv: i64) {
 }
 // a statement of a stream loop: lane-parallel lets, vector stores a[i] = e / a[i] op= e (8-byte
 // elements), integer reductions s op= e (op: + - & | ^; wrapping, so any grouping gives the same sum)
-fn sst_ok(s: i64, iv: i64) -> bool {
+fn sst_ok(s: i64, iv: i64, lvl: i64) -> bool {
   let k = nd[s].k;
-  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { if !sst_ok(c, iv) { return false; } c = nd[c].next; } return true; }
+  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { if !sst_ok(c, iv, lvl) { return false; } c = nd[c].next; } return true; }
+  if k == S_IF {
+    if lvl < 0 && minmax_ok(s, iv) { return true; }
+    let cnd = nd[s].a;
+    if has_call(cnd) { return false; }
+    VK_SNO += 1;
+    vscan_loads(cnd, iv);
+    if !refs_v(cnd) {   // uniform: an ordinary branch around lane-parallel code (loop-invariant, so no lane order issue)
+      if lvl >= 0 || has_trap(cnd) { return false; }
+      return sst_ok(nd[s].b, iv, -1) && (nd[s].c < 0 || sst_ok(nd[s].c, iv, -1));
+    }
+    if !vdead_ok(cnd) { return false; }
+    let nl = lvl + 1;
+    if !vcond_ok(cnd, nl, lvl, false, iv) || !vcond_ok(cnd, nl, nl, false, iv) { return false; }
+    return sst_ok(nd[s].b, iv, nl) && (nd[s].c < 0 || sst_ok(nd[s].c, iv, nl));
+  }
   if k == S_STORE {
     let a = nd[s].var;
     let et = vars[a].et;
@@ -5184,6 +5199,7 @@ fn sst_ok(s: i64, iv: i64) -> bool {
     if vast[arr_leader[a]] != vtag { vst_at[arr_leader[a]] = VK_SNO; }
     vast[arr_leader[a]] = vtag;
     vscan_loads(nd[s].b, iv);
+    if lvl >= 0 && !vdead_ok(nd[s].b) { return false; }   // under a mask: no uniform traps
     if !vexpr_ok(nd[s].b, 1, iv) { return false; }
     if VK_TMP < 2 { VK_TMP = 2; }
     return true;
@@ -5196,6 +5212,7 @@ fn sst_ok(s: i64, iv: i64) -> bool {
     vred[v] = vtag; vredop[v] = nd[e].op; vmark[v] = vtag;   // the accumulator is a lane vector
     VK_SNO += 1;
     vscan_loads(nd[e].b, iv);
+    if lvl >= 0 && !vdead_ok(nd[e].b) { return false; }
     return vexpr_ok(nd[e].b, 1, iv);
   }
   if k == S_LET || k == S_ASSIGN {
@@ -5203,9 +5220,65 @@ fn sst_ok(s: i64, iv: i64) -> bool {
     vscan_loads(nd[s].a, iv);
     // an unused varying value: its only possible traps are loads, which the guards cover
     if k == S_LET && vars[nd[s].var].reads == 0 && refs_v(nd[s].a) && !has_call(nd[s].a) && vdead_ok(nd[s].a) { vdecl[nd[s].var] = vtag; vprw[nd[s].var] = vtag; return vexpr_ok(nd[s].a, 0, iv); }
+    if lvl >= 0 {   // under a mask: varying values merge into their lanes; nothing may trap
+      let v = nd[s].var;
+      if k == S_LET { vdecl[v] = vtag; }
+      if vdecl[v] != vtag || has_call(nd[s].a) || !vdead_ok(nd[s].a) { return false; }
+      vprw[v] = vtag;
+      if !is_v(v) { return false; }
+      let t = vars[v].ty; if !(f64_type(t) || int8_type(t)) { return false; }
+      return vexpr_ok(nd[s].a, 0, iv);
+    }
     return vpre_ok(s, -1, 0, iv);
   }
   return false;
+}
+// max/min reductions: `if X > m { m = X; }` (also >=, <, <=, either side, unsigned forms)
+let RED_MAXS = 901; let RED_MAXU = 902; let RED_MINS = 903; let RED_MINU = 904;
+fn expr_same(a: i64, b: i64) -> bool {
+  if nd[a].k != nd[b].k || nd[a].op != nd[b].op || nd[a].var != nd[b].var || nd[a].ty != nd[b].ty { return false; }
+  let k = nd[a].k;
+  if k == N_CONST { return nd[a].v == nd[b].v; }
+  if k == N_VAR { return true; }
+  if k == N_LOAD { return expr_same(nd[a].a, nd[b].a); }
+  if k == N_UN { return expr_same(nd[a].a, nd[b].a); }
+  if k == N_BIN { return expr_same(nd[a].a, nd[b].a) && expr_same(nd[a].b, nd[b].b); }
+  return false;
+}
+let mut MM_VAR: i64 = -1;
+let mut MM_X: i64 = -1;
+fn minmax_kind(s: i64) -> i64 {   // RED_* or 0; sets MM_VAR, MM_X
+  if nd[s].k != S_IF || nd[s].c >= 0 { return 0; }
+  let mut b = nd[s].b;
+  if nd[b].k == S_BLOCK { b = nd[b].a; if b < 0 || nd[b].next >= 0 { return 0; } }
+  if nd[b].k != S_ASSIGN { return 0; }
+  let m = nd[b].var; let x = nd[b].a; let c = nd[s].a;
+  if nd[c].k != N_BIN || has_call(x) { return 0; }
+  let op = nd[c].op;
+  let mut gt = false;
+  if op == O_GT || op == O_GE || op == O_GTU || op == O_GEU { gt = true; }
+  else if !(op == O_LT || op == O_LE || op == O_LTU || op == O_LEU) { return 0; }
+  let uns = op == O_GTU || op == O_GEU || op == O_LTU || op == O_LEU;
+  let ca = nd[c].a; let cb = nd[c].b;
+  let mut mx_ = false;
+  if nd[cb].k == N_VAR && nd[cb].var == m && expr_same(ca, x) { mx_ = gt; }        // X > m: max
+  else if nd[ca].k == N_VAR && nd[ca].var == m && expr_same(cb, x) { mx_ = !gt; }  // m < X: max
+  else { return 0; }
+  MM_VAR = m; MM_X = x;
+  if mx_ { if uns { return RED_MAXU; } return RED_MAXS; }
+  if uns { return RED_MINU; } return RED_MINS;
+}
+fn minmax_ok(s: i64, iv: i64) -> bool {
+  let kind = minmax_kind(s);
+  if kind == 0 { return false; }
+  let v = MM_VAR; let x = MM_X;
+  if (vars[v].ty != TY_I64 && vars[v].ty != TY_U64) || vars[v].xr >= 0 || v == iv || vars[v].glob != 0 || vdecl[v] == vtag || vred[v] == vtag { return false; }
+  if refs(x, v) || !refs_v(x) || !vdead_ok(x) { return false; }
+  if (kind == RED_MAXU || kind == RED_MINU) != (vars[v].ty == TY_U64) { return false; }
+  vred[v] = vtag; vredop[v] = kind; vmark[v] = vtag;
+  VK_SNO += 1;
+  vscan_loads(nd[s].a, iv);
+  return vexpr_ok(x, 1, iv);
 }
 // an unused varying value can be skipped: uniform parts cannot trap, varying loads are guarded
 fn vdead_ok(e: i64) -> bool {
@@ -5225,8 +5298,8 @@ fn plan_stream(s: i64, body: i64, inc: i64, iv: i64, nb: i64) {
   VK_LOOPS = 0; VK_DEPTH = 0; VK_TMP = 0; VK_NG = 0; VK_SNO = 0;
   let t0 = vtag;
   c = nd[body].a; i = 0;
-  while i < nb { if !sst_ok(c, iv) { return; } c = nd[c].next; i += 1; }
-  if VK_LOOPS != 0 || VK_DEPTH != 0 { return; }
+  while i < nb { if !sst_ok(c, iv, -1) { return; } c = nd[c].next; i += 1; }
+  if VK_LOOPS != 0 { return; }
   let mut nvar = 0; let mut nst = 0; let mut nred = 0;
   let mut vv = 0;
   while vv < nv {
@@ -5239,8 +5312,8 @@ fn plan_stream(s: i64, body: i64, inc: i64, iv: i64, nb: i64) {
   }
   if nst + nred == 0 { return; }
   let mut u = 2;
-  if (nvar + VK_TMP + 1) * 2 > 16 { u = 1; }
-  if (nvar + VK_TMP + 1) * u > 16 { return; }
+  if (nvar + VK_TMP + 1) * 2 > 16 || VK_DEPTH * 2 > 6 { u = 1; }
+  if (nvar + VK_TMP + 1) * u > 16 || VK_DEPTH * u > 6 { return; }
   if nvlist + nvar > 65536 || nvrl + nred > 65536 { return; }
   if !plan_extra(true, t0) { return; }
   let p = nplans; nplans += 1;
@@ -5576,29 +5649,47 @@ fn vred_init(p: i64) {
     let R = VREG[vrl_var[vp_r0[p] + r]];
     let mut h = 0;
     while h < VU {
-      if vrl_op[vp_r0[p] + r] == O_AND { evx(3, 1, 1, 2, 37, R + h, R + h, 0, R + h, 0, false, false); byte(255); }   // vpternlogq: ones
+      let op = vrl_op[vp_r0[p] + r];
+      if op >= RED_MAXS {   // identity: the opposite extreme
+        let mut id: u64 = 9223372036854775808;
+        if op == RED_MAXU { id = 0; } else if op == RED_MINS { id = 9223372036854775807; } else if op == RED_MINU { id = 18446744073709551615; }
+        VM_TAIL = 0; vm_pool(cp_u64(id)); evx(2, 1, 1, 2, 89, R + h, 0, 1, 0, 0, false, false);   // vpbroadcastq
+      }
+      else if op == O_AND { evx(3, 1, 1, 2, 37, R + h, R + h, 0, R + h, 0, false, false); byte(255); }   // vpternlogq: ones
       else { evx(1, 1, 1, 2, 239, R + h, R + h, 0, R + h, 0, false, false); }                                        // vpxorq: zero
       h += 1;
     }
     r += 1;
   }
 }
-fn vred_opc(op: i64) -> i64 { if op == O_SUB { return viop(O_ADD); } return viop(op); }   // s -= e: subtract the sum
+fn vred_opc(op: i64) -> i64 {   // s -= e: subtract the sum; max/min: vpmax/vpmin (0F38)
+  if op == RED_MAXS { return 61; } if op == RED_MAXU { return 63; } if op == RED_MINS { return 57; } if op == RED_MINU { return 59; }
+  if op == O_SUB { return viop(O_ADD); } return viop(op);
+}
+fn vred_mm(op: i64) -> i64 { if op >= RED_MAXS { return 2; } return 1; }
 // fold the lanes and combine with the scalar: s = s op (lane0 op lane1 op ..)
 fn vred_fini(p: i64) {
   let mut r = 0;
   while r < vp_nr[p] {
     let v = vrl_var[vp_r0[p] + r]; let op = vrl_op[vp_r0[p] + r];
-    let R = VREG[v]; let T = vr(0); let o = vred_opc(op);
-    if VU == 2 { evx(1, 1, 1, 2, o, R, R, 0, R + 1, 0, false, false); }
+    let R = VREG[v]; let T = vr(0); let o = vred_opc(op); let mm = vred_mm(op);
+    if VU == 2 { evx(mm, 1, 1, 2, o, R, R, 0, R + 1, 0, false, false); }
     evx(3, 1, 1, 2, 59, R, 0, 0, T, 0, false, false); byte(1);   // vextracti64x4 ymmT, zmmR, 1
-    evx(1, 1, 1, 1, o, R, R, 0, T, 0, false, false);
+    evx(mm, 1, 1, 1, o, R, R, 0, T, 0, false, false);
     evx(3, 1, 1, 1, 57, R, 0, 0, T, 0, false, false); byte(1);   // vextracti64x2 xmmT, ymmR, 1
-    evx(1, 1, 1, 0, o, R, R, 0, T, 0, false, false);
+    evx(mm, 1, 1, 0, o, R, R, 0, T, 0, false, false);
     evx(1, 1, 0, 0, 112, T, 0, 0, R, 0, false, false); byte(78); // vpshufd xmmT, xmmR, 0x4e
-    evx(1, 1, 1, 0, o, R, R, 0, T, 0, false, false);
-    evx(1, 1, 1, 0, 126, R, 0, 0, RAX, 0, false, false);         // vmovq rax, xmmR
-    loc(v); load(RCX, OK, ORR, OI); alu(alu_dig(op), K_REG, RCX, K_REG, RAX, 0); loc(v); store(OK, ORR, RCX);
+    evx(mm, 1, 1, 0, o, R, R, 0, T, 0, false, false);
+    if op >= RED_MAXS {   // combine with the scalar in the vector unit: lane 0 = max/min(m, folded)
+      loc(v); load(RCX, OK, ORR, OI);
+      evx(1, 1, 1, 0, 110, T, 0, 0, RCX, 0, false, false);       // vmovq xmmT, rcx
+      evx(mm, 1, 1, 0, o, R, R, 0, T, 0, false, false);
+      evx(1, 1, 1, 0, 126, R, 0, 0, RAX, 0, false, false);       // vmovq rax, xmmR
+      loc(v); store(OK, ORR, RAX);
+    } else {
+      evx(1, 1, 1, 0, 126, R, 0, 0, RAX, 0, false, false);       // vmovq rax, xmmR
+      loc(v); load(RCX, OK, ORR, OI); alu(alu_dig(op), K_REG, RCX, K_REG, RAX, 0); loc(v); store(OK, ORR, RCX);
+    }
     r += 1;
   }
 }
@@ -5607,26 +5698,69 @@ fn red_of(p: i64, v: i64) -> bool {
   while r < vp_nr[p] { if vrl_var[vp_r0[p] + r] == v { return true; } r += 1; }
   return false;
 }
-fn sgen(p: i64, s: i64) {
+fn sgen(p: i64, s: i64, lvl: i64) {
   let k = nd[s].k;
-  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { sgen(p, c); c = nd[c].next; } return; }
+  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { sgen(p, c, lvl); c = nd[c].next; } return; }
+  if k == S_IF && lvl < 0 && minmax_kind(s) != 0 && red_of(p, MM_VAR) {
+    let r = MM_VAR; let x = MM_X; let op = minmax_kind(s);
+    let sv_rg = rgs_top; let sv_pos = cur_pos;
+    vtemps(s); rgs_top += 12; cur_pos = nd[s].pos;
+    vopnd(x, 0);
+    let mut h = 0;
+    while h < VU {
+      if VOK == 1 { VM_TAIL = 0; vm_pool(VOR); evx(2, 1, 1, 2, vred_opc(op), VREG[r] + h, VREG[r] + h, 1, 0, 0, false, true); }
+      else { evx(2, 1, 1, 2, vred_opc(op), VREG[r] + h, VREG[r] + h, 0, VOR + h, 0, false, false); }
+      h += 1;
+    }
+    rgs_top = sv_rg; cur_pos = sv_pos;
+    return;
+  }
+  if k == S_IF {
+    let sv_rg = rgs_top; let sv_pos = cur_pos;
+    vtemps(s); rgs_top += 12; cur_pos = nd[s].pos;
+    let cnd = nd[s].a;
+    if !refs_v(cnd) {
+      let mut f = -1; let mut en = -1;
+      f = cond_jump(cnd, false, f, VRG, VN);
+      rgs_top = sv_rg; cur_pos = sv_pos;
+      sgen(p, nd[s].b, lvl);
+      if nd[s].c >= 0 { en = pl_add(en, jmp()); pl_patch(f, clen); sgen(p, nd[s].c, lvl); pl_patch(en, clen); }
+      else { pl_patch(f, clen); }
+      return;
+    }
+    let nl = lvl + 1;
+    vcond(cnd, nl, lvl, false);
+    rgs_top = sv_rg; cur_pos = sv_pos;
+    kortest(kreg(nl, 0), kreg(nl, VU - 1));
+    let sk = jcc(CC_E);
+    sgen(p, nd[s].b, nl);
+    rel32(sk, clen);
+    if nd[s].c >= 0 {
+      let mut h = 0; while h < VU { kandn(kreg(nl, h), kreg(nl, h), kpar(lvl, h)); h += 1; }
+      kortest(kreg(nl, 0), kreg(nl, VU - 1));
+      let sk2 = jcc(CC_E);
+      sgen(p, nd[s].c, nl);
+      rel32(sk2, clen);
+    }
+    return;
+  }
   if k == S_STORE || (k == S_ASSIGN && red_of(p, nd[s].var)) {
     let sv_rg = rgs_top; let sv_pos = cur_pos;
     vtemps(s); rgs_top += 12; cur_pos = nd[s].pos;
-    if k == S_STORE { vstore(s); }
+    if k == S_STORE { vstore(s, lvl); }
     else {
       let r = nd[s].var; let e = nd[s].a;
       vopnd(nd[e].b, 0);
-      vop3(1, 1, vred_opc(nd[e].op), VREG[r], VREG[r], VOK, VOR, -1);
+      vop3(1, 1, vred_opc(nd[e].op), VREG[r], VREG[r], VOK, VOR, lvl);
     }
     rgs_top = sv_rg; cur_pos = sv_pos;
     return;
   }
   if k == S_LET && vars[nd[s].var].reads == 0 && refs_v(nd[s].a) { return; }   // guarded, nothing to compute
-  vstmt(s, -1);
+  vstmt(s, lvl);
 }
 // a[i..i+L) = value (a[i] op= value: load, op, store), 8-byte elements
-fn vstore(s: i64) {
+fn vstore(s: i64, lvl: i64) {
   let a = nd[s].var; let mut val = nd[s].b;
   let w = vars[a].arr;
   while nd[val].k == N_UN && ext_width(nd[val].op) >= w { val = nd[val].a; }   // the store truncates anyway
@@ -5641,8 +5775,8 @@ fn vstore(s: i64) {
   if nd[s].op >= 0 { vload(a, vars[a].et, b, ri, vr(1), -1); vop3(1, 1, viop(nd[s].op), vr(0), vr(1), 0, src, -1); src = vr(0); }
   while h < VU {
     vm_mem(b, ri, lg(w), 8 * w * h);
-    if w == 8 { evx(1, 2, 1, 2, 127, src + h, 0, 1, 0, 0, false, false); }               // vmovdqu64 store
-    else { evx(2, 2, 0, 2, vtrunc_op(w), src + h, 0, 1, 0, 0, false, false); }   // vpmovq{b,w,d}: truncate
+    if w == 8 { evx(1, 2, 1, 2, 127, src + h, 0, 1, 0, kreg(lvl, h), false, false); }               // vmovdqu64 store {k}
+    else { evx(2, 2, 0, 2, vtrunc_op(w), src + h, 0, 1, 0, kreg(lvl, h), false, false); }   // vpmovq{b,w,d}: truncate {k}
     h += 1;
   }
 }
@@ -5687,7 +5821,7 @@ fn gen_vloop(s: i64, p: i64) -> i64 {
   let mut c = nd[body].a;
   let mut i = 0;
   if st {
-    while i < vp_npre[p] { sgen(p, c); c = nd[c].next; i += 1; }
+    while i < vp_npre[p] { sgen(p, c, -1); c = nd[c].next; i += 1; }
     loc(iv); alu(A_ADD, OK, ORR, K_IMM, 0, L as u64);
     rel32(jmp(), vtop);
     pl_patch(ex, clen);

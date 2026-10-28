@@ -57,7 +57,7 @@ class Gen:
         if r < 0.6: return ""
         c = self.r.choice([1, 2, 3, -1, -2, -3])
         return f" + {c}" if c > 0 else f" - {-c}"
-    def body(self, arrs, stored, reds):
+    def body(self, arrs, stored, reds, depth=0):
         r = self.r
         temps, ftemps, out = [], [], []
         nt = 0
@@ -81,8 +81,30 @@ class Gen:
                     if r.random() < 0.35: out.append(f"{nm}[i] {r.choice(['+', '-', '^', '|', '&', '*'])}= {v};")
                     elif t in ("i64", "u64"): out.append(f"{nm}[i] = {v};")
                     else: out.append(f"{nm}[i] = ({v}) as {t};")
-        if r.random() < 0.08: out.append("if i == 5 { k3 += 1; }")   # not a stream loop: general path
+        if r.random() < 0.08: out.append("if i == 5 { k3 += 1; }")   # uniform-free branch on i: masked
+        if r.random() < 0.3:   # masked block: stores / reductions under a varying condition
+            inner = self.body(arrs, stored, reds, depth + 1) if depth < 1 else []
+            inner = [x for x in inner if not x.startswith("let ")][:2] or [f"k3 += 1;"]
+            c = self.cond(arrs, temps)
+            if r.random() < 0.4:
+                other = [x for x in self.body(arrs, stored, reds, 2) if not x.startswith("let ")][:1] or ["k3 -= 1;"]
+                out.append(f"if {c} {{ {' '.join(inner)} }} else {{ {' '.join(other)} }}")
+            else: out.append(f"if {c} {{ {' '.join(inner)} }}")
+        if r.random() < 0.25:   # max/min reduction
+            x = self.ival(arrs, temps)
+            m = r.choice(["mx", "mn"])
+            cmp = (">" if m == "mx" else "<") + r.choice(["", "="])
+            if r.random() < 0.5: out.append(f"if {x} {cmp} {m} {{ {m} = {x}; }}")
+            else:
+                flip = {">": "<", ">=": "<=", "<": ">", "<=": ">="}[cmp]
+                out.append(f"if {m} {flip} {x} {{ {m} = {x}; }}")
         return out
+    def cond(self, arrs, temps):
+        r = self.r
+        c = f"({self.ival(arrs, temps)} {r.choice(['<', '<=', '>', '>=', '==', '!='])} {self.ival(arrs, temps)})"
+        if r.random() < 0.3: c = f"({c} {r.choice(['&&', '||'])} ({self.ival(arrs, temps)} {r.choice(['<', '>', '=='])} {r.choice(['0', '7', 'k1'])}))"
+        if r.random() < 0.15: c = f"!{c}"
+        return c
 
 def program(r, fn_mode):
     g = Gen(r)
@@ -104,13 +126,13 @@ def program(r, fn_mode):
         params = ", ".join(f"{nm}: mut [{t}]" if (nm, t) in stored else f"{nm}: [{t}]" for nm, t in arrs)
         lines.append(f"fn kern({params}, n: i64, k1: i64, k2: i64, kf: f64, d: i64) -> i64 {{")
         lines.append(f"  if d > 0 {{ return kern({', '.join(names)}, n, k1, k2, kf, d - 1); }}")
-        lines.append("  let mut k3 = 0;")
+        lines.append("  let mut k3 = 0; let mut mx = 0 - 5; let mut mn = 5;")
         for s, op in reds: lines.append(f"  let mut {s}: i64 = {'-1' if op == '&' else '7'};")
         lines.append(f"  let mut i = {s0};")
         lines.append(f"  while i < {nexpr} {{")
         lines += ["    " + x for x in g.body(arrs, stored, reds)]
         lines.append("    i += 1;\n  }")
-        lines.append(f"  return k3{''.join(' + ' + s for s, _ in reds)};")
+        lines.append(f"  return k3 + mx * 3 + mn * 5{''.join(' + ' + s for s, _ in reds)};")
         lines.append("}")
     lines.append("fn main() {")
     lines.append(f"  let n = {LEN} - 4 + argc();")   # 45: not a multiple of the vector width
@@ -130,13 +152,13 @@ def program(r, fn_mode):
         lines.append(f"  let res = kern({', '.join(args)}, n, k1, k2, kf, {r.choice([1, 8])});")
         lines.append("  print(res);")
     else:
-        lines.append("  let mut k3 = 0;")
+        lines.append("  let mut k3 = 0; let mut mx = 0 - 5; let mut mn = 5;")
         for s, op in reds: lines.append(f"  let mut {s}: i64 = {'-1' if op == '&' else '7'};")
         lines.append(f"  let mut i = {s0};")
         lines.append(f"  while i < {nexpr} {{")
         lines += ["    " + x for x in g.body(arrs, stored, reds)]
         lines.append("    i += 1;\n  }")
-        lines.append("  print(k3);")
+        lines.append("  print(k3); print(mx); print(mn);")
         for s, _ in reds: lines.append(f"  print({s});")
     for nm, t in arrs:
         conv = f"bits({nm}[j]) as i64" if t == "f64" else (f"{nm}[j] as i64" if t == "u64" else f"{nm}[j]")
