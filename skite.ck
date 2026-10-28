@@ -3520,6 +3520,99 @@ fn tre_fn(f: i64) {
   nd[b].a = la;
   tre_n += 1;
 }
+// ---- carried stores: in `while i < E { ..; a[i] (op)= v; ..; i += 1 }` a load a[i - 1] reads what
+// the previous iteration stored, so that value stays in a variable instead of going through memory
+// (prefix sums, DP rows). The first a[i - 1] is loaded before the loop when the loop will run; the
+// body may not print, call, divide by a variable or nest loops, so every possible trap is the same
+// bounds-check SIGILL and loading it earlier is unobservable.
+let mut CS_F: i64 = -1;
+let mut CS_A: i64 = -1;
+let mut CS_BAD: bool = false;
+let mut CS_NLD: i64 = 0;
+let mut CS_NST: i64 = 0;
+let mut CS_ST: i64 = -1;
+fn cs_prev(x: i64, iv: i64) -> bool {
+  return nd[x].k == N_BIN && nd[x].op == O_SUB && nd[nd[x].a].k == N_VAR && nd[nd[x].a].var == iv && is_const(nd[x].b) && nd[nd[x].b].v == 1;
+}
+fn cs_scan_e(e: i64, iv: i64, rw: bool) {   // rw: rewrite a[i - 1] -> CS temporary
+  if e < 0 { return; }
+  let k = nd[e].k;
+  if k == N_CALL || k == N_NCPU { CS_BAD = true; return; }
+  if k == N_CONST || k == N_VAR || k == N_ARR { return; }
+  if k == N_BIN && (nd[e].op == O_DIV || nd[e].op == O_MOD || nd[e].op == O_DIVU || nd[e].op == O_MODU) && !(is_const(nd[e].b) && nd[nd[e].b].v != 0 && (nd[nd[e].b].v as i64) != -1) { CS_BAD = true; }
+  if k == N_LOAD && vars[nd[e].var].basev == vars[CS_A].basev {
+    let x = nd[e].a;
+    if nd[e].op > 0 || vars[nd[e].var].arr != vars[CS_A].arr { CS_BAD = true; return; }
+    if nd[x].k == N_VAR && nd[x].var == iv { return; }
+    if cs_prev(x, iv) { CS_NLD += 1; if rw { nd[e].k = N_VAR; nd[e].var = CS_T; nd[e].a = -1; vars[CS_T].reads += 1; } return; }
+    CS_BAD = true; return;
+  }
+  cs_scan_e(nd[e].a, iv, rw); cs_scan_e(nd[e].b, iv, rw);
+}
+let mut CS_T: i64 = -1;
+fn cs_scan_s(s: i64, iv: i64, rw: bool) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { cs_scan_s(c, iv, rw); c = nd[c].next; } return; }
+  if k == S_LET || k == S_ASSIGN { cs_scan_e(nd[s].a, iv, rw); return; }
+  if k == S_IF { cs_scan_e(nd[s].a, iv, rw); cs_scan_s(nd[s].b, iv, rw); cs_scan_s(nd[s].c, iv, rw); return; }
+  if k == S_STORE {
+    cs_scan_e(nd[s].a, iv, rw); cs_scan_e(nd[s].b, iv, rw);
+    if vars[nd[s].var].basev == vars[CS_A].basev { CS_NST += 1; if s != CS_ST { CS_BAD = true; } }
+    else if CS_F != mainfn { CS_BAD = true; }   // parameters may be the same array
+    return;
+  }
+  CS_BAD = true;
+}
+fn cs_loop(w: i64) {
+  let cnd = nd[w].a;
+  if nd[cnd].k != N_BIN || (nd[cnd].op != O_LT && nd[cnd].op != O_LE) || nd[nd[cnd].a].k != N_VAR { return; }
+  let iv = nd[nd[cnd].a].var;
+  if vars[iv].ty != TY_I64 || count_assign(w, iv) != 1 || has_call(cnd) || nd[w].c >= 0 { return; }
+  let body = nd[w].b;
+  if nd[body].k != S_BLOCK { return; }
+  // the increment is last; the store a[i] (op)= v is a top-level statement or ends a top-level block
+  let mut prev = -1; let mut c = nd[body].a; let mut st = -1;
+  while c >= 0 && nd[c].next >= 0 {
+    let mut x = c;
+    if nd[x].k == S_BLOCK { x = nd[x].a; while x >= 0 && nd[x].next >= 0 { x = nd[x].next; } }
+    if x >= 0 && nd[x].k == S_STORE && nd[nd[x].a].k == N_VAR && nd[nd[x].a].var == iv && st < 0 { st = x; }
+    prev = c; c = nd[c].next;
+  }
+  if c < 0 || !is_inc1(c, iv) || st < 0 || prev < 0 { return; }
+  let a = nd[st].var;
+  let et = vars[a].et;
+  if nd[st].c >= 0 || vars[a].arr != 8 || !(et == TY_I64 || et == TY_U64 || et == TY_F64) { return; }
+  if nd[st].op >= 0 && !is_alu_op(nd[st].op) { return; }
+  CS_A = a; CS_ST = st; CS_BAD = false; CS_NLD = 0; CS_NST = 0;
+  cs_scan_e(cnd, iv, false);
+  let mut q = nd[body].a; while q >= 0 && q != c { cs_scan_s(q, iv, false); q = nd[q].next; }
+  if CS_BAD || CS_NLD == 0 || CS_NST != 1 { return; }
+  // rewrite
+  let t = hidden(); vars[t].ty = et; vars[t].mutv = 1; vars[t].owner = CS_F; CS_T = t;
+  let nvv = hidden(); vars[nvv].ty = et; vars[nvv].mutv = 1; vars[nvv].owner = CS_F;
+  q = nd[body].a; while q >= 0 && q != c { cs_scan_s(q, iv, true); q = nd[q].next; }
+  let mut val = nd[st].b;
+  if nd[st].op >= 0 { val = mk_bin(nd[st].op, mk_load(a, mk_var(iv)), val); if nd[val].ty != et { nd[val].ty = et; } nd[st].op = -1; }
+  let st2 = mk(S_STORE); copy_node(st2, st); nd[st2].next = -1; nd[st2].b = mk_var(nvv);
+  let as1 = mk_assign(nvv, val); nd[as1].next = st2;
+  set_block(st, as1, nd[st].next);
+  let at = mk_assign(t, mk_var(nvv)); nd[at].next = c; nd[prev].next = at;
+  // before the loop: let mut t = 0; let mut nv = 0; if cond { t = a[i - 1]; }
+  let w2 = mk(S_WHILE); copy_node(w2, w); nd[w2].next = -1;
+  let ld = mk_load(a, mk_bin(O_SUB, mk_var(iv), mkconst_t(1, TY_I64)));
+  let tif = mk(S_IF); nd[tif].a = clone_expr(cnd); nd[tif].b = mk_assign(t, ld); nd[tif].c = -1; nd[tif].next = w2;
+  let l2 = mk(S_LET); nd[l2].var = nvv; nd[l2].a = mkconst_t(0, et); nd[l2].next = tif;
+  let l1 = mk(S_LET); nd[l1].var = t; nd[l1].a = mkconst_t(0, et); nd[l1].next = l2;
+  set_block(w, l1, nd[w].next);
+}
+fn cs_walk(s: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { let nx = nd[c].next; cs_walk(c); c = nx; } return; }
+  if k == S_IF { cs_walk(nd[s].b); cs_walk(nd[s].c); return; }
+  if k == S_WHILE { cs_walk(nd[s].b); cs_loop(s); return; }
+}
 fn allocate() {
   let mut g = 0;
   while g < nfn { if !starts2u(fns[g].noff, fns[g].nlen) { tre_fn(g); } g += 1; }
@@ -3535,6 +3628,8 @@ fn allocate() {
   inline_calls();
   mark_used();
   simplify();
+  f = 0;
+  while f < nfn { if fns[f].used != 0 { CS_F = f; cs_walk(fns[f].body); } f += 1; }
   let mut v = 0;
   while v < nv { if vars[v].owner >= 0 && fns[vars[v].owner].used == 0 { vars[v].reads = 0; } v += 1; }
   analyze();
@@ -6610,7 +6705,31 @@ fn ic_gen(s: i64, sl: i64, rg: i64, n: i64, want: bool) {
   if OK == K_REG { cmov_rr(cc, ORR, t); }
   else { enc(1, false, 2, 15, 64 | (cc ^ 1), t, OK, ORR); loc(v); store(OK, ORR, t); }   // t = cond ? t : v; v = t
 }
+// one assignment under one comparison: value, cmp, cmov (no predicate materialized)
+fn ic_single(s: i64) -> i64 {   // the assignment statement, or -1
+  let c = nd[s].a;
+  if nd[c].k != N_BIN || !is_cmp(nd[c].op) || nd[s].c >= 0 { return -1; }
+  let mut b = nd[s].b;
+  if nd[b].k == S_BLOCK { b = nd[b].a; if b < 0 || nd[b].next >= 0 { return -1; } }
+  if nd[b].k != S_ASSIGN { return -1; }
+  return b;
+}
 fn ifconv(s: i64, rg: i64, n: i64) {
+  let one = ic_single(s);
+  if one >= 0 && n >= 3 {
+    let c = nd[s].a;
+    gen(nd[one].a, rg, n);
+    let t = RGS[rg];
+    gen(nd[c].a, rg + 1, n - 1);
+    let ra = RGS[rg + 1];
+    if simple(nd[c].b) { opnd(nd[c].b); alu(A_CMP, K_REG, ra, OK, ORR, OI); }
+    else { gen(nd[c].b, rg + 2, n - 2); alu(A_CMP, K_REG, ra, K_REG, RGS[rg + 2], 0); }
+    let cc = cc_of(nd[c].op);
+    loc(nd[one].var);
+    if OK == K_REG { cmov_rr(cc, ORR, t); }
+    else { enc(1, false, 2, 15, 64 | (cc ^ 1), t, OK, ORR); loc(nd[one].var); store(OK, ORR, t); }
+    return;
+  }
   ic_bool(nd[s].a, rg, n);
   let sl = tslot_push(); store(K_MEM, sl, RGS[rg]);
   ic_gen(nd[s].b, sl, rg, n, true);

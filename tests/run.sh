@@ -307,7 +307,7 @@ SRC
   grep -q 'no views of structs containing bool' "$T/error"
 done
 echo 'PASS: views cannot create invalid bool fields'
-for t in structs heap structsz valias valias_width; do
+for t in structs heap structsz valias valias_width carry; do
   "$SKITE" tests/data/$t.ck "$T/$t" > /dev/null
   "$T/$t" "$T/$t.saved" | cmp -s - tests/data/$t.expected || { echo "FAIL: $t" >&2; exit 1; }
 done
@@ -352,4 +352,8 @@ echo 'PASS: for/loop/const, 0b/0o literals (for compiles to the same machine cod
 "$SKITE" tests/stream_mixed_width.ck "$T/mw" > /dev/null && "$SKITE" tests/stream_mixed_width.ck "$T/mws" --scalar > /dev/null
 "$T/mw" | cmp -s - <("$T/mws") || { echo 'FAIL: mixed-width view store/load' >&2; exit 1; }
 echo 'PASS: element-wise vector loops through views of different widths'
+# carried a[i - 1]: with no arguments the first iteration reads a[-1] and must trap after the same output
+if "$T/carry" > "$T/carry.out" 2>/dev/null; then echo 'FAIL: carry trap' >&2; exit 1; fi
+cmp -s tests/data/carry.trap "$T/carry.out" || { echo 'FAIL: carry trap output' >&2; exit 1; }
+echo 'PASS: loop-carried stores keep traps and outputs'
 echo 'All tests passed'
