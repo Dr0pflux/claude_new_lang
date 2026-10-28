@@ -4014,26 +4014,49 @@ let mut BV_BAD: bool = false;
 let mut BV_HARD: bool = false;
 let mut BV_E: i64 = -1;
 let mut BV_LE: bool = false;
-fn bv_off(x: i64) -> i64 {   // k for an index i + k (-2^62 when not of that form)
-  if nd[x].k == N_VAR && nd[x].var == BV_I { return 0; }
-  if nd[x].k == N_BIN && nd[x].ty == TY_I64 {
-    let a = nd[x].a; let b = nd[x].b;
-    if nd[x].op == O_ADD && nd[a].k == N_VAR && nd[a].var == BV_I && is_const(b) { let k = nd[b].v as i64; if k > -1048576 && k < 1048576 { return k; } }
-    if nd[x].op == O_ADD && nd[b].k == N_VAR && nd[b].var == BV_I && is_const(a) { let k = nd[a].v as i64; if k > -1048576 && k < 1048576 { return k; } }
-    if nd[x].op == O_SUB && nd[a].k == N_VAR && nd[a].var == BV_I && is_const(b) { let k = nd[b].v as i64; if k >= 0 && k < 1048576 { return 0 - k; } }
+// an index i + X + k: X up to two loop-invariant i64 variables (BV_LV), k a small constant
+let mut BV_W: i64 = -1;
+let BV_LV = alloc<i64>(2);
+let mut BV_NLV: i64 = 0;
+let mut BV_NI: i64 = 0;
+let mut BV_LK: i64 = 0;
+let mut BV_LOK: bool = true;
+fn bv_lin(x: i64, neg: bool) {
+  if !BV_LOK { return; }
+  let k = nd[x].k;
+  if k == N_CONST { let c = nd[x].v as i64; if c <= -1048576 || c >= 1048576 { BV_LOK = false; return; } if neg { BV_LK -= c; } else { BV_LK += c; } return; }
+  if k == N_VAR {
+    let v = nd[x].var;
+    if neg || vars[v].ty != TY_I64 { BV_LOK = false; return; }
+    if v == BV_I { BV_NI += 1; return; }
+    if count_assign(BV_W, v) != 0 || BV_NLV >= 2 { BV_LOK = false; return; }
+    BV_LV[BV_NLV] = v; BV_NLV += 1; return;
   }
-  return -4611686018427387904;
+  if k == N_BIN && nd[x].ty == TY_I64 && nd[x].op == O_ADD { bv_lin(nd[x].a, neg); bv_lin(nd[x].b, neg); return; }
+  if k == N_BIN && nd[x].ty == TY_I64 && nd[x].op == O_SUB { bv_lin(nd[x].a, neg); bv_lin(nd[x].b, !neg); return; }
+  BV_LOK = false;
 }
+fn bv_off(x: i64) -> bool {   // x is i + X + k: sets BV_LV/BV_NLV (sorted) and BV_LK
+  BV_NLV = 0; BV_NI = 0; BV_LK = 0; BV_LOK = true;
+  bv_lin(x, false);
+  if !BV_LOK || BV_NI != 1 || BV_LK <= -1048576 || BV_LK >= 1048576 { return false; }
+  if BV_NLV == 2 && BV_LV[0] > BV_LV[1] { let t = BV_LV[0]; BV_LV[0] = BV_LV[1]; BV_LV[1] = t; }
+  return true;
+}
+let BV_X1 = alloc<i64>(64);
+let BV_X2 = alloc<i64>(64);
 fn bv_acc(a: i64, x: i64, node: i64, mark: bool) {
-  let k = bv_off(x);
-  if k == -4611686018427387904 { return; }
+  if !bv_off(x) { return; }
+  let k = BV_LK;
+  let mut x1 = -1; let mut x2 = -1;
+  if BV_NLV > 0 { x1 = BV_LV[0]; } if BV_NLV > 1 { x2 = BV_LV[1]; }
   if mark { vpre[node] = true; return; }
   let mut i = 0;
-  while i < BV_N && !(BV_A[i] == a && BV_K[i] == k) { i += 1; }
-  if i == BV_N { if BV_N >= 64 { BV_BAD = true; return; } BV_A[i] = a; BV_K[i] = k; BV_N += 1; }
+  while i < BV_N && !(BV_A[i] == a && BV_K[i] == k && BV_X1[i] == x1 && BV_X2[i] == x2) { i += 1; }
+  if i == BV_N { if BV_N >= 64 { BV_BAD = true; return; } BV_A[i] = a; BV_K[i] = k; BV_X1[i] = x1; BV_X2[i] = x2; BV_N += 1; }
   let mut easy = false;   // the range analysis proves these itself: E is len(a) (or a copy of it), or a constant in range
-  if k >= 0 && is_const(BV_E) && vars[a].lenv < 0 { let mut last = nd[BV_E].v as i64; if !BV_LE { last -= 1; } easy = last + k < vars[a].alen; }
-  if k == 0 && !BV_LE && nd[BV_E].k == N_VAR && vars[a].lenv >= 0 {
+  if x1 < 0 && k >= 0 && is_const(BV_E) && vars[a].lenv < 0 { let mut last = nd[BV_E].v as i64; if !BV_LE { last -= 1; } easy = last + k < vars[a].alen; }
+  if x1 < 0 && k == 0 && !BV_LE && nd[BV_E].k == N_VAR && vars[a].lenv >= 0 {
     let ev = nd[BV_E].var;
     easy = ev == vars[a].lenv || (vars[ev].lenof > 0 && vars[vars[ev].lenof - 1].lenv == vars[a].lenv);
   }
@@ -4062,6 +4085,18 @@ fn bv_len(a: i64) -> i64 {
   if vars[a].lenv >= 0 { return mk_var(vars[a].lenv); }
   return mkconst_t(vars[a].alen as u64, TY_I64);
 }
+fn bv_bound(e: i64) -> i64 {   // -2^40 <= e && e <= 2^40
+  let a = mk_bin(O_GE, e, mkconst_t((0 - 1099511627776) as u64, TY_I64)); nd[a].ty = TY_BOOL;
+  let b = mk_bin(O_LE, clone_expr(e), mkconst_t(1099511627776, TY_I64)); nd[b].ty = TY_BOOL;
+  let o = mk_bin(O_LAND, a, b); nd[o].ty = TY_BOOL; return o;
+}
+fn bv_sum(e0: i64, x1: i64, x2: i64, k: i64) -> i64 {
+  let mut e = e0;
+  if x1 >= 0 { e = mk_bin(O_ADD, e, mk_var(x1)); nd[e].ty = TY_I64; }
+  if x2 >= 0 { e = mk_bin(O_ADD, e, mk_var(x2)); nd[e].ty = TY_I64; }
+  if k != 0 { e = mk_bin(O_ADD, e, mkconst_t(k as u64, TY_I64)); nd[e].ty = TY_I64; }
+  return e;
+}
 fn bv_and(g: i64, c: i64) -> i64 { if g < 0 { return c; } let o = mk_bin(O_LAND, g, c); nd[o].ty = TY_BOOL; return o; }
 fn bv_loop(w: i64) {
   let cnd = nd[w].a; let body = nd[w].b;
@@ -4071,20 +4106,38 @@ fn bv_loop(w: i64) {
   let mut last = nd[body].a; if last < 0 { return; }
   while nd[last].next >= 0 { last = nd[last].next; }
   if !is_inc1(last, iv) { return; }
-  BV_I = iv; BV_E = E; BV_LE = nd[cnd].op == O_LE; BV_N = 0; BV_BAD = false; BV_HARD = false;
+  BV_I = iv; BV_E = E; BV_LE = nd[cnd].op == O_LE; BV_N = 0; BV_BAD = false; BV_HARD = false; BV_W = w;
   bv_s(body, false);
   if BV_BAD || !BV_HARD || BV_N == 0 { return; }
-  // guard: for each (a, k): i >= -k && E <= len(a) - k (- 1 for <=)
-  let mut g = -1; let mut kmin = 0; let mut i = 0;
-  while i < BV_N { if BV_K[i] < kmin { kmin = BV_K[i]; } i += 1; }
-  if kmin < 0 { let c = mk_bin(O_GE, mk_var(iv), mkconst_t((0 - kmin) as u64, TY_I64)); nd[c].ty = TY_BOOL; g = bv_and(g, c); }
+  // guard: for each (a, X, k): i + X + k >= 0 && E + X + k <= len(a) (+ 1 for <=). With variable
+  // offsets every term is first bounded to +-2^40 (&& evaluates them first), so no sum can wrap.
+  let mut g = -1; let mut kmin = 1048576; let mut i = 0; let mut anyx = false;
+  while i < BV_N { if BV_X1[i] < 0 && BV_K[i] < kmin { kmin = BV_K[i]; } if BV_X1[i] >= 0 { anyx = true; } i += 1; }
+  if anyx {
+    g = bv_and(g, bv_bound(mk_var(iv))); g = bv_and(g, bv_bound(clone_expr(E)));
+    i = 0;
+    while i < BV_N {
+      if BV_X1[i] >= 0 { g = bv_and(g, bv_bound(mk_var(BV_X1[i]))); }
+      if BV_X2[i] >= 0 { g = bv_and(g, bv_bound(mk_var(BV_X2[i]))); }
+      i += 1;
+    }
+  }
+  // the smallest index i0 + kmin of the constant-offset accesses must be >= 0 (also for kmin >= 0)
+  if kmin < 1048576 { let c = mk_bin(O_GE, mk_var(iv), mkconst_t((0 - kmin) as u64, TY_I64)); nd[c].ty = TY_BOOL; g = bv_and(g, c); }
   i = 0;
   while i < BV_N {
     let mut d = BV_K[i]; if BV_LE { d += 1; }
-    let mut r = bv_len(BV_A[i]);
-    if d != 0 { r = mk_bin(O_SUB, r, mkconst_t(d as u64, TY_I64)); nd[r].ty = TY_I64; }
-    let c = mk_bin(O_LE, clone_expr(E), r); nd[c].ty = TY_BOOL;
-    g = bv_and(g, c);
+    if BV_X1[i] < 0 {
+      let mut r = bv_len(BV_A[i]);
+      if d != 0 { r = mk_bin(O_SUB, r, mkconst_t(d as u64, TY_I64)); nd[r].ty = TY_I64; }
+      let c = mk_bin(O_LE, clone_expr(E), r); nd[c].ty = TY_BOOL;
+      g = bv_and(g, c);
+    } else {
+      let lo = bv_sum(mk_var(iv), BV_X1[i], BV_X2[i], BV_K[i]);
+      let c1 = mk_bin(O_GE, lo, mkconst_t(0, TY_I64)); nd[c1].ty = TY_BOOL; g = bv_and(g, c1);
+      let hi = bv_sum(clone_expr(E), BV_X1[i], BV_X2[i], d);
+      let c2 = mk_bin(O_LE, hi, bv_len(BV_A[i])); nd[c2].ty = TY_BOOL; g = bv_and(g, c2);
+    }
     i += 1;
   }
   // if g { w (unchecked accesses) } else { checked copy }

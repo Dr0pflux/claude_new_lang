@@ -361,6 +361,9 @@ if "$T/lhoist_trap" > "$T/lhoist_trap.out" 2>/dev/null; then echo 'FAIL: hoisted
 "$SKITE" tests/data/bversion.ck "$T/bversion" > /dev/null
 if "$T/bversion" > "$T/bversion.out" 2>/dev/null; then echo 'FAIL: bversion must trap in its checked copy' >&2; exit 1; fi
 cmp -s tests/data/bversion.expected "$T/bversion.out" || { echo 'FAIL: bversion output' >&2; exit 1; }
+"$SKITE" tests/data/bversion_neg.ck "$T/bversion_neg" > /dev/null
+if "$T/bversion_neg" > "$T/bversion_neg.out" 2>/dev/null; then echo 'FAIL: bversion_neg must trap (negative start)' >&2; exit 1; fi
+[[ "$(cat "$T/bversion_neg.out")" == "28" ]] || { echo 'FAIL: bversion_neg output' >&2; exit 1; }
 "$SKITE" tests/data/refine_trap.ck "$T/refine_trap" > /dev/null
 if "$T/refine_trap" > "$T/refine_trap.out" 2>/dev/null; then echo 'FAIL: bounds check in a comparison was elided' >&2; exit 1; fi
 [[ "$(cat "$T/refine_trap.out")" == "7" ]] || { echo 'FAIL: refine_trap output' >&2; exit 1; }
