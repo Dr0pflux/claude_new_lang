@@ -12,6 +12,7 @@ test: skite selfcheck
 	./tests/run.sh
 	python3 tests/zero_divisor.py
 	python3 tests/divmod_pair.py
+	python3 tests/ifconv_depth.py
 	python3 tests/alignment.py
 	python3 tests/f32_literals.py
 	python3 tests/fuzz_harness_test.py

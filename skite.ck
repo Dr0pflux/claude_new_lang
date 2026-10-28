@@ -7142,9 +7142,16 @@ fn ifconv_ok(s: i64, n: i64) -> bool {
 fn ic_bool(e: i64, rg: i64, n: i64) {
   let k = nd[e].k;
   if k == N_BIN && (nd[e].op == O_LAND || nd[e].op == O_LOR) {
-    ic_bool(nd[e].a, rg, n); ic_bool(nd[e].b, rg + 1, n - 1);
     let mut d = A_AND; if nd[e].op == O_LOR { d = A_OR; }
-    alur(d, RGS[rg], RGS[rg + 1]); return;
+    if n >= 2 {
+      ic_bool(nd[e].a, rg, n); ic_bool(nd[e].b, rg + 1, n - 1);
+      alur(d, RGS[rg], RGS[rg + 1]); return;
+    }
+    let sl = tslot_push();
+    ic_bool(nd[e].a, rg, n); store(K_MEM, sl, RGS[rg]);
+    ic_bool(nd[e].b, rg, n);
+    alu(d, K_REG, RGS[rg], K_MEM, sl, 0);
+    tdepth -= 1; return;
   }
   if k == N_UN { ic_bool(nd[e].a, rg, n); alui(A_XOR, RGS[rg], 1); return; }
   gen(e, rg, n);

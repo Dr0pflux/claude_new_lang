@@ -12,6 +12,8 @@
 - **If-conversion:** small integer `if`/`else` bodies in loops become `cmov` selects; branches that
   store to the same element become one store of a selected value, with all values computed before
   one compare and `+= 1` taken from `setcc` (intsort merge 1.51x → 1.18x clang).
+  Deep `&&`/`||` conditions now spill intermediate values when the available temporary
+  registers run out, avoiding silent register clobbering. Regression: `tests/ifconv_depth.py`.
 - **Invariant loads:** an innermost loop's unconditional `a[k]` with invariant `k` and `a` not stored in
   the loop is read once before it (only when the loop runs); outside `main` the loop is versioned
   on `base(a) != base(stored)` (editdist 244 → 212 ms). Consecutive `min`/`max` updates are reordered
