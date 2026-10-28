@@ -1030,7 +1030,9 @@ fn chk_refine(a: i64, idx: i64, env: i64) {
   if envp[x].lo > envp[x].hi { set_dead(env); }
 }
 fn refine_var(env: i64, v: i64, op: i64, other: i64) {
-  er(other, env);
+  // the condition was annotated when it was evaluated; env already assumes its loads passed their
+  // bounds checks, so evaluating `other` again must not mark them proven
+  let sv = an_annot; an_annot = false; er(other, env); an_annot = sv;
   let rlo = RLO; let rhi = RHI; let rbot = RBOT;
   let x = env + LV(v);
   if rbot || envp[x].bot { return; }
@@ -1074,9 +1076,11 @@ fn refine(env: i64, c: i64, sense: bool) {
   if !is_cmp_op(op0) { return; }
   let mut op = op0;
   if op >= O_LTU {
+    let sv = an_annot; an_annot = false;
     er(nd[c].a, env);
     let alo = RLO; let abot = RBOT;
     er(nd[c].b, env);
+    an_annot = sv;
     if abot || RBOT || alo < 0 || RLO < 0 { return; }
     op = op - O_LTU + O_LT;
   }
@@ -3817,6 +3821,162 @@ fn ss_walk(s: i64, inl: bool) {
   if k == S_IF { if inl { ss_try(s); } if nd[s].k == S_IF { ss_walk(nd[s].b, inl); ss_walk(nd[s].c, inl); } return; }
   if k == S_WHILE { ss_walk(nd[s].b, true); return; }
 }
+// ---- min/max chains: `if X1 < v { v = X1 } if X2 < v { v = X2 }` (pure X not reading v) gives
+// v = min(v, X1, X2) in either order; the update whose X reads a variable set later in the loop
+// body (a value carried from the previous iteration) goes last, off the critical path (DP cells)
+fn mm_later(c: i64, x: i64) -> bool {   // x reads a variable assigned by a statement from c on
+  let mut q = c;
+  while q >= 0 { if (nd[q].k == S_ASSIGN || nd[q].k == S_LET) && ex_reads(x, nd[q].var) != 0 { return true; } q = nd[q].next; }
+  return false;
+}
+fn mm_pair(s1: i64) {
+  let s2 = nd[s1].next;
+  if s2 < 0 { return; }
+  let k1 = minmax_kind(s1); let v1 = MM_VAR; let x1 = MM_X;
+  if k1 == 0 { return; }
+  let k2 = minmax_kind(s2); let x2 = MM_X;
+  if k2 != k1 || MM_VAR != v1 || !ty_int(vars[v1].ty) || !ic_pure(x1) || !ic_pure(x2) || refs(x1, v1) || refs(x2, v1) { return; }
+  if !mm_later(nd[s2].next, x1) || mm_later(nd[s2].next, x2) { return; }
+  let ta = nd[s1].a; let tb = nd[s1].b;
+  nd[s1].a = nd[s2].a; nd[s1].b = nd[s2].b; nd[s2].a = ta; nd[s2].b = tb;
+}
+fn mm_walk(s: i64, inl: bool) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { if inl { mm_pair(c); } mm_walk(c, inl); c = nd[c].next; } return; }
+  if k == S_IF { mm_walk(nd[s].b, inl); mm_walk(nd[s].c, inl); return; }
+  if k == S_WHILE { mm_walk(nd[s].b, true); return; }
+}
+// ---- invariant loads: in an innermost `while C { .. }` without calls, output, exits or division
+// by a variable, a load A[k] that every iteration performs (a top-level statement, not under
+// && / ||) with k loop-invariant and A never stored in the loop is read once before the loop
+// when C holds; every trap left is the same bounds-check SIGILL, so reading it earlier is
+// unobservable. Outside main an array parameter may share memory with a stored array: then
+// `if base(A) == base(B) .. { original loop } else { hoisted loop }`.
+let mut LH_BAD: bool = false;
+let mut LH_A: i64 = -1;
+let LH_ST = alloc<i64>(16);
+let mut LH_NST: i64 = 0;
+fn lh_e(e: i64) {
+  if e < 0 { return; }
+  let k = nd[e].k;
+  if k == N_CALL || k == N_NCPU || k == N_ARR { LH_BAD = true; return; }
+  if k == N_CONST || k == N_VAR { return; }
+  if k == N_BIN && (nd[e].op == O_DIV || nd[e].op == O_MOD || nd[e].op == O_DIVU || nd[e].op == O_MODU) && !(is_const(nd[e].b) && nd[nd[e].b].v != 0 && (nd[nd[e].b].v as i64) != -1) { LH_BAD = true; }
+  lh_e(nd[e].a); lh_e(nd[e].b);
+}
+fn lh_s(s: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { lh_s(c); c = nd[c].next; } return; }
+  if k == S_LET { if vars[nd[s].var].arr != 0 { LH_BAD = true; } lh_e(nd[s].a); return; }
+  if k == S_ASSIGN { lh_e(nd[s].a); return; }
+  if k == S_IF { lh_e(nd[s].a); lh_s(nd[s].b); lh_s(nd[s].c); return; }
+  if k == S_STORE {
+    lh_e(nd[s].a); lh_e(nd[s].b);
+    let b = vars[nd[s].var].basev;
+    let mut i = 0; while i < LH_NST && LH_ST[i] != nd[s].var { i += 1; }
+    if i == LH_NST { if LH_NST >= 16 { LH_BAD = true; return; } LH_ST[LH_NST] = nd[s].var; LH_NST += 1; }
+    if b < 0 { LH_BAD = true; }
+    return;
+  }
+  LH_BAD = true;
+}
+fn lh_find(e: i64, w: i64) -> i64 {   // an unconditionally evaluated invariant load in e
+  if e < 0 { return -1; }
+  let k = nd[e].k;
+  if k == N_CONST || k == N_VAR { return -1; }
+  if k == N_LOAD {
+    let a = nd[e].var;
+    if nd[e].op <= 0 && vars[a].arr != 0 && invariant(nd[e].a, w) && ic_pure(nd[e].a) {
+      let mut ok = true; let mut i = 0;
+      while i < LH_NST { if vars[LH_ST[i]].basev == vars[a].basev { ok = false; } i += 1; }
+      if ok { return e; }
+    }
+    return lh_find(nd[e].a, w);
+  }
+  if k == N_BIN && (nd[e].op == O_LAND || nd[e].op == O_LOR) { return lh_find(nd[e].a, w); }
+  let x = lh_find(nd[e].a, w); if x >= 0 { return x; }
+  return lh_find(nd[e].b, w);
+}
+fn lh_sub(e: i64, x: i64, h: i64) {   // in place: loads equal to x -> h
+  if e < 0 { return; }
+  if nd[e].k == N_LOAD && expr_same(e, x) { nd[e].k = N_VAR; nd[e].var = h; nd[e].a = -1; nd[e].op = 0; vars[h].reads += 1; return; }
+  if nd[e].k == N_CONST || nd[e].k == N_VAR { return; }
+  lh_sub(nd[e].a, x, h); lh_sub(nd[e].b, x, h);
+}
+fn lh_sub_s(s: i64, x: i64, h: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { lh_sub_s(c, x, h); c = nd[c].next; } return; }
+  if k == S_IF { lh_sub(nd[s].a, x, h); lh_sub_s(nd[s].b, x, h); lh_sub_s(nd[s].c, x, h); return; }
+  lh_sub(nd[s].a, x, h); if k == S_STORE { lh_sub(nd[s].b, x, h); }
+}
+fn lh_loop(w: i64) {
+  let cnd = nd[w].a; let body = nd[w].b;
+  if nd[w].c >= 0 || has_call(cnd) || body < 0 || nd[body].k != S_BLOCK { return; }
+  LH_BAD = false; LH_NST = 0;
+  lh_e(cnd); lh_s(body);
+  if LH_BAD { return; }
+  let mut L = -1; let mut c = nd[body].a;
+  while c >= 0 && L < 0 {
+    let k = nd[c].k;
+    if k == S_LET || k == S_ASSIGN || k == S_IF { L = lh_find(nd[c].a, w); }
+    if k == S_STORE { L = lh_find(nd[c].b, w); if L < 0 { L = lh_find(nd[c].a, w); } }
+    c = nd[c].next;
+  }
+  if L < 0 { return; }
+  let A = nd[L].var;
+  // alias test: stored arrays that may be A (outside main: another base variable)
+  let mut ab = -1;
+  if CS_F != mainfn {
+    let mut i = 0;
+    while i < LH_NST {
+      let B = LH_ST[i];
+      if vars[vars[B].basev].glob != 2 && vars[vars[A].basev].glob != 2 {
+        let ea = mk(N_ARR); nd[ea].var = A; vars[vars[A].basev].reads += 1; nd[ea].ty = TY_I64;
+        let eb = mk(N_ARR); nd[eb].var = B; vars[vars[B].basev].reads += 1; nd[eb].ty = TY_I64;
+        let q = mk_bin(O_EQ, ea, eb); nd[q].ty = TY_BOOL;
+        if ab < 0 { ab = q; } else { let o = mk_bin(O_LOR, ab, q); nd[o].ty = TY_BOOL; ab = o; }
+      }
+      i += 1;
+    }
+  }
+  let ld = clone_expr(L);
+  let h = hidden(); vars[h].ty = nd[L].ty; vars[h].mutv = 1; vars[h].owner = CS_F;
+  let w2 = mk(S_WHILE); copy_node(w2, w); nd[w2].next = -1;
+  if ab >= 0 {   // w2 becomes a copy of the loop
+    igen += 1;
+    let nv0 = nv;
+    let cl = clone_stmt_inl(w, -2);
+    let mut v = nv0; while v < nv { vars[v].owner = CS_F; v += 1; }
+    copy_node(w2, cl); nd[w2].next = -1;
+  }
+  lh_sub_s(nd[w2].b, L, h); lh_sub(nd[w2].a, L, h);
+  // let mut h = 0; if C { h = A[k] }; while C' { .. }
+  let tif = mk(S_IF); nd[tif].a = clone_expr(cnd); nd[tif].b = mk_assign(h, ld); nd[tif].c = -1; nd[tif].next = w2;
+  let lt = mk(S_LET); nd[lt].var = h; nd[lt].a = mkconst_t(0, nd[L].ty); nd[lt].next = tif;
+  if ab < 0 { set_block(w, lt, nd[w].next); return; }
+  let w1 = mk(S_WHILE); copy_node(w1, w); nd[w1].next = -1;
+  let hb = mk(S_BLOCK); set_block(hb, lt, -1);
+  let sel = mk(S_IF); nd[sel].a = ab; nd[sel].b = w1; nd[sel].c = hb; nd[sel].pos = nd[w].pos;
+  set_block(w, sel, nd[w].next);
+}
+fn lh_inner(s: i64) -> bool {   // s contains no loop
+  if s < 0 { return true; }
+  let k = nd[s].k;
+  if k == S_WHILE || k == S_INL || k == S_PAR { return false; }
+  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { if !lh_inner(c) { return false; } c = nd[c].next; } return true; }
+  if k == S_IF { return lh_inner(nd[s].b) && lh_inner(nd[s].c); }
+  return true;
+}
+fn lh_walk(s: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { let nx = nd[c].next; lh_walk(c); c = nx; } return; }
+  if k == S_IF { lh_walk(nd[s].b); lh_walk(nd[s].c); return; }
+  if k == S_WHILE { if lh_inner(nd[s].b) { lh_loop(s); } else { lh_walk(nd[s].b); } return; }
+}
 fn cs_walk(s: i64) {
   if s < 0 { return; }
   let k = nd[s].k;
@@ -3840,7 +4000,7 @@ fn allocate() {
   mark_used();
   simplify();
   f = 0;
-  while f < nfn { if fns[f].used != 0 { CS_F = f; sm_walk(fns[f].body); ss_walk(fns[f].body, false); cs_walk(fns[f].body); dm_walk(fns[f].body); } f += 1; }
+  while f < nfn { if fns[f].used != 0 { CS_F = f; sm_walk(fns[f].body); ss_walk(fns[f].body, false); cs_walk(fns[f].body); lh_walk(fns[f].body); mm_walk(fns[f].body, false); dm_walk(fns[f].body); } f += 1; }
   let mut v = 0;
   while v < nv { if vars[v].owner >= 0 && fns[vars[v].owner].used == 0 { vars[v].reads = 0; } v += 1; }
   analyze();
@@ -4796,6 +4956,7 @@ fn gen(e: i64, rg: i64, n: i64) {
   if k == N_CONST { if hoisted(e) >= 0 { mov_rr(r0, hoisted(e)); } else { mov_ri(r0, nd[e].v); } return; }
   if k == N_VAR { loc(nd[e].var); load(r0, OK, ORR, OI); return; }
   if k == N_CALL { gen_call(e, rg, n); return; }
+  if k == N_ARR { let b = base_reg(nd[e].var); mov_rr(r0, b); return; }   // base address (alias tests)
   if k == N_NCPU { byte(232); ncpu_calls = pl_add(ncpu_calls, clen); u32_(0); mov_rr(r0, RAX); return; }
   if k == N_LOAD {
     elem_addr(nd[e].var, nd[e].a, nd[e].chk, fld_off(nd[e].var, nd[e].op), rg, n);
@@ -7081,8 +7242,8 @@ fn ic_multi(s: i64, rg: i64, n: i64) -> bool {
   let k1 = ic_nlist(nd[s].b); let k = k1 + ic_nlist(nd[s].c);
   if k > 16 || !ic_indep(nd[s].b) || (nd[s].c >= 0 && !ic_indep(nd[s].c)) { return false; }
   let m = ic_need(nd[s].b) + ic_need(nd[s].c);   // registers the values need
-  let ia = m; let mut ib = m; if !simple(nd[c].a) { ib += 1; }
-  let mut need = ib; if !simple(nd[c].b) { need += 1; }
+  let mut ia = m; let ib = m; if !simple(nd[c].b) { ia += 1; }   // b's register, then a's
+  let mut need = ia; if !simple(nd[c].a) { need += 1; }
   if n < need + 1 { return false; }
   let j = ic_vals(nd[s].b, 0, rg, n, 0);
   ic_vals(nd[s].c, k1, rg, n, j);
@@ -7107,11 +7268,15 @@ fn ifconv(s: i64, rg: i64, n: i64) {
     let c = nd[s].a;
     gen(nd[one].a, rg, n);
     let t = RGS[rg];
+    let sa = !simple(nd[c].a) && expr_same(nd[c].a, nd[one].a);   // `if e < v { v = e }`: e once
+    let sb = !simple(nd[c].b) && expr_same(nd[c].b, nd[one].a);
     let mut rb = -1;   // b before a: generating b may use rax
-    if !simple(nd[c].b) { gen(nd[c].b, rg + 2, n - 2); rb = RGS[rg + 2]; }
+    let mut ia = 1;   // a's register comes after b's: generating a must not clobber b
+    if sb { rb = t; } else if !simple(nd[c].b) { gen(nd[c].b, rg + 1, n - 1); rb = RGS[rg + 1]; ia = 2; }
     let mut ra = RAX;
-    if simple(nd[c].a) { opnd(nd[c].a); load(RAX, OK, ORR, OI); }
-    else { gen(nd[c].a, rg + 1, n - 1); ra = RGS[rg + 1]; }
+    if sa { ra = t; }
+    else if simple(nd[c].a) { opnd(nd[c].a); load(RAX, OK, ORR, OI); }
+    else { gen(nd[c].a, rg + ia, n - ia); ra = RGS[rg + ia]; }
     if rb < 0 { opnd(nd[c].b); alu(A_CMP, K_REG, ra, OK, ORR, OI); }
     else { alu(A_CMP, K_REG, ra, K_REG, rb, 0); }
     let cc = cc_of(nd[c].op);

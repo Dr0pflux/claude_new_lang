@@ -307,7 +307,7 @@ SRC
   grep -q 'no views of structs containing bool' "$T/error"
 done
 echo 'PASS: views cannot create invalid bool fields'
-for t in structs heap structsz valias valias_width carry selstore; do
+for t in structs heap structsz valias valias_width carry selstore lhoist; do
   "$SKITE" tests/data/$t.ck "$T/$t" > /dev/null
   "$T/$t" "$T/$t.saved" | cmp -s - tests/data/$t.expected || { echo "FAIL: $t" >&2; exit 1; }
 done
@@ -355,6 +355,12 @@ echo 'PASS: element-wise vector loops through views of different widths'
 # carried a[i - 1]: with no arguments the first iteration reads a[-1] and must trap after the same output
 if "$T/carry" > "$T/carry.out" 2>/dev/null; then echo 'FAIL: carry trap' >&2; exit 1; fi
 cmp -s tests/data/carry.trap "$T/carry.out" || { echo 'FAIL: carry trap output' >&2; exit 1; }
+"$SKITE" tests/data/lhoist_trap.ck "$T/lhoist_trap" > /dev/null
+if "$T/lhoist_trap" > "$T/lhoist_trap.out" 2>/dev/null; then echo 'FAIL: hoisted load must trap' >&2; exit 1; fi
+[[ "$(cat "$T/lhoist_trap.out")" == $'0\n0' ]] || { echo 'FAIL: hoisted load trapped in a zero-trip loop' >&2; exit 1; }
+"$SKITE" tests/data/refine_trap.ck "$T/refine_trap" > /dev/null
+if "$T/refine_trap" > "$T/refine_trap.out" 2>/dev/null; then echo 'FAIL: bounds check in a comparison was elided' >&2; exit 1; fi
+[[ "$(cat "$T/refine_trap.out")" == "7" ]] || { echo 'FAIL: refine_trap output' >&2; exit 1; }
 echo 'PASS: loop-carried stores keep traps and outputs'
 # a / b + a % b computed once: same values, MIN / -1 still traps with SIGFPE (exit 136)
 "$SKITE" tests/data/divmod_pair.ck "$T/dmp" > /dev/null

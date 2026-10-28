@@ -12,6 +12,14 @@
 - **If-conversion:** small integer `if`/`else` bodies in loops become `cmov` selects; branches that
   store to the same element become one store of a selected value, with all values computed before
   one compare and `+= 1` taken from `setcc` (intsort merge 1.51x → 1.18x clang).
+- **Invariant loads:** an innermost loop's unconditional `a[k]` with invariant `k` and `a` not stored in
+  the loop is read once before it (only when the loop runs); outside `main` the loop is versioned
+  on `base(a) != base(stored)` (editdist 244 → 212 ms). Consecutive `min`/`max` updates are reordered
+  so the one reading the previous iteration's value comes last.
+- **Bounds-check fix:** a load inside a comparison could lose its check when the branch
+  refinement re-evaluated it under the assumption that the check had already passed (pre-existing;
+  `tests/data/refine_trap.ck`). The if-conversion operand reorder in `7b6f7bb` also reused a
+  register for both compare operands when both were non-trivial (miscompile on `84ff0e4`; fixed).
 - **Loop-carried stores:** `a[i - 1]` after a store `a[i]` reads a register (prefixsum 994 → 204 ms).
 - **String matching:** small search loops become conjunctions vectorized in byte lanes (strsearch 334 → 43 ms, clang 172).
 - **Paired division:** `a / b` and `a % b` share one divide when both are unconditionally evaluated (divmod 390 → 201 ms). The transformation stops at short-circuit `&&`/`||`, so skipped branches cannot introduce division traps.
