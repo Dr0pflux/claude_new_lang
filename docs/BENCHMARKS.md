@@ -2,7 +2,7 @@
 
 ## Method
 
-- Programs: `bench/game/*.{cock,c,rs}` implement the same algorithm, line for line, in skite, C
+- Programs: `bench/game/*.{ck,c,rs}` implement the same algorithm, line for line, in skite, C
   and Rust; a run is rejected unless all four binaries print byte-identical output.
 - Compilers: gcc 13.3 and clang 18.1 with `-O3 -march=native`; rustc 1.97 with
   `-C opt-level=3 -C target-cpu=native -C codegen-units=1 -C panic=abort`.

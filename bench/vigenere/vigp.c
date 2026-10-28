@@ -1,5 +1,5 @@
 /* Parallel version of vig.c: same algorithm, OpenMP over ciphertexts with the
- * same static stride distribution as vigp.cock (worker w takes t = w, w+W, ...). */
+ * same static stride distribution as vigp.ck (worker w takes t = w, w+W, ...). */
 #include <omp.h>
 #include <fcntl.h>
 #include <stdint.h>

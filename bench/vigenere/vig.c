@@ -1,4 +1,4 @@
-/* Same algorithm as vig.cock, line for line (i64 arithmetic, same loop order). */
+/* Same algorithm as vig.ck, line for line (i64 arithmetic, same loop order). */
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>

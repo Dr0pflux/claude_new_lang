@@ -37,7 +37,7 @@ def build(name, base, kind, tmp):
     def run(cmd):
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     exe = os.path.join(tmp, name)
-    run([SKITE, base + ".cock", exe + ".skite"]); out["skite"] = exe + ".skite"
+    run([SKITE, base + ".ck", exe + ".skite"]); out["skite"] = exe + ".skite"
     extra = {"c": [], "cm": ["-lm"], "omp": ["-fopenmp"]}[kind]
     for cc in ("gcc", "clang"):
         try:

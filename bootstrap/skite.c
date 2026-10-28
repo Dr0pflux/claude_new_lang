@@ -3322,7 +3322,7 @@ static char *read_source(const char *path){
     s[n]=0;return s;
 }
 int main(int argc,char **argv){
-    if(argc!=3){fprintf(stderr,"Usage: %s input.cock output-executable\n",argv[0]);return 2;}
+    if(argc!=3){fprintf(stderr,"Usage: %s input.ck output-executable\n",argv[0]);return 2;}
     char *input=read_source(argv[1]);source=input;pos=source;srcname=argv[1];
     parse();generate();write_elf(argv[2]);free(input);
     return 0;

@@ -1,15 +1,15 @@
 # skite
 
-A self-hosted native compiler for Linux x86-64. The compiler, `skite.cock`, is written in skite
+A self-hosted native compiler for Linux x86-64. The compiler, `skite.ck`, is written in skite
 and compiles itself to a byte-identical fixed point. There is no C compiler, assembler, linker,
 LLVM/GCC backend, VM or libc anywhere in the build: skite writes x86-64 machine code (including
 AVX-512) and the ELF file byte by byte.
 
 ```sh
-make              # bootstrap/skite-seed builds skite.cock -> skite, which rebuilds itself
+make              # bootstrap/skite-seed builds skite.ck -> skite, which rebuilds itself
 make test         # self-check, regression suite and fuzzers
 make bench        # Benchmarks Game suite vs gcc, clang and rustc (QUICK=1: smaller sizes)
-./skite prog.cock prog && ./prog
+./skite prog.ck prog && ./prog
 ```
 
 Learn the language with [`docs/TUTORIAL.md`](docs/TUTORIAL.md); the reference is
@@ -35,7 +35,7 @@ What makes skite fast:
 
 | Path | Contents |
 |---|---|
-| `skite.cock` | the compiler |
+| `skite.ck` | the compiler |
 | `bootstrap/` | `skite-seed` (prebuilt compiler that starts the build), `skite.c` (original C seed, audit only) |
 | `docs/` | tutorial, language reference, design notes, limitations, changelog, benchmarks |
 | `examples/` | example and tutorial programs |

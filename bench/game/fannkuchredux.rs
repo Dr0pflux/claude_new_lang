@@ -1,4 +1,4 @@
-// Benchmarks Game fannkuch-redux (same algorithm as fannkuchredux.cock / .c). usage: fannkuchredux N
+// Benchmarks Game fannkuch-redux (same algorithm as fannkuchredux.ck / .c). usage: fannkuchredux N
 fn main() {
   let n: usize = std::env::args().nth(1).map(|s| s.parse().unwrap()).unwrap_or(7);
   let mut perm = [0usize; 16];

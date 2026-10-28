@@ -1,4 +1,4 @@
-// Benchmarks Game fasta (same algorithm as fasta.cock / .rs). usage: fasta N
+// Benchmarks Game fasta (same algorithm as fasta.ck / .rs). usage: fasta N
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

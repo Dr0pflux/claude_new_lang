@@ -1,4 +1,4 @@
-// Benchmarks Game binary-trees, node-pool version (same algorithm as binarytrees.cock / .rs). usage: binarytrees N
+// Benchmarks Game binary-trees, node-pool version (same algorithm as binarytrees.ck / .rs). usage: binarytrees N
 #include <stdio.h>
 #include <stdlib.h>
 #define CAP 8388608

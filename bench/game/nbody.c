@@ -1,4 +1,4 @@
-// Benchmarks Game n-body (same algorithm as nbody.cock / nbody.rs). usage: nbody N
+// Benchmarks Game n-body (same algorithm as nbody.ck / nbody.rs). usage: nbody N
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>

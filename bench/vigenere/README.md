@@ -1,6 +1,6 @@
 # Vigenère solver benchmark
 
-Three implementations of the **same algorithm**, line for line, all producing byte-identical output: `vig.cock` (skite), `vig.c` (C) and `vig.rs` (Rust).
+Three implementations of the **same algorithm**, line for line, all producing byte-identical output: `vig.ck` (skite), `vig.c` (C) and `vig.rs` (Rust).
 
 ## Algorithm
 

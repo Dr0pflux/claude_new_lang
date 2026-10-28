@@ -1,4 +1,4 @@
-// Benchmarks Game mandelbrot (same algorithm as mandelbrot.cock / .rs). usage: mandelbrot N
+// Benchmarks Game mandelbrot (same algorithm as mandelbrot.ck / .rs). usage: mandelbrot N
 #include <stdio.h>
 #include <stdlib.h>
 int main(int argc, char **argv) {

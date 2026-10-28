@@ -1,4 +1,4 @@
-// Benchmarks Game spectral-norm (same algorithm as spectralnorm.cock / .rs). usage: spectralnorm N
+// Benchmarks Game spectral-norm (same algorithm as spectralnorm.ck / .rs). usage: spectralnorm N
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>

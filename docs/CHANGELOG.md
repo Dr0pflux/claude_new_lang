@@ -5,7 +5,7 @@
 
 ### What changed
 
-- `skite.cock` (~4,300 lines) is the compiler: lexer, correctly-rounded float parsing, parser and type checker, range analysis, inliner, strength reduction, linear-scan register allocation, x86-64 encoder, runtime emission and ELF writer.
+- `skite.ck` (~4,300 lines) is the compiler: lexer, correctly-rounded float parsing, parser and type checker, range analysis, inliner, strength reduction, linear-scan register allocation, x86-64 encoder, runtime emission and ELF writer.
 - Port method: a line-by-line port of the C seed, keeping node and variable creation order. The result was compared byte for byte against the C seed on all examples, tutorials, tests and benchmarks (identical) before the C seed was retired.
 - Bootstrap: `bootstrap/skite-seed` (prebuilt) → `skite` → `skite` again. `make selfcheck` checks the fixed point (stage 2 == stage 3).
 - No C is needed to build. `bootstrap/skite.c` stays as an audit trail.
@@ -28,7 +28,7 @@
 
 | | value |
 |---|---|
-| compiler source | `skite.cock`, ~4,300 lines |
+| compiler source | `skite.ck`, ~4,300 lines |
 | compiler binary | ~1.0 MB machine code |
 | self-compile time | ~2 s (C seed built by gcc -O2: ~1.6 s) |
 | Vigenère solver | 568.9M instructions, unchanged from v0.8 |
@@ -58,7 +58,7 @@ Legend: **[T]** = tested here.
 ### Testing (kept minimal at the owner's request)
 
 - `make test` = regressions + 100 control-flow programs + 100 typed programs.
-- New regressions: `tests/data/structs.cock`, `tests/data/heap.cock` (including `save`).
+- New regressions: `tests/data/structs.ck`, `tests/data/heap.ck` (including `save`).
 - The heavy battery remains available as `make fuzz`, but isn't part of the normal loop.
 
 ### Next
@@ -117,13 +117,13 @@ skite now has a static type system: `i8 i16 i32 i64 u8 u16 u32 u64 bool f32 f64`
 All three were found by the new typed fuzzer before release:
 
 1. **Narrowing-cast range after implicit widening.** `(v16 as u32) + u64expr` retagged the cast node to `u64`, so the analysis read a FULL target range, "proved" the cast a no-op and dropped the zero-extension. Fix: the target range comes from the opcode.
-2. **XMM stack reuse.** A float tree nested inside an integer subexpression of another float tree (`((v*v) as i32) as f64`) restarted at xmm2 and clobbered the live outer value. Fix: a stack top tracked across nested evaluation, plus a regression test (`tests/types/xmm.cock`, deeper than the 14-register stack).
+2. **XMM stack reuse.** A float tree nested inside an integer subexpression of another float tree (`((v*v) as i32) as f64`) restarted at xmm2 and clobbered the live outer value. Fix: a stack top tracked across nested evaluation, plus a regression test (`tests/types/xmm.ck`, deeper than the 14-register stack).
 3. **f32 root precision after `bits()`.** `bits()` retags the node type, so `bits((x / y) as f32)` stored 64 bits with upper garbage. Fix: root precision comes from the opcode.
 
 ### Evidence [T]
 
 - **`make test`:** every earlier regression and the Vigenère differentials (serial and `par`), plus:
-  - `tests/types/types.cock` (every type, cast and printing rule) and `tests/types/xmm.cock`;
+  - `tests/types/types.ck` (every type, cast and printing rule) and `tests/types/xmm.ck`;
   - 17 ill-typed programs rejected.
 - **Typed fuzzer `tests/ty_fuzz.c`:**
   - Random programs over all 11 types: casts between every pair, promotions, u64 ops, f32/f64 arithmetic/compare/neg/sqrt, `bits`/`from_bits`, typed arrays with compound stores, typed helper functions with implicit argument widening, unit functions, untyped literals in every position, `print` of every type.
@@ -253,7 +253,7 @@ Functions are in, and they are zero-cost:
 1. **Double evaluation in compound stores** (present since v0.4, found by the new function fuzzer).
    - `a[i] <<= e` (non-ALU `op=`) was desugared to `a[i] = a[i] << e`, which evaluated `i` twice. That is invisible without side effects and wrong with calls in `i`.
    - Fix: `{ let #v = e; let #i = i; a[#i] = a[#i] op #v; }`.
-   - Regression test: `opeq.cock`.
+   - Regression test: `opeq.ck`.
 2. **Operand order with calls:** the Sethi-Ullman ordering could evaluate the right operand first. It is now strictly left to right whenever either side contains a call, including the 1-register spill path and conditions.
 3. **Stale analysis facts after inlining:** an orphaned call node still marked arrays as passed-to-mut, which lost the `p ∈ [0,25]` proof.
 
@@ -316,7 +316,7 @@ Numbers are in `bench/vigenere/README.md`.
 
 - **Miscompile (fuzz seed 1, #772):** strength reduction hoisted the initializer `(i + (z % z)) % 26` in front of a loop that never executed. That introduced a division trap absent from the original program.
   - Fix: hoisted parts must be trap-free.
-  - Regression test: `srtrap.cock` in `test.sh`.
+  - Regression test: `srtrap.ck` in `test.sh`.
 - **Compiler heap overflow** (found by ASan): loop-entry environments were indexed with a variable count that strength reduction had increased.
   - Fix: environments are sized by `env_n`, fixed at analysis start.
 - **Unlinked runtime calls:** calls to `flush` emitted after its body were never patched.
@@ -389,7 +389,7 @@ Temporaries at a statement are exactly the registers held by no variable whose i
 
 **Tested [T]:**
 - `run_cf_fuzz.sh` pressure mode keeps 12–40 mutable variables live across every loop.
-- The `lea.cock` regression covers every pool register as a base.
+- The `lea.ck` regression covers every pool register as a base.
 
 ### Evidence, final build [T]
 

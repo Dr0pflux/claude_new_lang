@@ -1,4 +1,4 @@
-// Benchmarks Game binary-trees, node-pool version (same algorithm as binarytrees.cock / .c). usage: binarytrees N
+// Benchmarks Game binary-trees, node-pool version (same algorithm as binarytrees.ck / .c). usage: binarytrees N
 struct Pool { lft: Vec<i32>, rgt: Vec<i32>, top: usize }
 fn make(p: &mut Pool, d: i64) -> usize {
   let me = p.top; p.top += 1;

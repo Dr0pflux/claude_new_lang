@@ -1,4 +1,4 @@
-// Same algorithm as vig.cock (i64 arithmetic, safe indexing = bounds checked).
+// Same algorithm as vig.ck (i64 arithmetic, safe indexing = bounds checked).
 use std::io::Write;
 fn main(){
   let a:Vec<String>=std::env::args().collect();

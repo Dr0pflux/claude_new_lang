@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Benchmarks Game suite: skite vs gcc, clang and rustc on the same algorithms.
 
-Each program exists as NAME.cock, NAME.c and NAME.rs. A run is rejected
+Each program exists as NAME.ck, NAME.c and NAME.rs. A run is rejected
 unless every binary prints byte-identical output. Runs are interleaved and
 the median wall time is reported.
 
@@ -24,7 +24,7 @@ def sh(cmd):
 def build(name, tmp):
     src = os.path.join(HERE, name)
     exe = os.path.join(tmp, name)
-    sh([SKITE, src + ".cock", exe + ".skite"])
+    sh([SKITE, src + ".ck", exe + ".skite"])
     sh(["gcc", "-O3", "-march=native", src + ".c", "-o", exe + ".gcc", "-lm"])
     sh(["clang", "-O3", "-march=native", src + ".c", "-o", exe + ".clang", "-lm"])
     sh(["rustc", "-C", "opt-level=3", "-C", "target-cpu=native", "-C", "codegen-units=1",

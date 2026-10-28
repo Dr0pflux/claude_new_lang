@@ -1,7 +1,7 @@
 // skite: the skite compiler written in skite (self-hosted).
 // A faithful port of the C seed (skite.c): it creates AST nodes and variables
 // in the same order, so for the same input both compilers emit identical bytes.
-// usage: skite input.cock output-executable
+// usage: skite input.ck output-executable
 
 // ---------------------------------------------------------------- limits
 let MAX_NODES = 1048576;
@@ -2487,7 +2487,7 @@ fn clone_stmt_inl(s: i64, resv: i64) -> i64 {
     nd[r].a = clone_e_inl(ca); nd[r].var = nvv;
   }
   else if ck == S_ASSIGN { nd[r].var = map_var(cv); nd[r].a = clone_e_inl(ca); }
-  else if ck == S_RET { nd[r].k = S_IRET; nd[r].var = resv; nd[r].a = clone_e_inl(ca); }
+  else if ck == S_RET { if resv != -2 { nd[r].k = S_IRET; nd[r].var = resv; } nd[r].a = clone_e_inl(ca); }
   else if ck == S_IRET { nd[r].var = map_var(cv); nd[r].a = clone_e_inl(ca); }
   else if ck == S_IF { nd[r].a = clone_e_inl(ca); nd[r].b = clone_stmt_inl(cb, resv); nd[r].c = clone_stmt_inl(cc, resv); }
   else if ck == S_WHILE { nd[r].a = clone_e_inl(ca); nd[r].b = clone_stmt_inl(cb, resv); }
@@ -2594,9 +2594,15 @@ fn try_inline_stmt(s: i64) -> bool {
   if call < 0 { return false; }
   let f = nd[call].var;
   if starts2u(fns[f].noff, fns[f].nlen) || fn_nr[f] { return false; }
-  let csz = stmt_size(fns[f].body);
-  if csz > INLINE_MAX_STMTS || recursive(f) || nn > INLINE_NODE_BUDGET { return false; }
+  let rec = frec[f];
+  let mut src_body = fns[f].body;
+  if rec { if forig[f] < 0 || rec_depth >= MAX_REC_INLINE { return false; } src_body = forig[f]; }
+  let csz = stmt_size(src_body);
+  if csz > INLINE_MAX_STMTS || nn > INLINE_NODE_BUDGET { return false; }
+  if rec && (csz > INLINE_REC_STMTS || rec_growth + csz > INLINE_REC_BUDGET) { return false; }
+  if rec { rec_growth += csz; }
   if inl_growth + csz > INLINE_CALLER_BUDGET { return false; }
+  LAST_REC = rec;
   inl_growth += csz;
   igen += 1;
   let resv = hidden(); vars[resv].mutv = 1; vars[resv].ty = fns[f].rett;
@@ -2618,7 +2624,7 @@ fn try_inline_stmt(s: i64) -> bool {
     }
     a = nd[a].next; i += 1;
   }
-  let bd = clone_list_inl(nd[fns[f].body].a, resv);
+  let bd = clone_list_inl(nd[src_body].a, resv);
   if prev < 0 { head = bd; } else { nd[prev].next = bd; }
   let inl = mk(S_INL); nd[inl].a = head; nd[inl].var = resv;
   let keep_next = nd[s].next;
@@ -2639,7 +2645,116 @@ fn inline_stmts(s: i64) {
   if k == S_IF { inline_stmts(nd[s].b); inline_stmts(nd[s].c); return; }
   if k == S_WHILE { inline_stmts(nd[s].b); return; }
   if k == S_PAR { inline_stmts(nd[s].c); return; }
-  if try_inline_stmt(s) { inline_stmts(nd[s].a); }
+  if try_inline_stmt(s) {
+    if LAST_REC { rec_depth += 1; inline_stmts(nd[s].a); rec_depth -= 1; } else { inline_stmts(nd[s].a); }
+  }
+}
+// ---- bounded inlining of recursive functions, from a pristine copy of the body
+let MAX_REC_INLINE = 3;
+let INLINE_REC_STMTS = 16;
+let INLINE_REC_BUDGET = 160;   // statements of recursive copies per caller
+let mut rec_growth: i64 = 0;
+let forig = alloc<i64>(4096);
+let mut rec_depth: i64 = 0;
+let mut LAST_REC: bool = false;
+let frec = alloc<bool>(4096);   // recursive (computed once, before inlining)
+fn make_templates() {
+  let mut f = 0;
+  while f < nfn { frec[f] = fns[f].body >= 0 && recursive(f); f += 1; }
+  f = 0;
+  while f < nfn {
+    forig[f] = -1;
+    if f != mainfn && fns[f].body >= 0 && !starts2u(fns[f].noff, fns[f].nlen) && stmt_size(fns[f].body) <= INLINE_REC_STMTS && frec[f] {
+      igen += 1;
+      let b = mk(S_BLOCK); nd[b].a = clone_list_inl(nd[fns[f].body].a, -2); forig[f] = b;
+    }
+    f += 1;
+  }
+}
+// ---- call lifting: calls inside expressions become `let t = f(..);` before the statement when
+// everything evaluated before them is pure and cannot trap (so moving it after the call is invisible)
+let mut LIFT_OK: bool = true;
+let mut LIFT_H: i64 = -1;
+let mut LIFT_T: i64 = -1;
+fn pure_nt(e: i64) -> bool {
+  if e < 0 { return true; }
+  let k = nd[e].k;
+  if k == N_CONST || k == N_VAR { return true; }
+  if k == N_CALL || k == N_LOAD || k == N_ARR || k == N_NCPU { return false; }
+  if k == N_UN { return pure_nt(nd[e].a); }
+  let op = nd[e].op;
+  if op == O_DIV || op == O_MOD || op == O_DIVU || op == O_MODU {
+    let b = nd[e].b;
+    if !is_const(b) || nd[b].v == 0 || ((op == O_DIV || op == O_MOD) && (nd[b].v as i64) == -1) { return false; }
+  }
+  return pure_nt(nd[e].a) && pure_nt(nd[e].b);
+}
+fn lift_e(e: i64) -> i64 {
+  if e < 0 || !LIFT_OK { return e; }
+  let k = nd[e].k;
+  if k == N_CONST || k == N_VAR { return e; }
+  if k == N_CALL {
+    let mut a = nd[e].a; let mut prev = -1;
+    while a >= 0 {
+      let nx = nd[a].next;
+      let r = lift_e(a);
+      if r != a { nd[r].next = nx; if prev < 0 { nd[e].a = r; } else { nd[prev].next = r; } }
+      prev = r; a = nx;
+    }
+    if !LIFT_OK || nd[e].ty == TY_UNIT { LIFT_OK = false; return e; }
+    let t = hidden(); vars[t].ty = nd[e].ty;
+    let l = mk(S_LET); nd[l].var = t; nd[l].a = e;
+    if LIFT_T < 0 { LIFT_H = l; } else { nd[LIFT_T].next = l; }
+    LIFT_T = l;
+    let r = mk_var(t); nd[r].ty = nd[e].ty; return r;
+  }
+  if k == N_BIN && (nd[e].op == O_LAND || nd[e].op == O_LOR) {
+    if has_call(e) || !pure_nt(e) { LIFT_OK = false; }
+    return e;
+  }
+  if k == N_LOAD { nd[e].a = lift_e(nd[e].a); LIFT_OK = false; return e; }
+  if k == N_UN { nd[e].a = lift_e(nd[e].a); return e; }
+  if k == N_BIN {
+    nd[e].a = lift_e(nd[e].a); nd[e].b = lift_e(nd[e].b);
+    if !pure_nt_op(e) { LIFT_OK = false; }
+    return e;
+  }
+  LIFT_OK = false; return e;
+}
+fn pure_nt_op(e: i64) -> bool {   // the node's own operation cannot trap
+  let op = nd[e].op;
+  if op == O_DIV || op == O_MOD || op == O_DIVU || op == O_MODU {
+    let b = nd[e].b;
+    return is_const(b) && nd[b].v != 0 && !((op == O_DIV || op == O_MOD) && (nd[b].v as i64) == -1);
+  }
+  return true;
+}
+fn lift_stmt(s: i64) {
+  let k = nd[s].k;
+  LIFT_OK = true; LIFT_H = -1; LIFT_T = -1;
+  if k == S_LET || k == S_ASSIGN || k == S_RET || k == S_PRINT || k == S_PUTC || k == S_IF {
+    let e = nd[s].a;
+    if e < 0 || !has_call(e) { return; }
+    if (k == S_LET || k == S_ASSIGN) && nd[e].k == N_CALL { return; }   // already a statement-level call
+    nd[s].a = lift_e(e);
+  } else if k == S_STORE {
+    if nd[s].b < 0 || !has_call(nd[s].b) || has_call(nd[s].a) || nd[nd[s].b].k == N_CALL { return; }
+    nd[s].b = lift_e(nd[s].b);
+  } else { return; }
+  if LIFT_H < 0 { return; }
+  let keep_next = nd[s].next;
+  let orig = mk(nd[s].k); copy_node(orig, s); nd[orig].next = -1;
+  nd[LIFT_T].next = orig;
+  set_block(s, LIFT_H, keep_next);
+}
+fn lift_calls(s: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { lift_calls(c); c = nd[c].next; } return; }
+  if k == S_IF { lift_calls(nd[s].b); lift_calls(nd[s].c); lift_stmt(s); return; }
+  if k == S_WHILE { lift_calls(nd[s].b); return; }
+  if k == S_PAR { lift_calls(nd[s].c); return; }
+  lift_stmt(s);
 }
 fn inline_calls() {
   let mut round = 0;
@@ -2883,9 +2998,12 @@ fn allocate() {
   let mut g = 0;
   while g < nfn { fn_nr[g] = noreturn(g, 0); g += 1; }
   inline_calls();
-  if nfn > 1 { inl_growth = 0; inline_stmts(fns[mainfn].body); }
+  g = 0;
+  while g < nfn { if !starts2u(fns[g].noff, fns[g].nlen) { lift_calls(fns[g].body); } g += 1; }
+  make_templates();
+  if nfn > 1 { inl_growth = 0; rec_growth = 0; inline_stmts(fns[mainfn].body); }
   let mut f = 0;
-  while f < nfn { if f != mainfn { inl_growth = 0; inline_stmts(fns[f].body); } f += 1; }
+  while f < nfn { if f != mainfn { inl_growth = 0; rec_growth = 0; inline_stmts(fns[f].body); } f += 1; }
   inline_calls();
   mark_used();
   let mut v = 0;
@@ -2908,6 +3026,8 @@ fn allocate() {
       }
       let fm = fns[f].mark;
       if fm >= 0 { vars[fm].start = pc; vars[fm].end = pc; }
+      // argc/argv are born when main starts, not at pc 0 (they would block registers in every function walked before main)
+      if f == mainfn { if vars[0].reads != 0 { vars[0].start = pc; vars[0].end = pc; } if vars[1].reads != 0 { vars[1].start = pc; vars[1].end = pc; } }
       walk_stmt(fns[f].body);
       if fm >= 0 { pc += 1; touch(fm); }
       fpc_hi[f] = pc;
@@ -3470,16 +3590,17 @@ fn bounds(a: i64, r: i64, chk: i64) {
   else { loc(vars[a].lenv); alu(A_CMP, K_REG, r, OK, ORR, OI); }
   trap_list = pl_add(trap_list, jcc(CC_AE));
 }
-let BSS = 6291456;
-let OUT_LEN = 6291456;
-let SIG_ACT = 6291464;
-let PAR_STATUS = 6291504;
-let PAR_FAIL = 6291512;
-let OUT_BUF = 6291520;
+// fixed addresses: the image is mapped at 0x400000; static data (BSS) starts at 256 MiB
+let BSS = 268435456;
+let OUT_LEN = 268435456;
+let SIG_ACT = 268435464;
+let PAR_STATUS = 268435504;
+let PAR_FAIL = 268435512;
+let OUT_BUF = 268435520;
 let OUT_CAP = 65536;
-let ARENA_TOP = 6357056;
-let ARENA_END = 6357064;
-let GLOB_BASE = 6357120;
+let ARENA_TOP = 268501056;
+let ARENA_END = 268501064;
+let GLOB_BASE = 268501120;
 let BSS_FIXED = 65664;
 fn base_opnd(a: i64) {
   let b = vars[a].basev;
@@ -3530,10 +3651,20 @@ fn elem_addr(a: i64, idx: i64, chk: i64, foff: i64, rg: i64, n: i64) {
 fn fld_off(a: i64, f: i64) -> i64 { if f > 0 { return sfoff[(vars[a].et - TY_STRUCT0) * 32 + f - 1]; } return 0; }
 fn fld_ty(a: i64, f: i64) -> i64 { if f > 0 { return sfty[(vars[a].et - TY_STRUCT0) * 32 + f - 1]; } return vars[a].et; }
 fn store_out(disp: i64, r: i64) { let sv = sp_adj; sp_adj = 0; enc(1, false, 1, 137, 0, r, K_MEM, disp / 8); sp_adj = sv; }
+let FRAME_FIX = alloc<i64>(64);
+let mut nframefix: i64 = 0;
 fn push_r(r: i64) { if (r & 8) != 0 { byte(65); } byte(80 | (r & 7)); }
 fn pop_r(r: i64) { if (r & 8) != 0 { byte(65); } byte(88 | (r & 7)); }
+// functions with at most two scalar parameters take them in rcx, rdx
+fn regconv(f: i64) -> bool {
+  if fns[f].np > 2 { return false; }
+  let mut i = 0;
+  while i < fns[f].np { if fpw[f * 16 + i] != 0 { return false; } i += 1; }
+  return true;
+}
 fn gen_call(e: i64, rg: i64, n: i64) {
   let f = nd[e].var;
+  let rc = regconv(f);
   let mut words = 0;
   let mut direct = true;
   let mut nscal = 0;
@@ -3566,12 +3697,23 @@ fn gen_call(e: i64, rg: i64, n: i64) {
   let mut nx = 0;
   i = 0;
   while i < NXREG { if ((xm >> i) & 1) != 0 { sse(102, 1, 126, XREG0 + i, K_REG, RAX); push_r(RAX); nx += 1; } i += 1; }
-  let A = 8 * words;
+  let mut A = 8 * words;
+  if rc { A = 0; }
   if A != 0 { emh("4881ec"); u32_(A); }
   sp_adj = 8 * (ns + nx) + A;
   let mut w = 0;
   k = 0;
   a = nd[e].a;
+  if rc {
+    // arguments into temporaries first (evaluating one may use rcx/rdx), then into rcx, rdx
+    let mut j = 0;
+    while a >= 0 {
+      if direct { gen(a, rg + j, n - j); } else { load(RGS[rg + j], K_MEM, slot[k], 0); k += 1; }
+      j += 1; a = nd[a].next;
+    }
+    if j >= 1 { mov_rr(RCX, RGS[rg]); }
+    if j >= 2 { mov_rr(RDX, RGS[rg + 1]); }
+  }
   while a >= 0 {
     if nd[a].k == N_ARR {
       let av = nd[a].var;
@@ -4205,7 +4347,7 @@ let mut VP: i64 = 0;
 let mut VU: i64 = 1;
 let mut VRG: i64 = 0;       // scalar temporaries of the statement being generated
 let mut VN: i64 = 0;
-let HAS_AVX = 6291496;      // BSS byte: AVX-512F+DQ usable (set at start)
+let HAS_AVX = 268435496;      // BSS byte: AVX-512F+DQ usable (set at start)
 fn vec_base() -> i64 { return GLOB_BASE + ((glob_bytes + 63) & ~63); }
 fn vr(t: i64) -> i64 { return 16 + (vp_nv[VP] + t) * VU; }
 fn kreg(lvl: i64, h: i64) -> i64 { if lvl < 0 { return 0; } return 1 + lvl * VU + h; }
@@ -5148,11 +5290,21 @@ fn generate() {
   while f < nfn {
     if f != mainfn && fns[f].used != 0 {
       nfuncs += 1; curfn = f; fns[f].addr = clen;
-      emh("4889e0");
-      emh("4881ec"); let site = clen; u32_(0);
+      let rc = regconv(f);
+      let site = clen; emh("4881ec"); u32_(0);
       tbase = fslot[f]; tdepth = 0; tmax = 0;
+      if rc {
+        i = 0;
+        while i < fns[f].np {
+          let pv = fpvar[f * 16 + i];
+          if vars[pv].reads != 0 { loc(pv); let mut src = RCX; if i == 1 { src = RDX; } store(OK, ORR, src); }
+          i += 1;
+        }
+      }
+      // stack arguments sit above the frame: [rsp + frame + 8 + 8w] (frame patched below)
       let mut w = 0;
       i = 0;
+      if rc { i = fns[f].np; }
       while i < fns[f].np {
         let pv = fpvar[f * 16 + i];
         let mut id0 = pv; let mut id1 = -1; let mut cnt = 1;
@@ -5167,8 +5319,7 @@ fn generate() {
             let disp = 8 + 8 * w;
             let mut rx = 72; if (r & 8) != 0 { rx = 76; }
             byte(rx); byte(139);
-            if disp < 128 { byte(64 | ((r & 7) << 3)); byte(disp); }
-            else { byte(128 | ((r & 7) << 3)); u32_(disp); }
+            byte(132 | ((r & 7) << 3)); byte(36); FRAME_FIX[nframefix] = clen; nframefix += 1; u32_(disp);
             if Lk != K_REG { store(Lk, Lr, RCX); }
           }
           kk += 1; w += 1;
@@ -5180,8 +5331,12 @@ fn generate() {
       pl_patch(fns[f].exit_list, clen);
       if fns[f].mark >= 0 { loc(fns[f].mark); load(RCX, OK, ORR, OI); abs_op(137, RCX, ARENA_TOP); }
       let ff = ((fslot[f] + tmax) * 8 + 15) & ~15;
-      patch32(site, ff);
-      emh("4881c4"); u32_(ff);
+      if ff == 0 { code[site] = 15; code[site + 1] = 31; code[site + 2] = 128; patch32(site + 3, 0); }   // 7-byte nop
+      else { patch32(site + 3, ff); emh("4881c4"); u32_(ff); }
+      // stack-argument loads come after the frame reservation: rebase their displacements
+      let mut q = 0;
+      while q < nframefix { let at = FRAME_FIX[q]; patch32(at, (code[at] as i64) + ((code[at + 1] as i64) << 8) + ff); q += 1; }
+      nframefix = 0;
       byte(195);
     }
     f += 1;
@@ -5228,6 +5383,7 @@ fn at64(n: i64, v: i64) { at32(n, v & 4294967295); at32(n + 4, (v >> 32) & 42949
 fn build_elf() -> i64 {
   let offset = 256;
   let total = offset + clen;
+  if 4194304 + total > BSS { fail("program too large (code and data exceed 252 MiB)"); }
   let mut i = 0;
   while i < offset { outb[i] = 0; i += 1; }
   outb[0] = 127; outb[1] = 'E'; outb[2] = 'L'; outb[3] = 'F'; outb[4] = 2; outb[5] = 1; outb[6] = 1;
@@ -5249,6 +5405,27 @@ fn build_elf() -> i64 {
   while i < clen { outb[offset + i] = code[i]; i += 1; }
   return total;
 }
+let mut want_map: bool = false;
+// --map: function start addresses on stderr (for profiling)
+fn write_map() {
+  let hx = "0123456789abcdef";
+  let line = alloc<u8>(128);
+  let mut f = 0;
+  while f < nfn {
+    if fns[f].used != 0 && f != mainfn {
+      let a = 4194304 + 256 + fns[f].addr;
+      let mut n = 0;
+      let mut sh = 28;
+      while sh >= 0 { line[n] = hx[(a >> sh) & 15]; n += 1; sh -= 4; }
+      line[n] = 32; n += 1;
+      let mut i = 0;
+      while i < fns[f].nlen && n < 120 { line[n] = src[fns[f].noff + i]; n += 1; i += 1; }
+      line[n] = 10; n += 1;
+      ewrite(line, 0, n);
+    }
+    f += 1;
+  }
+}
 fn report(total: i64, out: [u8]) {
   write("skite: wrote "); write(out); write(" ("); putnum(total); write(" bytes, "); putnum(clen); write(" machine-code bytes, ");
   putnum(nv - 2); write(" vars, "); putnum(spilled); write(" spills, "); putnum(peak_active); write(" peak registers, "); putnum(xpeak); write(" xmm, ");
@@ -5256,8 +5433,13 @@ fn report(total: i64, out: [u8]) {
   putnum(ninlined + ninl_stmt); write(" calls inlined)\n");
 }
 fn main() {
-  if argc() != 3 && argc() != 4 { ewrite("usage: skite input.cock output-executable [--scalar]\n"); exit(2); }
-  if argc() == 4 { let o = argv(3); if len(o) == 8 && o[2] == 's' && o[3] == 'c' { simd_off = true; } else { ewrite("skite: unknown option\n"); exit(2); } }
+  if argc() != 3 && argc() != 4 { ewrite("usage: skite input.ck output-executable [--scalar]\n"); exit(2); }
+  if argc() == 4 {
+    let o = argv(3);
+    if len(o) == 8 && o[2] == 's' && o[3] == 'c' { simd_off = true; }
+    else if len(o) == 5 && o[2] == 'm' && o[3] == 'a' { want_map = true; }
+    else { ewrite("skite: unknown option (--scalar, --map)\n"); exit(2); }
+  }
   let input = file(1);
   let nm = argv(1);
   srcname_len = len(nm); if srcname_len > 4000 { srcname_len = 4000; }
@@ -5280,6 +5462,7 @@ fn main() {
   parse();
   generate();
   let total = build_elf();
+  if want_map { write_map(); }
   save(2, outb, total);
   let outp = argv(2);
   report(total, outp);

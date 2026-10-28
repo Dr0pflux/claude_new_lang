@@ -1,6 +1,6 @@
 /* Control-flow + memory differential fuzzer for skite (G1 gate, v0.4 memory).
  * Builds a random structured program (let/let mut/assign/op-assign/if/else/
- * while/break/continue/early return, all operators), prints it as .cock source
+ * while/break/continue/early return, all operators), prints it as .ck source
  * and evaluates it with an independent tree interpreter. Expected output is
  * the program's stdout (print/putc lines, then the decimal result) and whether
  * it ends in a TRAP (division fault or array bounds violation).
@@ -459,7 +459,7 @@ int main(int argc,char **argv){
         for(int i=0;i<np;i++){int b=mk(E_B);n[b].op=i%3==0?SUB:i%3==1?ADD:XOR;n[b].a=n[ret].a;n[b].b=mk(E_V);n[n[b].b].var=pv[i];n[ret].a=b;}
         int last=-1;for(int c=n[top].a;c>=0;c=n[c].next)last=c;
         if(last<0)n[top].a=ret;else n[last].next=ret;
-        char p[600];snprintf(p,sizeof p,"%s/c%04d.cock",argv[1],t);out=fopen(p,"w");
+        char p[600];snprintf(p,sizeof p,"%s/c%04d.ck",argv[1],t);out=fopen(p,"w");
         for(int f=0;f<nf;f++){
             fprintf(out,"fn f%d(",f);
             for(int k=0;k<fnp[f];k++)fprintf(out,"%sv%d: i64",k?", ":"",fpar[f][k]);

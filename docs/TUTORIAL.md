@@ -6,11 +6,11 @@ This is a short, practical introduction. Every program here is in `examples/tuto
 
 ```sh
 make                                   # builds the compiler: ./skite
-./skite examples/tutorial/01_hello.cock hello
+./skite examples/tutorial/01_hello.ck hello
 ./hello
 ```
 
-`skite input.cock output` writes a native Linux x86-64 executable. There is no runtime to install and no libraries to link.
+`skite input.ck output` writes a native Linux x86-64 executable. There is no runtime to install and no libraries to link.
 
 ## 1. Hello
 
@@ -108,7 +108,7 @@ fn add(start: i64, n: i64) {
 
 - **Structs** are records stored in arrays; access a field with `a[i].field`.
 - **Globals:** top-level `let`s are global. Arrays are zeroed at start, and constants have no runtime cost.
-- **Example:** `06_structs.cock` counts repeated words in a file with this table.
+- **Example:** `06_structs.ck` counts repeated words in a file with this table.
 
 ## 7. Memory without leaks
 
@@ -163,7 +163,7 @@ save(1, buf, n);      // first n bytes of buf -> the file named by argv[1]
 - **Compile errors** point at the exact spot:
 
   ```text
-  prog.cock:3:15: error: type mismatch: expected u8, found i64
+  prog.ck:3:15: error: type mismatch: expected u8, found i64
       let y: u8 = x + 1;
                   ^
   ```
@@ -176,4 +176,4 @@ save(1, buf, n);      // first n bytes of buf -> the file named by argv[1]
 ## Next steps
 
 - Read [`LANGUAGE.md`](LANGUAGE.md), the complete reference.
-- Look at `bench/vigenere/vig.cock`, a real Vigenère solver that is faster than its gcc -O3 equivalent.
+- Look at `bench/vigenere/vig.ck`, a real Vigenère solver that is faster than its gcc -O3 equivalent.

@@ -1,4 +1,4 @@
-// Benchmarks Game fannkuch-redux (same algorithm as fannkuchredux.cock / .rs). usage: fannkuchredux N
+// Benchmarks Game fannkuch-redux (same algorithm as fannkuchredux.ck / .rs). usage: fannkuchredux N
 #include <stdio.h>
 #include <stdlib.h>
 int main(int argc, char **argv) {

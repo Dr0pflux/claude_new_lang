@@ -1,4 +1,4 @@
-// Benchmarks Game spectral-norm (same algorithm as spectralnorm.cock / .c). usage: spectralnorm N
+// Benchmarks Game spectral-norm (same algorithm as spectralnorm.ck / .c). usage: spectralnorm N
 fn a(i: i64, j: i64) -> f64 { 1.0 / (((i + j) * (i + j + 1) / 2 + i + 1) as f64) }
 fn av(v: &[f64], o: &mut [f64], n: usize) {
   for i in 0..n { let mut s = 0.0; for j in 0..n { s += a(i as i64, j as i64) * v[j]; } o[i] = s; }

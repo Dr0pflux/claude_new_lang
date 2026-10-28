@@ -132,7 +132,7 @@ def main():
     vec = 0
     for c in range(cases):
         src = Gen(rnd).program()
-        p = os.path.join(tmp, "v.cock")
+        p = os.path.join(tmp, "v.ck")
         open(p, "w").write(src)
         r1 = subprocess.run([SKITE, p, os.path.join(tmp, "a")], capture_output=True, text=True)
         r2 = subprocess.run([SKITE, p, os.path.join(tmp, "b"), "--scalar"], capture_output=True, text=True)
@@ -143,12 +143,12 @@ def main():
         except subprocess.TimeoutExpired: continue
         try: o1 = subprocess.run([os.path.join(tmp, "a")], capture_output=True, timeout=60)
         except subprocess.TimeoutExpired:
-            print(f"VECTOR HANG case {c}"); print(src); open(os.path.join(ROOT, "vec_fail.cock"), "w").write(src); sys.exit(1)
+            print(f"VECTOR HANG case {c}"); print(src); open(os.path.join(ROOT, "vec_fail.ck"), "w").write(src); sys.exit(1)
         if o1.stdout != o2.stdout or o1.returncode != o2.returncode:
             print(f"MISMATCH case {c} (rc {o1.returncode} vs {o2.returncode})")
             print(src)
             print("vector:", o1.stdout[-300:]); print("scalar:", o2.stdout[-300:])
-            open(os.path.join(ROOT, "vec_fail.cock"), "w").write(src)
+            open(os.path.join(ROOT, "vec_fail.ck"), "w").write(src)
             sys.exit(1)
     print(f"PASS {cases} programs ({vec} vectorized), seed {seed}")
 

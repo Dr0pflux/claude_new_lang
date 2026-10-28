@@ -1,4 +1,4 @@
-// Benchmarks Game mandelbrot (same algorithm as mandelbrot.cock / .c). usage: mandelbrot N
+// Benchmarks Game mandelbrot (same algorithm as mandelbrot.ck / .c). usage: mandelbrot N
 use std::io::Write;
 fn main() {
   let n: usize = std::env::args().nth(1).map(|s| s.parse().unwrap()).unwrap_or(200);

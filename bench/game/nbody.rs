@@ -1,4 +1,4 @@
-// Benchmarks Game n-body (same algorithm as nbody.cock / nbody.c). usage: nbody N
+// Benchmarks Game n-body (same algorithm as nbody.ck / nbody.c). usage: nbody N
 const PI: f64 = 3.141592653589793;
 const SOLAR: f64 = 4.0 * PI * PI;
 const DPY: f64 = 365.24;
