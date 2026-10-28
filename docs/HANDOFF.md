@@ -3,7 +3,30 @@
 Read this with [TEAM_HANDOFF.md](TEAM_HANDOFF.md) (protocol) and the ledger issue
 (https://github.com/Dr0pflux/skite.ck/issues/3, live state). Updated 2026-10-28 after PR #10. Fetch the ledger and remote branches before acting.
 
-## Integration branch
+## Current local candidate: runtime-length predecessors (2026-10-28)
+
+Branch `codex/length-offset-facts`, integration base
+`690f3b570cd048f816e1c42c091285899376caef`; compiler change is code commit
+`57310f01562f81b54b57a2c619cfface71fee5e1`, source SHA-256
+`5d2e9b97606f12d3ddcdf0bdbb264aaf8551746aefa84f9736691e5db3dca7e7`.
+It proves `a[i-k]` only with the existing array-specific length fact and
+`0 <= k <= i`, and preserves identity casts. Clean build, self-hosting fixed point,
+full tests and 842 focused output/trap cases passed locally. The before compiler
+fails the new predecessor-proof assertion.
+
+Measured benefit is a 12-byte window-kernel reduction and one removed bounds
+check, not a reliable runtime win. The compiler grows 512 bytes; the prefix
+control is byte-identical. Exact source/compiler hashes, CPU/features, GCC control,
+11-run samples and missing Clang/Rust coverage are recorded in
+[the measurement record](../bench/length_facts/README.md). Integration and genuine
+cross-provider review remain pending; do not infer merge approval from local tests.
+
+The current owner priorities are in [CLASSICAL_ROADMAP.md](CLASSICAL_ROADMAP.md).
+The integration baseline is already self-hosted and implements masked stream
+loops, max/min and byte lanes. Historical sections below describe earlier
+checkpoints; use the live ledger and current README for newer feature/review state.
+
+## Historical integration checkpoint
 
 `claude/optimize-benchmark-gcc-clang-dyjp4k` at
 `c4837cf83e284b588b30daaaa2d66824fffc4e8f` (PR #10). Its source tree matches reviewed,

@@ -1,0 +1,348 @@
+{
+  "before_commit": "690f3b570cd048f816e1c42c091285899376caef",
+  "after_code_commit": "57310f01562f81b54b57a2c619cfface71fee5e1",
+  "before_source_sha256": "706f861843cc569f07b5c624da567df6deb5c3adb43f215701cfceef163728d0",
+  "after_source_sha256": "5d2e9b97606f12d3ddcdf0bdbb264aaf8551746aefa84f9736691e5db3dca7e7",
+  "compiler_sha256": {
+    "before": "53400a2dddad17165152de7505158596e947c56f13d7babc0fab130353719eab",
+    "after": "f01282a880b8905dd0d26a4bbd786992080e16ff970d7f128d89cbd65cca538a"
+  },
+  "cpu_model": "INTEL(R) XEON(R) PLATINUM 8573C",
+  "cpu_flags": "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ss ht syscall nx pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology nonstop_tsc cpuid tsc_known_freq pni pclmulqdq ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand hypervisor lahf_lm abm 3dnowprefetch cpuid_fault fsgsbase tsc_adjust bmi1 hle avx2 smep bmi2 erms invpcid rtm avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves avx_vnni avx512_bf16 arat avx512vbmi umip waitpkg avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq rdpid cldemote movdiri movdir64b fsrm serialize tsxldtrk avx512_fp16 arch_capabilities",
+  "allowed_cpus": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+  ],
+  "pinned_cpu": 0,
+  "runs": 11,
+  "tools": {
+    "gcc": "gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0",
+    "clang": null,
+    "rustc": null
+  },
+  "gcc_flags": [
+    "-O3",
+    "-march=native",
+    "-ffp-contract=off"
+  ],
+  "scope": "before/after Skite; GCC checksum/timing control; no Clang/Rust or best-compiler performance claim",
+  "kernels": {
+    "window": {
+      "source_sha256": {
+        "ck": "db20feb33565e0cbae8ef4f1a2bd695b31ce6adbc6b6821d8c3f3b38d32af382",
+        "c": "4778eb8267563cd2cebe149532ed537878d245c7fc59dcb09a74ab27eeeff992"
+      },
+      "binaries": {
+        "before": {
+          "binary_sha256": "1bad939499186fdaa1cde5e64e793744940d1b483c7cc09ed35aad53d46b4ce6",
+          "bytes": 827,
+          "compiler_report": "skite: wrote /tmp/skite-length-bench-ozjpg7gk/window.before (827 bytes, 571 machine-code bytes, 22 vars, 0 spills, 5 peak registers, 0 xmm, 2/3 bounds checks elided, 0 modulo reduced, 0 loops vectorized (0 element-wise, 0 byte-lane), 0 calls inlined, 0 loops unrolled)"
+        },
+        "after": {
+          "binary_sha256": "1e6c2081d003f97ab18a9b91097423f9f1eb3c689b191b94138cd1e1d4781955",
+          "bytes": 815,
+          "compiler_report": "skite: wrote /tmp/skite-length-bench-ozjpg7gk/window.after (815 bytes, 559 machine-code bytes, 22 vars, 0 spills, 5 peak registers, 0 xmm, 3/3 bounds checks elided, 0 modulo reduced, 0 loops vectorized (0 element-wise, 0 byte-lane), 0 calls inlined, 0 loops unrolled)"
+        },
+        "gcc": {
+          "binary_sha256": "b6d48d61aa412880fb41e4882ff8cc6b467290befd91065d8d1f9ec34dd5662d",
+          "bytes": 16056
+        }
+      },
+      "checksums": [
+        {
+          "argc": 1,
+          "output": "4115658017\n"
+        },
+        {
+          "argc": 2,
+          "output": "12226\n"
+        },
+        {
+          "argc": 4,
+          "output": "-38003244\n"
+        }
+      ],
+      "timings": {
+        "before": {
+          "median_ms": 116.359014,
+          "q1_ms": 114.3405085,
+          "q3_ms": 117.620524,
+          "min_ms": 67.863568,
+          "max_ms": 119.990725,
+          "samples_ms": [
+            114.417777,
+            115.288456,
+            119.990725,
+            114.26324,
+            116.359014,
+            118.194298,
+            117.001543,
+            117.04675,
+            67.863568,
+            114.13925,
+            118.782406
+          ]
+        },
+        "after": {
+          "median_ms": 115.272472,
+          "q1_ms": 114.46056,
+          "q3_ms": 116.71189849999999,
+          "min_ms": 114.040907,
+          "max_ms": 118.366058,
+          "samples_ms": [
+            115.272472,
+            116.549731,
+            114.957308,
+            114.293412,
+            114.160265,
+            114.040907,
+            116.874066,
+            117.459721,
+            115.371274,
+            114.627708,
+            118.366058
+          ]
+        },
+        "gcc": {
+          "median_ms": 114.719681,
+          "q1_ms": 114.266271,
+          "q3_ms": 116.0159455,
+          "min_ms": 114.122454,
+          "max_ms": 118.729348,
+          "samples_ms": [
+            114.291528,
+            114.820114,
+            117.064401,
+            118.729348,
+            114.216593,
+            114.719681,
+            114.452768,
+            114.122454,
+            114.241014,
+            115.607514,
+            116.424377
+          ]
+        }
+      },
+      "orders": [
+        [
+          "before",
+          "after",
+          "gcc"
+        ],
+        [
+          "gcc",
+          "before",
+          "after"
+        ],
+        [
+          "before",
+          "after",
+          "gcc"
+        ],
+        [
+          "after",
+          "gcc",
+          "before"
+        ],
+        [
+          "gcc",
+          "after",
+          "before"
+        ],
+        [
+          "after",
+          "before",
+          "gcc"
+        ],
+        [
+          "before",
+          "gcc",
+          "after"
+        ],
+        [
+          "before",
+          "gcc",
+          "after"
+        ],
+        [
+          "after",
+          "gcc",
+          "before"
+        ],
+        [
+          "before",
+          "gcc",
+          "after"
+        ],
+        [
+          "before",
+          "gcc",
+          "after"
+        ]
+      ]
+    },
+    "prefix": {
+      "source_sha256": {
+        "ck": "b3c58096c3709c0698aa11eadd7fc04590f6f765dbb0ac736d39bad5cbc4879f",
+        "c": "b1a5aea2d27f89d6fa11929563c4f148b49399ff3908ae439388938f28408e68"
+      },
+      "binaries": {
+        "before": {
+          "binary_sha256": "76372d6f73696e007ee9fd79e4d6e6f0c72d9ab566f157dc99948bc28e523534",
+          "bytes": 892,
+          "compiler_report": "skite: wrote /tmp/skite-length-bench-ozjpg7gk/prefix.before (892 bytes, 636 machine-code bytes, 25 vars, 0 spills, 6 peak registers, 0 xmm, 5/6 bounds checks elided, 0 modulo reduced, 0 loops vectorized (0 element-wise, 0 byte-lane), 0 calls inlined, 0 loops unrolled)"
+        },
+        "after": {
+          "binary_sha256": "76372d6f73696e007ee9fd79e4d6e6f0c72d9ab566f157dc99948bc28e523534",
+          "bytes": 892,
+          "compiler_report": "skite: wrote /tmp/skite-length-bench-ozjpg7gk/prefix.after (892 bytes, 636 machine-code bytes, 25 vars, 0 spills, 6 peak registers, 0 xmm, 5/6 bounds checks elided, 0 modulo reduced, 0 loops vectorized (0 element-wise, 0 byte-lane), 0 calls inlined, 0 loops unrolled)"
+        },
+        "gcc": {
+          "binary_sha256": "05bacb5085b72062a1ad5c07bc12a6cfb457bbf292a5891fb85bd4733c91a1a0",
+          "bytes": 16016
+        }
+      },
+      "checksums": [
+        {
+          "argc": 1,
+          "output": "6847888326576765656\n-1410925276378051048\n"
+        },
+        {
+          "argc": 2,
+          "output": "828611098287151004\n-8541742214787516556\n"
+        },
+        {
+          "argc": 4,
+          "output": "6372989045956270287\n-5796792099035341458\n"
+        }
+      ],
+      "timings": {
+        "before": {
+          "median_ms": 214.940591,
+          "q1_ms": 214.6539965,
+          "q3_ms": 217.9866055,
+          "min_ms": 214.383459,
+          "max_ms": 319.205446,
+          "samples_ms": [
+            217.697033,
+            214.383459,
+            214.752242,
+            214.411465,
+            267.163357,
+            214.940591,
+            319.205446,
+            217.853607,
+            214.870497,
+            218.119604,
+            214.555751
+          ]
+        },
+        "after": {
+          "median_ms": 216.739838,
+          "q1_ms": 214.7687195,
+          "q3_ms": 217.4531215,
+          "min_ms": 214.44187,
+          "max_ms": 266.798889,
+          "samples_ms": [
+            214.699848,
+            217.723063,
+            216.739838,
+            217.18318,
+            214.837591,
+            218.481287,
+            266.798889,
+            214.44187,
+            217.011597,
+            216.222488,
+            214.589948
+          ]
+        },
+        "gcc": {
+          "median_ms": 217.792583,
+          "q1_ms": 217.136046,
+          "q3_ms": 218.622826,
+          "min_ms": 214.545215,
+          "max_ms": 315.543979,
+          "samples_ms": [
+            215.21913,
+            217.792583,
+            214.545215,
+            264.828186,
+            217.518287,
+            315.543979,
+            216.898836,
+            217.840088,
+            219.086228,
+            218.159424,
+            217.373256
+          ]
+        }
+      },
+      "orders": [
+        [
+          "before",
+          "after",
+          "gcc"
+        ],
+        [
+          "gcc",
+          "before",
+          "after"
+        ],
+        [
+          "before",
+          "after",
+          "gcc"
+        ],
+        [
+          "after",
+          "gcc",
+          "before"
+        ],
+        [
+          "gcc",
+          "after",
+          "before"
+        ],
+        [
+          "after",
+          "before",
+          "gcc"
+        ],
+        [
+          "before",
+          "gcc",
+          "after"
+        ],
+        [
+          "before",
+          "gcc",
+          "after"
+        ],
+        [
+          "after",
+          "gcc",
+          "before"
+        ],
+        [
+          "before",
+          "gcc",
+          "after"
+        ],
+        [
+          "before",
+          "gcc",
+          "after"
+        ]
+      ]
+    }
+  }
+}
