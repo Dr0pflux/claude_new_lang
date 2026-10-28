@@ -23,30 +23,31 @@ Contributors (people and AI agents): read [`AGENTS.md`](AGENTS.md),
 
 Matched implementations (same algorithm in skite, C and Rust, byte-identical output required);
 gcc/clang `-O3 -march=native`, rustc `-C opt-level=3 -C target-cpu=native`. Quick sizes, Xeon
-(AVX-512, shared 4-vCPU cloud host, so expect ±10% noise), 2026-10-28.
+(AVX-512, shared 4-vCPU cloud host, so expect ±10% noise), 2026-10-28, head `3a479db`;
+Game medians of 3 runs, kernels of 5.
 Ratio = skite time / fastest other; below 1 means skite is faster.
 
 Benchmarks Game (`bench/game`):
 
 | workload | skite ms | best other | ratio |
 |---|---|---|---|
-| mandelbrot | 334 | clang 955 | **0.35** |
-| spectralnorm | 256 | gcc 261 | **0.98** |
-| fannkuchredux | 2821 | clang 2557 | 1.10 |
-| binarytrees | 454 | gcc 296 | 1.53 |
-| fasta | 391 | rust 332 | 1.18 |
-| nbody | 253 | rust 210 | 1.20 |
+| mandelbrot | 330 | gcc 942 | **0.35** |
+| fasta | 321 | rust 310 | 1.04 |
+| spectralnorm | 253 | gcc 240 | 1.06 |
+| fannkuchredux | 2592 | rust 2316 | 1.12 |
+| nbody | 268 | rust 205 | 1.30 |
+| binarytrees | 518 | gcc 320 | 1.62 |
 
 Arithmetic and text kernels (`bench/kernels`, `run.py 3`):
 
 | kernel | ratio | kernel | ratio | kernel | ratio |
 |---|---|---|---|---|---|
-| strsearch | **0.26** | sieve | **0.99** | histogram | 1.01 |
-| textscan | **0.40** | divmod | 1.00 | matmul | 1.24 |
-| wordcount | **0.64** | polyeval | 1.03 | prefixsum | 1.28 |
-| collatz | **0.70** | nqueens | 1.08 | ngramhash | 1.11 |
-| caseconv | **0.82** | hashmix | **0.97** | intsort | 1.18 |
-| | | gcdsum | 1.18 | editdist | 1.45 |
+| strsearch | **0.26** | hashmix | **0.97** | ngramhash | 1.11 |
+| textscan | **0.40** | polyeval | **0.98** | gcdsum | 1.14 |
+| wordcount | **0.64** | sieve | **0.99** | intsort | 1.17 |
+| collatz | **0.70** | divmod | 1.01 | matmul | 1.24 |
+| caseconv | **0.82** | histogram | 1.01 | editdist | 1.34 |
+| | | prefixsum | 1.08 | nqueens | 1.08 |
 
 The compiler fixes rare decimal-to-`f32` double rounding (issue #14)
 when a literal is used directly in an `f32` context. Default-`f64` literals and

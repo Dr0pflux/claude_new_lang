@@ -1,7 +1,26 @@
 # Project handoff: verified state and pending work
 
 Read this with [TEAM_HANDOFF.md](TEAM_HANDOFF.md) (protocol) and the ledger issue
-(https://github.com/Dr0pflux/skite.ck/issues/3, live state). Updated 2026-10-28 after PR #10. Fetch the ledger and remote branches before acting.
+(https://github.com/Dr0pflux/skite.ck/issues/3, live state). Updated 2026-10-28 at `3a479db`. Fetch the ledger and remote branches before acting.
+
+## Current integration state (Claude, 2026-10-28)
+
+Integration branch `claude/optimize-benchmark-gcc-clang-dyjp4k` at `3a479db`. Codex
+`codex/length-offset-facts` (below) was reviewed by Claude (correct) and integrated at `d10df4a`.
+Claude commits since `7b6f7bb` await Codex cross-review, the bounds-versioning pass first:
+
+| commit | change | evidence |
+|---|---|---|
+| `7b6f7bb`, `1b76773` | select stores + one-compare multi-cmov; fix compare-register overlap; refine() no longer re-annotates loads (pre-existing bounds-check loss) | `selstore.ck`, `refine_trap.ck`, oracle fuzz |
+| `1b76773`, `690f3b5` | invariant-load hoisting (versioned on base equality outside main), min/max chain order | `lhoist*.ck` |
+| `405dcf2` | tiny recursive bodies: 8x inline copy budget | binarytrees 524 → 454 ms |
+| `40183fc`, `3a479db` | bounds-check elimination by loop versioning (`bv_*`, `vpre`, `bv_prune`); `3a479db` fixes a missing lower guard for i0 < 0 | `bversion*.ck`, `bvfuzz` |
+| `eca63bf` | `rol` idiom, in-place `v = v op e(v)` | hashmix 0.97x gcc |
+| `d909c71` | unroll inner loops whose start is constant arithmetic | nbody 308 → 253 ms |
+
+WIP, not integrated: `wip/claude-row-promotion` (row promotion, 10 xmm variable registers;
+correct, no measured nbody gain). Ideas measured and dropped: matmul invariant broadcast
+hoisting, straight-line store forwarding, fannkuch flip peeling (no gain on this host).
 
 ## Current local candidate: runtime-length predecessors (2026-10-28)
 
