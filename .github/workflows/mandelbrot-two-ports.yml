@@ -23,7 +23,7 @@ jobs:
           set -euo pipefail
           lscpu | grep 'Model name'
           nproc
-          for n in 400 1600 4000; do
+          for n in 400 1600 4000 16000; do
             echo "===== N=$n ====="
             /tmp/mb-exact "$n" > /tmp/mb-exact.pbm
             /tmp/mb-fast "$n" > /tmp/mb-fast.pbm
