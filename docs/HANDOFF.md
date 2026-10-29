@@ -1,3 +1,11 @@
+# L44 rotate-add candidate, 2026-10-29
+
+Branch `codex/rotate-disjoint-forms`, base `70345389ba0154bcd270830a24f12686ab342c5c`, code commit `130a914da42aec54d63c81026b8ffce9037f082f`, tree `1d21be07ff6890ff3b46de674cb9bae22628e0fa`. Source `fb9e1a8d5c1ad89c374e9dad1300e826db96790b6a9b7c58bc6de6244bcf8e23`. One Luna implementer, independent preliminary safety GO; exact final head review/CI pending. Claude Saturday October31 review queued, no pre-reset probe. Existing bootstrap issue25/SSE2 ownership untouched.
+
+Adds ADD only to the established pure64-bit complementary logical-shift rotate matcher. Independent9096outputs plus5OR/ADD binary-shape matches and100differential rotate programs PASS; before/after fixedpointPASS. SixGame binaries byte-identical. Diagnostic96.72→62.97ms,10bytes smaller; compiler ELF size unchanged. Raw samples/hardware/hashes in bench/rotate_add. Local cleanfulltest passes earlier gates then fails because ptrace is denied; supervisor/full1442length tests remain mandatoryCI, no skip. Next: exact-head review, publishPR, passingCI and latestbase check before integration.
+
+Previous checkpoints below are historical.
+
 # Current scoped checkpoint: L43 terminal-length proof (2026-10-29)
 
 Branch `codex/terminal-length-facts`, base `0faaec8b74b77b5621756d382a1795064bb037e6`.
