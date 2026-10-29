@@ -1,7 +1,5 @@
-import random, subprocess, sys, os
-NEW=sys.argv[1]; OLD=sys.argv[2]; N=int(sys.argv[3]); seed=int(sys.argv[4])
-random.seed(seed); import tempfile
-D=tempfile.mkdtemp(prefix='skite-ofz-')
+import random, sys, tempfile, os
+from harness_common import HarnessFailure, run_pair
 TY=['u64','i64','u64','i64']
 def term(v):
     c=random.randint(1,63); c2=64-c if random.random()<0.7 else random.randint(1,63)
@@ -26,15 +24,42 @@ def prog():
   print(a); print(b); print(q);
 }}
 '''
-def runc(cc, src, out):
-    r=subprocess.run([cc, src, out], capture_output=True)
-    if r.returncode: return ('CE', r.stderr[:80])
-    r=subprocess.run([out], capture_output=True, timeout=10)
-    return (r.returncode, r.stdout)
-bad=0; ce=0
-for t in range(N):
-    p=prog(); src=f'{D}/r{seed}.ck'; open(src,'w').write(p)
-    a=runc(NEW, src, f'{D}/rn{seed}'); b=runc(OLD, src, f'{D}/ro{seed}')
-    if a[0]=='CE': ce+=1
-    if a!=b: bad+=1; open(f'{D}/rbad{seed}_{t}.ck','w').write(p); print('MISMATCH', t, f'{D}/rbad{seed}_{t}.ck', a, b)
-print('done', N, 'bad', bad, 'ce', ce)
+def main():
+    if len(sys.argv) != 5:
+        print(f"usage: {os.path.basename(sys.argv[0])} NEW_COMPILER OLD_COMPILER N SEED", file=sys.stderr)
+        return 2
+    new_compiler, old_compiler = sys.argv[1:3]
+    try:
+        count = int(sys.argv[3]); seed = int(sys.argv[4])
+    except ValueError:
+        print("N and seed must be integers", file=sys.stderr)
+        return 2
+    if count < 0:
+        print("N must be nonnegative", file=sys.stderr)
+        return 2
+    random.seed(seed)
+    directory = tempfile.mkdtemp(prefix="skite-ofz-")
+    bad = changed = 0
+    for t in range(count):
+        program = prog()
+        source = os.path.join(directory, f"case_{seed}_{t}.ck")
+        new_output = os.path.join(directory, f"new_{seed}_{t}")
+        old_output = os.path.join(directory, f"old_{seed}_{t}")
+        with open(source, "w") as f:
+            f.write(program)
+        try:
+            new_result, old_result, binary_changed = run_pair(
+                new_compiler, old_compiler, source, new_output, old_output)
+        except HarnessFailure as exc:
+            print(f"ERROR case={t}: {exc}; source={source}; artifacts={directory}", file=sys.stderr)
+            return 2
+        changed += binary_changed
+        if new_result != old_result:
+            bad += 1
+            print(f"MISMATCH case={t} new={new_result[0]} old={old_result[0]} source={source}", file=sys.stderr)
+    print(f"done {count} bad {bad} changed {changed} artifacts {directory}")
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

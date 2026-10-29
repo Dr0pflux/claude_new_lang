@@ -21,6 +21,12 @@ status belongs to the PR; this section does not claim integration or provider ap
   representations; it also adds propagated-zero division/remainder regressions and CI.
 - PR #5 bounds fuzz compilation/execution, retains failure artifacts and fixes
   false passes. Injected-hang tests cover the harnesses.
+- Issue #23 repairs five differential oracle fuzzers that previously could return
+  success after compiler failures or timeouts. Compile and runtime subprocesses use
+  finite positive deadlines and terminate the process group on timeout; failure
+  artifacts retain generated source, inputs, executables and diagnostics. The
+  deterministic harness policy suite has 75 fault-injection checks. Publication,
+  CI and provider review evidence are recorded in the fixing PR and shared ledger.
 - PR #6 makes the Game runner reject failed/timed-out executions and invalid
   selections; optional compiler availability is reported explicitly.
 - PR #8 aligns owned scoped buffers to 64 bytes. Allocation regressions and a

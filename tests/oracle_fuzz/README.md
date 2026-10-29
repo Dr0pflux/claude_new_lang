@@ -1,23 +1,13 @@
-# Differential fuzzers for the AST optimization passes
+# Oracle differential fuzzers
 
-Each script generates random programs aimed at one pass, compiles them with the compiler under
-test and with an independent oracle compiler, and compares exit status and output (including
-traps). The default oracle is the bootstrap seed, which predates all of these passes.
+Each script accepts `NEW_COMPILER OLD_COMPILER N SEED` and generates deterministic programs from `SEED`. A successful run exits 0 only when all generated programs agree. Any output/status mismatch exits 1; compiler, timeout, missing-output, or unexpected runtime failures exit 2. The generated source and temporary artifact directory are printed on failures and retained for inspection.
 
-```bash
-python3 tests/oracle_fuzz/bvfuzz2.py ./skite bootstrap/skite-seed 300 1
+Compile and execution subprocess trees are bounded by default to 10 and 2 seconds; a timeout kills the whole process group, including descendants. Set `SKITE_ORACLE_COMPILE_TIMEOUT` or `SKITE_ORACLE_RUN_TIMEOUT` to finite positive seconds to adjust those limits. Matching program exits caused by SIGILL or SIGFPE are treated as valid outcomes and compared between compilers; other nonzero runtime exits are harness errors.
+
+Run the deterministic policy tests with:
+
+```sh
+python3 tests/oracle_fuzz/test_harnesses.py
 ```
 
-Arguments: compiler, oracle, number of programs, seed. Mismatching programs are kept in the
-temporary directory printed on failure.
-
-| script | pass |
-|---|---|
-| `bvfuzz.py` | bounds versioning, one induction variable, constant and variable offsets |
-| `bvfuzz2.py` | bounds versioning over `i < n && j < m` and counters |
-| `selfuzz.py` | select stores and multi-assignment if-conversion |
-| `lhfuzz.py` | invariant-load hoisting with aliased array arguments |
-| `rotfuzz.py` | rotate idiom and in-place updates |
-
-Programs use `while` loops only, because the seed predates `for`. The seed is an old compiler;
-investigate every mismatch against the source semantics before blaming either side.
+The tests inject fake compilers to cover agreement, mismatch, compile failure, missing output, compile timeout, execution timeout, descendant cleanup after compile and runtime timeouts, invalid timeout values, unexpected runtime failure, and matching SIGFPE status for every harness.
