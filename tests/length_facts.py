@@ -29,11 +29,36 @@ def preserve_failure(label,cmd,src,data,exe,stdout=b'',stderr=b'',detail=''):
   f'stderr:\n{stderr.decode(errors="replace") if isinstance(stderr,bytes) else stderr}\n')
  return dest
 
+def process_snapshot(pid):
+ chunks=[]
+ for name in ('status','wchan','stat','limits','coredump_filter'):
+  path=pathlib.Path(f'/proc/{pid}/{name}')
+  try: value=path.read_text()
+  except OSError as e: value=f'<unavailable: {e}>'
+  chunks.append(f'--- /proc/{pid}/{name} ---\n{value}')
+ for name in ('core_pattern','core_pipe_limit'):
+  path=pathlib.Path('/proc/sys/kernel')/name
+  try: value=path.read_text()
+  except OSError as e: value=f'<unavailable: {e}>'
+  chunks.append(f'--- /proc/sys/kernel/{name} ---\n{value}')
+ return '\n'.join(chunks)
+
 def run(cmd,timeout,label,src,data=None,exe=None,text=False):
+ proc=None
  try:
-  return subprocess.run(cmd,capture_output=True,text=text,timeout=timeout,preexec_fn=disable_core_dumps)
+  proc=subprocess.Popen(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=text,
+                        start_new_session=True,preexec_fn=disable_core_dumps)
+  stdout,stderr=proc.communicate(timeout=timeout)
+  return subprocess.CompletedProcess(cmd,proc.returncode,stdout,stderr)
  except subprocess.TimeoutExpired as e:
-  dest=preserve_failure(label,cmd,src,data,exe,e.stdout or b'',e.stderr or b'',f'timed out after {timeout}s')
+  snapshot=process_snapshot(proc.pid) if proc is not None else '<process was not started>'
+  if proc is not None:
+   try: os.killpg(proc.pid,signal.SIGKILL)
+   except ProcessLookupError: pass
+   stdout,stderr=proc.communicate()
+  else: stdout,stderr=e.stdout or b'',e.stderr or b''
+  detail=f'timed out after {timeout}s; process state before kill:\n{snapshot}'
+  dest=preserve_failure(label,cmd,src,data,exe,stdout or e.stdout or b'',stderr or e.stderr or b'',detail)
   raise AssertionError(f'{label}: subprocess timed out after {timeout}s; artifacts={dest}') from e
 
 def require(ok,label,cmd,src,data=None,exe=None,stdout=b'',stderr=b'',detail=''):

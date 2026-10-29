@@ -128,3 +128,10 @@ disables subprocess core dumps and retains source/input/executable plus command
 and output diagnostics through the existing CI artifact directory. All 842
 cases and injected compiler-failure artifact retention pass locally; no timeout
 or oracle was relaxed. Successful CI remains required before merge.
+
+The diagnostic CI attempt also timed out on `past_end-scalar-n255`; its retained
+executable is byte-identical to a fresh local build and both trap immediately
+on the saved input. No compiler defect was demonstrated. Further timeout
+diagnostics snapshot child process state and kernel core settings before
+killing/reaping the process group. A forked-sleeper injection verified snapshot
+retention and descendant cleanup; all 842 cases still pass locally.
