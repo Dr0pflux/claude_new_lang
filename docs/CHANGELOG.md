@@ -40,6 +40,8 @@
   `E + k <= len(a)`) holds, else the checked original. After the analysis, a copy pair collapses to
   one loop when the guard always holds or the checked copy needs no check. ngramhash 241 → 208 ms,
   histogram 206 → 175 ms. Test: `tests/data/bversion.ck`.
+  Multicounter versioning leaves trapping invariant bounds in the original condition, preserving
+  short-circuit division traps. Regression: `tests/bv_guard_traps.py`.
 - **Recursive inlining:** tiny recursive bodies get an 8x statement budget for their inlined
   copies (binarytrees 524 → 454 ms on Xeon, gcc 296; compiler +2% size, same compile time).
 - **Loop-carried stores:** `a[i - 1]` after a store `a[i]` reads a register (prefixsum 994 → 204 ms).

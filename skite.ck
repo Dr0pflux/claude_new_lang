@@ -4117,7 +4117,7 @@ fn bv_conj(c: i64, w: i64) {   // induction-variable conjuncts of the loop test
   if nd[c].k == N_BIN && nd[c].op == O_LAND { bv_conj(nd[c].a, w); bv_conj(nd[c].b, w); return; }
   if nd[c].k != N_BIN || (nd[c].op != O_LT && nd[c].op != O_LE) || nd[nd[c].a].k != N_VAR || BV_NIV >= 4 { return; }
   let v = nd[nd[c].a].var; let E = nd[c].b;
-  if vars[v].ty != TY_I64 || nd[E].ty != TY_I64 || !invariant(E, w) || has_call(E) || count_assign(w, v) != 1 || !bv_has_inc(nd[w].b, v) { return; }
+  if vars[v].ty != TY_I64 || nd[E].ty != TY_I64 || !invariant(E, w) || has_call(E) || has_trap(E) || count_assign(w, v) != 1 || !bv_has_inc(nd[w].b, v) { return; }
   let mut q = 0; while q < BV_NIV { if BV_IV[q] == v { return; } q += 1; }
   BV_IV[BV_NIV] = v; BV_IE[BV_NIV] = E; BV_ILE[BV_NIV] = nd[c].op == O_LE; BV_NIV += 1;
 }

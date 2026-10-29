@@ -81,6 +81,17 @@ the confirmed 20-comparison repro fails on the frozen baseline and passes with
 the spill fix. The ordinary shallow case still emits `cmov`. The ledger records
 full-suite, exact-head review and CI evidence for integration.
 
+## Multicounter bounds guards and short-circuit traps (issue #21)
+
+The bounds-versioning guard could evaluate an invariant division in a later
+`&&` conjunct before the original loop test reached it. If an earlier conjunct
+was false, this introduced a division trap the source skipped. `bv_conj` now
+rejects bounds expressions that may trap. `tests/bv_guard_traps.py` checks
+skipped and evaluated divide-by-zero and signed-overflow cases, plus safe
+single- and two-counter bounds. The frozen baseline traps on the skipped case;
+the fix preserves the expected output. The ledger records full-suite, exact-head
+review and CI evidence for integration.
+
 ## Open findings
 
 1. [Issue #9](https://github.com/Dr0pflux/skite.ck/issues/9) is resolved: Claude
