@@ -45,21 +45,28 @@ def process_snapshot(pid):
 
 def run(cmd,timeout,label,src,data=None,exe=None,text=False):
  proc=None
- try:
-  proc=subprocess.Popen(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=text,
-                        start_new_session=True,preexec_fn=disable_core_dumps)
-  stdout,stderr=proc.communicate(timeout=timeout)
+ with tempfile.TemporaryFile() as out,tempfile.TemporaryFile() as err:
+  try:
+   proc=subprocess.Popen(cmd,stdout=out,stderr=err,start_new_session=True,preexec_fn=disable_core_dumps)
+   proc.wait(timeout=timeout)
+  except subprocess.TimeoutExpired as e:
+   snapshot=process_snapshot(proc.pid) if proc is not None else '<process was not started>'
+   if proc is not None:
+    try: os.killpg(proc.pid,signal.SIGKILL)
+    except ProcessLookupError: pass
+    proc.wait()
+   out.seek(0);stdout=out.read()
+   err.seek(0);stderr=err.read()
+   if text:
+    stdout=stdout.decode(errors='replace');stderr=stderr.decode(errors='replace')
+   detail=f'timed out after {timeout}s; process state before kill:\n{snapshot}'
+   dest=preserve_failure(label,cmd,src,data,exe,stdout,stderr,detail)
+   raise AssertionError(f'{label}: subprocess timed out after {timeout}s; artifacts={dest}') from e
+  out.seek(0);stdout=out.read()
+  err.seek(0);stderr=err.read()
+  if text:
+   stdout=stdout.decode(errors='replace');stderr=stderr.decode(errors='replace')
   return subprocess.CompletedProcess(cmd,proc.returncode,stdout,stderr)
- except subprocess.TimeoutExpired as e:
-  snapshot=process_snapshot(proc.pid) if proc is not None else '<process was not started>'
-  if proc is not None:
-   try: os.killpg(proc.pid,signal.SIGKILL)
-   except ProcessLookupError: pass
-   stdout,stderr=proc.communicate()
-  else: stdout,stderr=e.stdout or b'',e.stderr or b''
-  detail=f'timed out after {timeout}s; process state before kill:\n{snapshot}'
-  dest=preserve_failure(label,cmd,src,data,exe,stdout or e.stdout or b'',stderr or e.stderr or b'',detail)
-  raise AssertionError(f'{label}: subprocess timed out after {timeout}s; artifacts={dest}') from e
 
 def require(ok,label,cmd,src,data=None,exe=None,stdout=b'',stderr=b'',detail=''):
  if not ok:

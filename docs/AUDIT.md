@@ -135,3 +135,12 @@ on the saved input. No compiler defect was demonstrated. Further timeout
 diagnostics snapshot child process state and kernel core settings before
 killing/reaping the process group. A forked-sleeper injection verified snapshot
 retention and descendant cleanup; all 842 cases still pass locally.
+
+The next retained failure (`lost_fact-scalar-n32`) showed the child already
+exited as a zombie with status 132 while Python waited on capture-pipe EOF.
+The runner core pattern invokes `systemd-coredump`. Temporary-file output
+capture now waits for the direct child rather than inherited pipe writers.
+A detached-writer injection returns the child status/output promptly, while
+actual-child timeout capture and cleanup remain intact. The same 842 oracles
+and deadlines pass locally; this fixes the demonstrated pipe-wait mechanism
+without claiming an unobserved compiler defect.
