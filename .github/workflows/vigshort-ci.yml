@@ -22,6 +22,12 @@ jobs:
           /tmp/vigshort /tmp/crib.txt | tee /tmp/crib.out
           grep -Fx 'PLAINTEXT: Congratulations you did it!' /tmp/crib.out
           grep -Fx 'KEY: THISKEYISLONGAF' /tmp/crib.out
+      - name: Planted blind controls with known keys
+        shell: bash
+        run: |
+          printf 'Oexv mx ct mje hnd utiwie\nElq grnvqh zpweotp me vrci\nGi uspj kxrkgi kx kshlskfd\nDcenyi piiam xvv dbiyavngy\nWvk jcrg wy eixlsj ksxh\nEpuw ta m wpkdie uqwdisi\nEz hsu eypm lhcpyy eczox je\nGi fkzc pssxh rri kswqsre wen\n' > /tmp/controls.txt
+          timeout 240 /tmp/vigshort /tmp/controls.txt > /tmp/controls.out
+          grep -E '^(INPUT|length |key    |plain  )' /tmp/controls.out
       - name: Blind tests, two short examples
         shell: bash
         run: |
