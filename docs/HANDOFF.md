@@ -1,3 +1,14 @@
+# Current scoped checkpoint: L43 terminal-length proof (2026-10-29)
+
+Branch `codex/terminal-length-facts`, base `0faaec8b74b77b5621756d382a1795064bb037e6`.
+Code commit `12367b40cec90dfe5777ca1859fbcb6b97f7d33c`, tree `0a7c6bd8e1b9732ff167237be6282f8c99e0f453`.
+Source SHA-256 `d225e67fb6f02811d2bc7968f9b00d98a2cfea3881cf3a5f8d5735e43f172d78`.
+Luna implemented only `proven()` in `skite.ck`; Codex owns tests/docs; independent Codex source review GO. Exact final head review and CI pending. Genuine Claude review deferred until reported weekly reset October31 noon America/Chicago; no capacity probe.
+
+Prefix proof coverage5/6 to6/6, code636 to624 bytes; compiler+384 bytes. Eleven paired timing samples overlap, no runtime win. Window executable is byte-identical. All GCC output controls agree. Clang/Rust unavailable. Clean seed build/fixed point, earlier full test gates passed; local ptrace restriction blocks supervisor/length suite, not waived. Expanded suite1442 cases must pass CI. See [evidence](../bench/length_facts/terminal.md).
+
+Read latest issue3 and open issues before proceeding. L42 bootstrap recovery issue25 and SSE2 prototype belong to another task; no bootstrap/emitter edits here. Next: exact-head review, publish candidate PR, require CI before integration; update ledger on real state changes. Earlier notes below are historical snapshots, not current integration assertions.
+
 # Project handoff: verified state and pending work
 
 Read this with [TEAM_HANDOFF.md](TEAM_HANDOFF.md) (protocol) and the ledger issue

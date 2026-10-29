@@ -1,3 +1,7 @@
+# Guarded runtime terminal indices (candidate, 2026-10-29)
+
+- Prove exact-array `len(a)-k` indices for positive constant `k` and a sufficient length lower bound; keep empty/insufficient guards, casts, views and wrapping controls checked. Prefix kernel removes its final check and 12 code bytes; no runtime speedup claimed. See `bench/length_facts/terminal.md`.
+
 # Changelog
 
 ### Unreleased (2026-10-28)
