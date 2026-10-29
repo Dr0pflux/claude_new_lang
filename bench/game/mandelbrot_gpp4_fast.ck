@@ -20,7 +20,7 @@ fn main() {
    let ci: f64 = -1.0 + (y as f64) * dy;
    let mut byte_x: i64 = 0;
    while byte_x < row_bytes {
-    let x0 = byte_x * 8; let mut bits: i64 = 0;
+    let x0 = byte_x * 8; let mut pixel_mask: i64 = 0;
     for lane in 0..8 {
      let cre = cr[x0 + lane];
      let mut zr = cre; let mut zi = ci;
@@ -34,10 +34,10 @@ fn main() {
       zr = r2 - i2 + cre; zi = ri + ri + ci;
       iter += 1;
      }
-     bits = bits << 1;
-     if !escaped && last_abs2 <= 4.0 { bits = bits | 1; }
+     pixel_mask = pixel_mask << 1;
+     if !escaped && last_abs2 <= 4.0 { pixel_mask = pixel_mask | 1; }
     }
-    result[y * row_bytes + byte_x] = bits as u8;
+    result[y * row_bytes + byte_x] = pixel_mask as u8;
     byte_x += 1;
    }
    y += workers;
