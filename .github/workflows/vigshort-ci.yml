@@ -1,0 +1,36 @@
+name: Short Vigenere solver
+on:
+  pull_request:
+    paths:
+      - examples/vigshort.ck
+      - .github/workflows/vigshort-ci.yml
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile Skite and solver
+        run: |
+          make
+          ./skite examples/vigshort.ck /tmp/vigshort
+      - name: Crib verification
+        shell: bash
+        run: |
+          printf '@CONGRATULATIONS\nVvvybercdlhvunx rvc vsh gb!\n' > /tmp/crib.txt
+          /tmp/vigshort /tmp/crib.txt | tee /tmp/crib.out
+          grep -Fx 'PLAINTEXT: Congratulations you did it!' /tmp/crib.out
+          grep -Fx 'KEY: THISKEYISLONGAF' /tmp/crib.out
+      - name: Planted blind controls with known keys
+        shell: bash
+        run: |
+          printf 'Oexv mx ct mje hnd utiwie\nElq grnvqh zpweotp me vrci\nGi uspj kxrkgi kx kshlskfd\nDcenyi piiam xvv dbiyavngy\nWvk jcrg wy eixlsj ksxh\nEpuw ta m wpkdie uqwdisi\nEz hsu eypm lhcpyy eczox je\nGi fkzc pssxh rri kswqsre wen\n' > /tmp/controls.txt
+          timeout 240 /tmp/vigshort /tmp/controls.txt > /tmp/controls.out
+          grep -E '^(INPUT|length |key    |plain  )' /tmp/controls.out
+      - name: Blind tests, two short examples
+        shell: bash
+        run: |
+          printf '30 yigbw 10 qqnink fo 20\nVvvybercdlhvunx rvc vsh gb!\n' > /tmp/short.txt
+          timeout 210 /tmp/vigshort /tmp/short.txt | tee /tmp/short.out
+          grep -F 'Ranked candidates' /tmp/short.out
