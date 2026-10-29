@@ -1,117 +1,115 @@
-# skite
+# Skite
 
-A self-hosted native compiler for Linux x86-64. The compiler, `skite.ck`, is written in skite
-and compiles itself to a byte-identical fixed point. There is no C compiler, assembler, linker,
-LLVM/GCC backend, VM or libc anywhere in the build: skite writes x86-64 machine code (including
-AVX-512) and the ELF file byte by byte.
+Skite is a self-hosted native language and compiler for Linux x86-64, built for
+text processing, numerical kernels and classical cryptanalysis. Cipher solvers
+are user programs; compiler optimizations apply to general language constructs.
+
+The compiler, `skite.ck`, emits x86-64 machine code and ELF executables directly.
+The normal compiler build needs no C compiler, assembler, external linker, LLVM,
+VM or libc. A prebuilt Skite seed starts the build; self-hosting is checked by
+reproducing the compiler byte for byte. The original C bootstrap is retained
+only for auditing.
+
+## Build and learn
 
 ```sh
-make              # bootstrap/skite-seed builds skite.ck -> skite, which rebuilds itself
-make test         # self-check, regression suite and fuzzers
-make bench        # Benchmarks Game suite vs gcc, clang and rustc (QUICK=1: smaller sizes)
-./skite prog.ck prog && ./prog
+make                        # build the self-hosted compiler
+./skite prog.ck prog         # compile a program
+./prog
+make test                   # fixed point, regressions and oracle fuzzing
+make bench QUICK=1          # matched Benchmarks Game, smaller preset
 ```
 
-Learn the language with [`docs/TUTORIAL.md`](docs/TUTORIAL.md); the reference is
-[`docs/LANGUAGE.md`](docs/LANGUAGE.md).
+Tests require Python 3 and a C compiler for independent oracles. Benchmark
+comparisons use whichever of GCC, Clang and Rust are installed and report
+missing tools. Linux runtime-length trap tests require working `ptrace` child
+supervision and fail if it is unavailable.
 
-Contributors (people and AI agents): read [`AGENTS.md`](AGENTS.md),
-[`docs/TEAM_HANDOFF.md`](docs/TEAM_HANDOFF.md) and the current state in
-[`docs/HANDOFF.md`](docs/HANDOFF.md) before changing anything.
+Start with the [tutorial](docs/TUTORIAL.md) and [language reference](docs/LANGUAGE.md).
+See [examples](examples/) for programs and [design notes](docs/DESIGN.md) for the compiler.
 
-## Performance
+## Implemented capabilities
 
-Matched implementations (same algorithm in skite, C and Rust, byte-identical output required);
-gcc/clang `-O3 -march=native`, rustc `-C opt-level=3 -C target-cpu=native`. Quick sizes, Xeon
-(AVX-512, shared 4-vCPU cloud host, so expect ±10% noise), 2026-10-28, head `3a479db` (binarytrees `c0cbc2d`);
-Game medians of 3 runs, kernels of 5.
-Ratio = skite time / fastest other; below 1 means skite is faster.
+- **Native types and storage:** fixed-width signed/unsigned integers, `f32`/`f64`,
+  booleans, structs, arrays, views and scoped allocation. File mappings are read-only;
+  views preserve the source's write permissions.
+- **Bounds proofs:** range analysis, dominating checks, runtime-length predecessor
+  facts and guarded exact-length indices. `a[i-k]` can be proven for constant
+  `0 <= k <= i < len(a)`; `a[len(a)-k]` for positive constant `k` when the length
+  lower bound proves `len(a) >= k`. Unsafe accesses retain their checks.
+- **Loop optimization:** bounds-checked loop versioning, constant-bound unrolling,
+  periodic-index strength reduction and carried-store reuse for prefix sums.
+- **AVX-512 vectorization:** lane-parallel and element-wise loops, masked stores,
+  integer reductions, max/min and narrow integer elements. Byte-lane plans cover
+  character classes, counts, folding and supported word-boundary/search patterns.
+  Runtime dispatch uses scalar fallback without the required AVX-512 F/DQ/BW/VL
+  features. Bounds and alias guards retain the original scalar path when needed.
+- **Scalar code generation:** register allocation/coalescing, bounded recursive
+  inlining, tail-recursion accumulation, integer if-conversion, XMM floating-point
+  values, constant division and paired division/remainder when both are evaluated.
+- **Parallel execution:** process-based `par` with partitioned results. Shared-memory
+  threads and a low-overhead scheduler remain future work.
 
-Benchmarks Game (`bench/game`):
+Default semantics preserve integer wrapping, observable traps and floating-point
+operation order. Optimizations do not silently reassociate floats or contract FMA.
+Direct contextual `f32` literals round to binary32; an explicit `literal as f32`
+keeps the documented staged conversion.
 
-| workload | skite ms | best other | ratio |
-|---|---|---|---|
-| mandelbrot | 330 | gcc 942 | **0.35** |
-| fasta | 321 | rust 310 | 1.04 |
-| spectralnorm | 253 | gcc 240 | 1.06 |
-| fannkuchredux | 2592 | rust 2316 | 1.12 |
-| nbody | 268 | rust 205 | 1.30 |
-| binarytrees | 422 | gcc 335 | 1.26 |
+## Performance and evidence
 
-Arithmetic and text kernels (`bench/kernels`, `run.py 3`):
+Performance leadership is the goal, not an established universal result. Compare
+matched algorithms with byte-identical output, declared compiler flags, exact
+commits and repeated timings on the same hardware. Runtime, compile time, memory,
+startup and binary size are separate metrics.
 
-| kernel | ratio | kernel | ratio | kernel | ratio |
-|---|---|---|---|---|---|
-| strsearch | **0.26** | hashmix | **0.97** | ngramhash | 1.11 |
-| textscan | **0.40** | polyeval | **0.98** | gcdsum | 1.14 |
-| wordcount | **0.64** | sieve | **0.99** | intsort | 1.17 |
-| collatz | **0.70** | divmod | 1.01 | matmul | 1.24 |
-| caseconv | **0.82** | histogram | 1.01 | editdist | 1.34 |
-| | | prefixsum | 1.08 | nqueens | 1.08 |
+[Benchmark records](docs/BENCHMARKS.md) contain dated host/compiler snapshots,
+including the historical Xeon tables previously shown here. They are not current
+measurements of every integration head. The primary comparison suite is
+[`bench/game`](bench/game/); [`bench/kernels`](bench/kernels/) provides focused diagnostics.
 
-The compiler fixes rare decimal-to-`f32` double rounding (issue #14)
-when a literal is used directly in an `f32` context. Default-`f64` literals and
-explicit `literal as f32` narrowing keep their staged conversion. Exact-rounding regressions cover midpoint
-and normal/subnormal boundaries; see [`docs/AUDIT.md`](docs/AUDIT.md).
+The latest bounds-proof change, [PR #26](https://github.com/Dr0pflux/skite.ck/pull/26),
+removes the final check in the existing prefix kernel: 5/6 to 6/6 checks proven,
+636 to 624 machine-code bytes. The compiler grows by 384 bytes. Eleven-run timing
+distributions overlap, so no runtime speedup is claimed. Exact hashes, hardware,
+raw samples and GCC output controls are in [the evidence record](bench/length_facts/terminal.md).
+Clang and Rust were unavailable for that measurement.
 
+## Validation and status
 
-The goal is to lead on every arithmetic and text workload; the slower rows are open work
-(see [`docs/HANDOFF.md`](docs/HANDOFF.md)). Full history, other hosts (including a Ryzen host
-without AVX-512) and methodology: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+`make test` checks the self-hosting fixed point, regressions and independent
+control-flow, typed, vector and stream oracles. It includes 75 deterministic
+fuzz-harness fault checks and 1,442 runtime-length output/trap cases under normal
+and scalar compilation. Failures retain sources, inputs and diagnostics under
+`SKITE_ARTIFACT_DIR`; subprocess deadlines and process-group cleanup are enforced.
+CI additionally runs the historical control-flow failure seed and divisor oracle.
 
-What makes skite fast (all bit-exact: strict IEEE floats, wrapping integers, traps preserved):
+PR #26 passed both CI runs and independent available-agent review. Genuine Claude
+cross-review is queued for Saturday, October 31; it is not claimed as completed.
+The [shared ledger](https://github.com/Dr0pflux/skite.ck/issues/3) records exact
+reviewed/tested commits and newer state.
 
-- **AVX-512 vectorization** with run-time dispatch (CPUs without AVX-512 F/DQ/BW/VL run scalar):
-  - *lane-parallel loops*: outer loops whose bodies contain inner loops with data-dependent exits;
-  - *element-wise loops and reductions*: `b[i] = b[i] * k + a[i]`, fills, copies, masked `if`/`else`,
-    integer `+ - & | ^` reductions, max/min, narrow `u8`..`u32` elements, 2-D indexing `a[i * n + j]`;
-  - *byte lanes*: `u8`/`i8` loops (text scanning, character classes, counts, case conversion,
-    word-boundary state machines) run 64 characters per instruction: counts via mask popcount,
-    byte sums via `vpsadbw`, a 0/1 state flag carried between characters by shifting its mask,
-    and short pattern searches (`while j < m && t[i + j] == p[j]`) turned into byte comparisons.
-  Unproven bounds and possibly-aliased arrays are checked once before the vector loop; on failure
-  the ordinary loop runs and traps exactly where scalar code would.
-- **Range analysis** removes bounds checks it can prove, including checks dominated by an earlier one.
-  Guarded exact-length indices `a[len(a)-k]` are proven for positive constant `k` when `len(a) >= k`.
-  Runtime-length facts also prove `a[i-k]` for constant `0 <= k <= i < len(a)`,
-  including value-preserving integer casts; unsafe offsets and lost facts retain checks.
-- **Bounds versioning** guards optimized loop copies with index-range checks; a potentially trapping
-  bound expression stays in the original short-circuit loop test.
-- **Calls**: bounded inlining (including recursive), callee-saved registers, tail recursion with
-  accumulators turned into loops, register coalescing.
-- **If-conversion**: small integer `if`/`else` bodies in loops become branch-free `cmov` selects;
-  `if C { a[k] = X; .. } else { a[k] = Y; .. }` (merges) becomes one store of a selected value,
-  and `v += 1` under the predicate adds the `setcc` result.
-  deep logical conditions spill safely when the temporary-register budget runs out.
-- **Loop-carried stores**: `a[i] += a[i - 1]` (prefix sums, DP rows) keeps the previous value in a register.
-- Floats in XMM registers, magic-number division by constants, fast 32-bit division when
-  operands fit, paired `/` and `%` when both are unconditionally evaluated, and
-  periodic-index strength reduction. Paired division does not cross short-circuit `&&` or `||`;
-  a skipped division keeps its original trap behavior.
+Known open correctness work includes the old bootstrap seed's image-size overlap
+[issue #25](https://github.com/Dr0pflux/skite.ck/issues/25). The current integration
+build passes; refreshing the seed is a separately owned task.
 
-The differential oracle fuzzers under `tests/oracle_fuzz` fail nonzero on
-output/status mismatches and harness errors. Compiler and program subprocesses
-have bounded positive finite timeouts; timeout cleanup terminates their process
-groups. `make test` runs 75 deterministic fault-injection checks for agreement,
-mismatch, compiler errors, missing executables, timeouts, runtime failures and
-SIGFPE outcomes. Failed cases retain generated sources and artifacts for inspection.
+Modules/separate compilation, shared-memory threads, stronger ownership/alias
+semantics, first-class SoA, broader compile-time evaluation, AVX2 lowering and an
+ARM64 backend remain roadmap work. See [project goals](https://github.com/Dr0pflux/skite.ck/issues/7)
+and the [classical-cryptanalysis roadmap](docs/CLASSICAL_ROADMAP.md).
 
-## Layout
+## Repository and contribution guide
 
 | Path | Contents |
-|---|---|
-| `skite.ck` | the compiler |
-| `bootstrap/` | `skite-seed` (prebuilt compiler that starts the build), `skite.c` (original C seed, audit only) |
-| `docs/` | tutorial, language reference, design notes, limitations, changelog, benchmarks, audit and handoff notes |
-| `examples/` | example and tutorial programs |
-| `tests/` | `run.sh` regressions; fuzzers with independent oracles (`cf_fuzz`, `ty_fuzz`, `dag_fuzz`, `divconst`, `vec_fuzz.py`, `stream_fuzz.py`, `oracle_fuzz/`); `stream_boundaries.py`, `alignment.py`, `zero_divisor.py` |
-| `.github/workflows/` | CI: clean build, fixed point, `make test`, divisor oracle |
-| `bench/game/` | Benchmarks Game suite in skite, C and Rust |
-| `bench/kernels/`, `bench/vigenere/` | arithmetic and text kernels (`textscan`, n-grams, ...) and a Vigenère solver |
+| --- | --- |
+| `skite.ck` | Self-hosted compiler and native backend |
+| `bootstrap/` | Prebuilt seed and archived C bootstrap |
+| `docs/` | Tutorial, reference, design, audits, measurements and handoffs |
+| `examples/` | Example and tutorial programs |
+| `tests/` | Regressions, fuzzers and independent oracles |
+| `bench/` | Matched Game workloads, diagnostic kernels and example solvers |
+| `.github/workflows/` | Build, fixed-point and regression CI |
 
-The runtime-length regression suite disables core dumps for expected traps and
-retains failing source, input, executable, and command diagnostics under
-`SKITE_ARTIFACT_DIR` (or `/tmp/skite-length-facts-artifacts`). Its timeouts and
-1442 output/trap oracles cover predecessor and terminal indices. Output capture uses temporary files. On Linux, the runtime-length tests observe
-bounds-check SIGILL stops before core reporting; the runner still checks the
-actual signal and captured output, and fails if tracing is unavailable.
+Before editing, read [AGENTS.md](AGENTS.md), the [team workflow](docs/TEAM_HANDOFF.md),
+[handoff notes](docs/HANDOFF.md) and the latest ledger comments. Keep the README
+and relevant documentation aligned with merged behavior, measured results and
+pending reviews as changes land.
