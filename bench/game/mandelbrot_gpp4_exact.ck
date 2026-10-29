@@ -15,8 +15,8 @@ fn put_decimal(v: i64) {
     putc(v % 10 + 48);
 }
 fn main() {
-    let mut n: i64 = 16000;
-    if len(argv(1)) > 0 { n = decimal_arg(argv(1)); }
+    let arg = argv(1);
+    let n = decimal_arg(arg);
     if n < 1 || n > 100000 { return; }
     let mut workers = ncpu();
     if workers < 1 { workers = 1; }
