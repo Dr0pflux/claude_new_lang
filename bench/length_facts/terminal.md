@@ -53,3 +53,5 @@ regressions, fuzz-harness checks, control-flow/typed/vector/stream fuzzing and
 skipped or counted as passing. Successful CI is an integration gate. Genuine
 Claude cross-review is pending the reported weekly reset; independent
 available-agent exact-head review is required separately.
+
+CI on the initial candidate caught an invalid store fixture against a read-only file view. The corrected store case allocates owned storage of the same runtime length. All36 program shapes now pass both normal/scalar compilation and expected proof-counter gates locally (72 compilations); runtime/trap validation still requires CI. Compiler source and timing evidence are unchanged.

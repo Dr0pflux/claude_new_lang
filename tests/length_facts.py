@@ -181,7 +181,7 @@ CASES=[
  ('terminal_one','if len(a)>0 {print(a[len(a)-1]);}else {print(0);}',lambda a:a[-1] if a else 0),
  ('terminal_three','if len(a)>=3 {print(a[len(a)-3]);}else {print(0);}',lambda a:a[-3] if len(a)>=3 else 0),
  ('terminal_cast','if len(a)>0 {print(a[(len(a)-1) as i64]);}else {print(0);}',lambda a:a[-1] if a else 0),
- ('terminal_store','if len(a)>0 {a[len(a)-1]=71;print(a[len(a)-1]);}else {print(0);}',lambda a:71 if a else 0),
+ ('terminal_store','let b=alloc<i64>(len(a));if len(b)>0 {b[len(b)-1]=71;print(b[len(b)-1]);}else {print(0);}',lambda a:71 if a else 0),
  ('zero_start','let mut s=0;for i in 0..len(a) {s+=a[i];}print(s);',lambda a:sum(a)),
  ('predecessor','let mut s=0;for i in 1..len(a) {s+=a[i-1];}print(s);',lambda a:sum(a[:-1])),
  ('both','let mut s=0;for i in 1..len(a) {s+=a[i]+a[i-1];}print(s);',lambda a:sum(a[1:])+sum(a[:-1])),
