@@ -4698,6 +4698,17 @@ fn lea(d: i64, base: i64, index: i64, disp: i64) {
   }
   if md == 1 { byte(disp & 255); } else if md == 2 { u32_(disp); }
 }
+// r * (1 + 2^scale), modulo 2^64: lea r, [r + r * 2^scale]
+fn lea_mul_small(r: i64, scale: i64) {
+  let mut rex = 72;
+  if (r & 8) != 0 { rex = 79; }   // REX.W | REX.R | REX.X | REX.B
+  byte(rex); byte(141);
+  let mut md = 0;
+  if (r & 7) == 5 { md = 1; }   // rbp / r13 as base need mod 01 with a zero displacement
+  byte((md << 6) | ((r & 7) << 3) | 4);
+  byte((scale << 6) | ((r & 7) << 3) | (r & 7));
+  if md == 1 { byte(0); }
+}
 let mut mdisp: i64 = 0;
 fn memop(w: i64, p66: bool, force_rex: bool, nop: i64, o1: i64, o2: i64, regf: i64, base: i64, index: i64, scale: i64) {
   if p66 { byte(102); }
@@ -5056,6 +5067,9 @@ fn apply(op: i64, r: i64, sk0: i64, sr0: i64, si: u64) {
       if v == 1 { return; }
       if (v as i64) == -1 { unop(3, K_REG, r); return; }
       if (v & (v - 1)) == 0 { let mut k: u64 = 0; while ((1 as u64) << k) != v { k += 1; } shift_ri(4, r, k as i64); return; }
+      if v == 3 { lea_mul_small(r, 1); return; }
+      if v == 5 { lea_mul_small(r, 2); return; }
+      if v == 9 { lea_mul_small(r, 3); return; }
     }
     imul_r(r, sk, sr, si); return;
   }
@@ -5257,7 +5271,7 @@ fn gen_call(e: i64, rg: i64, n: i64) {
   while i < NXREG { if ((xm >> i) & 1) != 0 { sse(102, 1, 126, XREG0 + i, K_REG, RAX); push_r(RAX); nx += 1; } i += 1; }
   let mut A = 8 * words;
   if rc { A = 0; }
-  if A != 0 { emh("4881ec"); u32_(A); }
+  if A != 0 { if A <= 127 { emh("4883ec"); byte(A); } else { emh("4881ec"); u32_(A); } }
   sp_adj = 8 * (ns + nx) + A;
   let mut w = 0;
   k = 0;
@@ -5300,7 +5314,7 @@ fn gen_call(e: i64, rg: i64, n: i64) {
   }
   sp_adj = 0;
   byte(232); fns[f].calls = pl_add(fns[f].calls, clen); u32_(0);
-  if A != 0 { emh("4881c4"); u32_(A); }
+  if A != 0 { if A <= 127 { emh("4883c4"); byte(A); } else { emh("4881c4"); u32_(A); } }
   i = NXREG - 1;
   while i >= 0 { if ((xm >> i) & 1) != 0 { pop_r(RCX); sse(102, 1, 110, XREG0 + i, K_REG, RCX); } i -= 1; }
   i = ns - 1;
@@ -5461,6 +5475,11 @@ fn gen(e: i64, rg: i64, n: i64) {
     loc(nd[a].var);
     let lk = OK; let lr = ORR;
     if op == O_MUL && fits_s32(kv) && kv > 1 && (kv & (kv - 1)) != 0 && (kv as i64) != -1 {
+      if lk == K_REG && (kv == 3 || kv == 5 || kv == 9) {   // r * (1 + 2^s): one lea
+        mov_rr(r0, lr);
+        let mut sh = 1; if kv == 5 { sh = 2; } if kv == 9 { sh = 3; }
+        lea_mul_small(r0, sh); return;
+      }
       if fits_s8(kv) { enc(1, false, 1, 107, 0, r0, lk, lr); byte((kv & 255) as i64); }
       else { enc(1, false, 1, 105, 0, r0, lk, lr); u32_(kv as i64); }
       return;

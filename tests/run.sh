@@ -307,7 +307,7 @@ SRC
   grep -q 'no views of structs containing bool' "$T/error"
 done
 echo 'PASS: views cannot create invalid bool fields'
-for t in structs heap structsz valias valias_width carry selstore lhoist; do
+for t in structs heap structsz valias valias_width carry selstore lhoist lea_mul; do
   "$SKITE" tests/data/$t.ck "$T/$t" > /dev/null
   "$T/$t" "$T/$t.saved" | cmp -s - tests/data/$t.expected || { echo "FAIL: $t" >&2; exit 1; }
 done
