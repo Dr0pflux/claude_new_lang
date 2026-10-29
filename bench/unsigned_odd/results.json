@@ -1,0 +1,187 @@
+{
+  "before_commit": "a71c907b52f3416087471c987a75b82536c146f6",
+  "after_code_commit": "5801e6369ac0f94c5cd69437023ea89c0aaa1ee6",
+  "runs": 11,
+  "pinned_cpu": 0,
+  "allowed_cpus": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+  ],
+  "cpu_model": "AMD EPYC 9V74 80-Core Processor",
+  "cpu_flags": "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology nonstop_tsc cpuid extd_apicid tsc_known_freq pni pclmulqdq ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand hypervisor lahf_lm cmp_legacy cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw topoext vmmcall fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves avx512_bf16 clzero xsaveerptr arat npt nrip_save tsc_scale vmcb_clean flushbyasid pausefilter pfthreshold v_vmsave_vmload avx512vbmi umip avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq rdpid fsrm arch_capabilities",
+  "source_sha256": {
+    "before": "6eb6ce7d8d8b42166af0db3ad84be1130498d7f58890e80ab71a9c766cc734d5",
+    "after": "f43382240bd47067c043b1ae4577463aa6a8cbe88703e54c9727b7d0ae893382"
+  },
+  "compiler_sha256": {
+    "before": "458c52680e27784296f0899c3164af166228f55d7423f2db2f6641ffd208ad32",
+    "after": "5fac73dfba8e22478b721e27ed29b1c6196de8ba6e61a356d56d6438f78734dd"
+  },
+  "compilers": {
+    "gcc": "gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0",
+    "clang": null,
+    "rustc": null
+  },
+  "binaries": {
+    "before": {
+      "bytes": 656,
+      "sha256": "172b20828930d7fabef455b1851e690316102e3a4bdbfcdb2edf87fba3501482",
+      "compiler_report": "skite: wrote /tmp/skite-unsigned-odd-bench-4xw8bcq9/before (656 bytes, 400 machine-code bytes, 18 vars, 0 spills, 4 peak registers, 0 xmm, 0/0 bounds checks elided, 0 modulo reduced, 0 loops vectorized (0 element-wise, 0 byte-lane), 0 calls inlined, 0 loops unrolled)"
+    },
+    "after": {
+      "bytes": 655,
+      "sha256": "6913d3dda2bbf1dccb5bb346aeb99b543a0fd94086f48726dc2915473738e812",
+      "compiler_report": "skite: wrote /tmp/skite-unsigned-odd-bench-4xw8bcq9/after (655 bytes, 399 machine-code bytes, 18 vars, 0 spills, 4 peak registers, 0 xmm, 0/0 bounds checks elided, 0 modulo reduced, 0 loops vectorized (0 element-wise, 0 byte-lane), 0 calls inlined, 0 loops unrolled)"
+    },
+    "gcc": {
+      "bytes": 15968,
+      "sha256": "890a0e74e476fe01b8668ef07d3b65aeefc0d9a88ef7a843c8767b4ef91a8440"
+    }
+  },
+  "outputs": [
+    {
+      "argc": 1,
+      "output": "18364758544465445482\n"
+    },
+    {
+      "argc": 2,
+      "output": "18364758544465445526\n"
+    },
+    {
+      "argc": 4,
+      "output": "18364758544465445521\n"
+    }
+  ],
+  "orders": [
+    [
+      "gcc",
+      "before",
+      "after"
+    ],
+    [
+      "before",
+      "gcc",
+      "after"
+    ],
+    [
+      "gcc",
+      "after",
+      "before"
+    ],
+    [
+      "gcc",
+      "before",
+      "after"
+    ],
+    [
+      "before",
+      "after",
+      "gcc"
+    ],
+    [
+      "gcc",
+      "after",
+      "before"
+    ],
+    [
+      "before",
+      "gcc",
+      "after"
+    ],
+    [
+      "after",
+      "gcc",
+      "before"
+    ],
+    [
+      "gcc",
+      "before",
+      "after"
+    ],
+    [
+      "after",
+      "before",
+      "gcc"
+    ],
+    [
+      "gcc",
+      "after",
+      "before"
+    ]
+  ],
+  "timings": {
+    "before": {
+      "median_ms": 317.532159,
+      "q1_ms": 303.91528,
+      "q3_ms": 325.1837695,
+      "samples_ms": [
+        301.762984,
+        274.443013,
+        319.364828,
+        313.972452,
+        347.225562,
+        331.002711,
+        333.553606,
+        317.532159,
+        306.067576,
+        317.540525,
+        299.187123
+      ]
+    },
+    "after": {
+      "median_ms": 205.636281,
+      "q1_ms": 194.560155,
+      "q3_ms": 222.338769,
+      "samples_ms": [
+        184.53476,
+        186.905819,
+        233.43105,
+        223.205934,
+        202.214491,
+        223.336763,
+        205.636281,
+        204.666707,
+        177.882856,
+        213.198331,
+        221.471604
+      ]
+    },
+    "gcc": {
+      "median_ms": 245.889127,
+      "q1_ms": 238.1176145,
+      "q3_ms": 249.935874,
+      "samples_ms": [
+        252.779701,
+        223.082574,
+        245.889127,
+        234.832297,
+        241.402932,
+        245.185988,
+        247.092047,
+        253.957634,
+        267.358398,
+        227.450092,
+        246.845558
+      ]
+    }
+  },
+  "c_flags": [
+    "-O3",
+    "-march=native",
+    "-ffp-contract=off"
+  ],
+  "scope": "Diagnostic before/after Skite kernel; available C controls. No universal or Game performance claim.",
+  "kernel_sha256": {
+    "ck": "a48e5b0d3225b2575eaf3004a194ea7db35055b8bd8bab668f82f26fc0d163af",
+    "c": "0fca05b9e8af648d91c1c35080f2b561d8abe87a0a1216922f3f56732137fe3d"
+  },
+  "local_code_commit": "75755c17dc5b833685a9da800864a8d9fd73a492",
+  "code_tree": "84a1dd5c45863e40b255f18143b8fcdfbdb767c5"
+}
