@@ -5048,6 +5048,13 @@ fn apply(op: i64, r: i64, sk0: i64, sr0: i64, si: u64) {
       if op == O_MODU { alui(A_AND, r, si - 1); } else { shift_ri(5, r, k as i64); }
       return;
     }
+    if sk == K_IMM && si != 0 && (si & 1) == 0 {
+      // For d=2m, floor(n/d) = floor((n >> 1)/m); n >> 1 fits signed i64.
+      mov_rr(RCX, r); shift_ri(5, RCX, 1); divconst(RCX, si >> 1, false, true);
+      if op == O_DIVU { mov_rr(r, RCX); }
+      else { imul_r(RCX, K_IMM, 0, si); alur(A_SUB, r, RCX); }
+      return;
+    }
     if sk == K_IMM { mov_ri(RCX, si); } else { load(RCX, sk, sr, si); }
     mov_rr(RAX, r); div32_fast(false);
     if op == O_DIVU { mov_rr(r, RAX); } else { mov_rr(r, RDX); }
