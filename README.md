@@ -74,6 +74,8 @@ What makes skite fast (all bit-exact: strict IEEE floats, wrapping integers, tra
 - **Range analysis** removes bounds checks it can prove, including checks dominated by an earlier one.
   Runtime-length facts also prove `a[i-k]` for constant `0 <= k <= i < len(a)`,
   including value-preserving integer casts; unsafe offsets and lost facts retain checks.
+- **Bounds versioning** guards optimized loop copies with index-range checks; a potentially trapping
+  bound expression stays in the original short-circuit loop test.
 - **Calls**: bounded inlining (including recursive), callee-saved registers, tail recursion with
   accumulators turned into loops, register coalescing.
 - **If-conversion**: small integer `if`/`else` bodies in loops become branch-free `cmov` selects;
@@ -98,3 +100,10 @@ What makes skite fast (all bit-exact: strict IEEE floats, wrapping integers, tra
 | `.github/workflows/` | CI: clean build, fixed point, `make test`, divisor oracle |
 | `bench/game/` | Benchmarks Game suite in skite, C and Rust |
 | `bench/kernels/`, `bench/vigenere/` | arithmetic and text kernels (`textscan`, n-grams, ...) and a Vigenère solver |
+
+The runtime-length regression suite disables core dumps for expected traps and
+retains failing source, input, executable, and command diagnostics under
+`SKITE_ARTIFACT_DIR` (or `/tmp/skite-length-facts-artifacts`). Its timeouts and
+842 output/trap oracles remain unchanged. Output capture uses temporary files. On Linux, the runtime-length tests observe
+bounds-check SIGILL stops before core reporting; the runner still checks the
+actual signal and captured output, and fails if tracing is unavailable.
