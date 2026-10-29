@@ -73,15 +73,15 @@ fn main() {
                         }
                     }
                 }
-                let mut bits: i64 = 0;
+                let mut pixel_mask: i64 = 0;
                 if !skipped {
                     for lane in 0..8 {
-                        bits = bits << 1;
-                        if squared_abs[lane] <= 4.0 { bits = bits | 1; }
+                        pixel_mask = pixel_mask << 1;
+                        if squared_abs[lane] <= 4.0 { pixel_mask = pixel_mask | 1; }
                     }
                 }
-                result[y * row_bytes + byte_x] = bits as u8;
-                previous_byte = bits;
+                result[y * row_bytes + byte_x] = pixel_mask as u8;
+                previous_byte = pixel_mask;
                 byte_x += 1;
             }
             y += workers;
