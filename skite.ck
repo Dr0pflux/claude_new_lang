@@ -5055,6 +5055,25 @@ fn apply(op: i64, r: i64, sk0: i64, sr0: i64, si: u64) {
       else { imul_r(RCX, K_IMM, 0, si); alur(A_SUB, r, RCX); }
       return;
     }
+    if sk == K_IMM && si != 0 {
+      if (si as i64) < 0 {
+        // For d >= 2^63, the unsigned quotient is only zero or one.
+        mov_ri(RAX, si);
+        if op == O_DIVU { alur(A_CMP, r, RAX); setcc_zx(CC_AE, RAX); mov_rr(r, RAX); }
+        else { mov_rr(RCX, r); alur(A_SUB, RCX, RAX); alur(A_CMP, r, RAX); cmov_rr(CC_AE, r, RCX); }
+        return;
+      }
+      // ceil(2^64/d) gives the exact high product or one too much for odd d.
+      let M = 18446744073709551615 / si + 1;
+      mov_ri(RAX, M); unop(4, K_REG, r);  // unsigned high product is in RDX
+      mov_rr(RCX, RDX); imul_r(RCX, K_IMM, 0, si); alur(A_SUB, r, RCX);
+      if op == O_DIVU {
+        alui(A_CMP, r, si); setcc_zx(CC_AE, RAX); alur(A_SUB, RDX, RAX); mov_rr(r, RDX);
+      } else {
+        mov_rr(RCX, r); alui(A_ADD, RCX, si); alui(A_CMP, r, si); cmov_rr(CC_AE, r, RCX);
+      }
+      return;
+    }
     if sk == K_IMM { mov_ri(RCX, si); } else { load(RCX, sk, sr, si); }
     mov_rr(RAX, r); div32_fast(false);
     if op == O_DIVU { mov_rr(r, RAX); } else { mov_rr(r, RDX); }
