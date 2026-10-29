@@ -948,6 +948,15 @@ fn proven(a: i64, idx: i64, rlo: i64, rhi: i64, rbot: bool, env: i64) -> bool {
   if vars[a].lenv < 0 { return rhi < vars[a].alen; }
   let mut x = idx;
   while nd[x].k == N_UN && nd[x].nn != 0 { x = nd[x].a; }
+  // Exact length-minus-k is below the same array length when k > 0.
+  // The existing rlo guard proves the result nonnegative; the length lower
+  // bound also proves subtraction cannot underflow.
+  if nd[x].k == N_BIN && nd[x].op == O_SUB && nd[nd[x].a].k == N_VAR && is_const(nd[x].b) {
+    let k = nd[nd[x].b].v as i64;
+    let lenv = vars[a].lenv;
+    let L = env + LV(lenv);
+    if k > 0 && nd[nd[x].a].var == lenv && !envp[L].bot && envp[L].lo >= k { return true; }
+  }
   if vars[a].aid >= 0 {
     if nd[x].k == N_VAR && ((envp[env + LV(nd[x].var)].lt >> (vars[a].aid as u64)) & 1) != 0 { return true; }
     // If x is i-k, a proven i < len(a) also proves i-k < len(a), provided

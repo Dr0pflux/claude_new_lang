@@ -177,6 +177,11 @@ if os.environ.get('SKITE_LENGTH_FACTS_SUPERVISOR_TEST')=='1':
  raise SystemExit(0)
 
 CASES=[
+ ('terminal_parameter','print(tail(a));',lambda a:a[-1] if a else 0),
+ ('terminal_one','if len(a)>0 {print(a[len(a)-1]);}else {print(0);}',lambda a:a[-1] if a else 0),
+ ('terminal_three','if len(a)>=3 {print(a[len(a)-3]);}else {print(0);}',lambda a:a[-3] if len(a)>=3 else 0),
+ ('terminal_cast','if len(a)>0 {print(a[(len(a)-1) as i64]);}else {print(0);}',lambda a:a[-1] if a else 0),
+ ('terminal_store','if len(a)>0 {let b=alloc<i64>(len(a));b[len(b)-1]=71;print(b[len(b)-1]);}else {print(0);}',lambda a:71 if a else 0),
  ('zero_start','let mut s=0;for i in 0..len(a) {s+=a[i];}print(s);',lambda a:sum(a)),
  ('predecessor','let mut s=0;for i in 1..len(a) {s+=a[i-1];}print(s);',lambda a:sum(a[:-1])),
  ('both','let mut s=0;for i in 1..len(a) {s+=a[i]+a[i-1];}print(s);',lambda a:sum(a[1:])+sum(a[:-1])),
@@ -187,6 +192,16 @@ CASES=[
  ('narrow_identity','let mut s=0;for i in 1..len(a) {if i<128 {s+=a[((i-1) as u8) as i64];}}print(s);',lambda a:sum(a[:min(max(0,len(a)-1),127)])),
 ]
 NEGATIVES=[
+ ('terminal_mutated_copy','let mut n=len(a);if n>0 {n=len(a)+1;print(a[n-1]);}',lambda n:n>0,lambda a:b''),
+ ('terminal_huge','if len(a)>0 {print(a[len(a)-9223372036854775807]);}',lambda n:n>0,lambda a:b''),
+ ('terminal_unsigned_huge','if len(a)>0 {print(a[(len(a) as u64)-(18446744073709551615 as u64)]);}',lambda n:n>0,lambda a:b''),
+ ('terminal_guard_too_small','if len(a)>0 {print(a[len(a)-3]);}',lambda n:0<n<3,lambda a:f'{a[-3]}\n'.encode() if len(a)>=3 else b''),
+ ('terminal_empty','print(a[len(a)-1]);',lambda n:n==0,lambda a:f'{a[-1]}\n'.encode()),
+ ('terminal_zero','print(a[len(a)-0]);',lambda n:True,lambda a:b''),
+ ('terminal_negative','print(a[len(a)-(-1)]);',lambda n:True,lambda a:b''),
+ ('terminal_different','let b=alloc<i64>(1);if len(a)>1 {print(b[len(a)-1]);}',lambda n:n>1,lambda a:b''),
+ ('terminal_short_view','let b=view<i64>(raw);if len(raw)>0 {print(b[len(raw)-1]);}',lambda n:n>0,lambda a:b''),
+ ('terminal_narrow','if len(a)>0 {print(a[((len(a)-1) as i8) as i64]);}',lambda n:n>=129 and n<=256,lambda a:f'{a[((len(a)-1)+128)%256-128]}\n'.encode() if a else b''),
  ('negative_index','for i in 0..len(a) {print(a[i-1]);}',lambda n:n>0,lambda a:b''),
  ('past_end','let i=len(a);print(a[i]);',lambda n:True,lambda a:b''),
  ('negative_offset','for i in 1..len(a) {let x=a[i-(-1)];}',lambda n:n>1,lambda a:b''),
@@ -208,7 +223,8 @@ with tempfile.TemporaryDirectory(prefix='skite-length-facts-') as td:
  t=pathlib.Path(td)
  data=t/'data.bin'
  for name,body,oracle in CASES:
-  src=t/(name+'.ck');src.write_text('fn main(){let raw=file(1);let a=view<i64>(raw);'+body+'}\n')
+  src=t/(name+'.ck');prefix='fn tail(a: [i64])->i64 {if len(a)>0 {return a[len(a)-1];}return 0;}' if name=='terminal_parameter' else ''
+  src.write_text(prefix+'fn main(){let raw=file(1);let a=view<i64>(raw);'+body+'}\n')
   for flag in [[],['--scalar']]:
    mode='scalar' if flag else 'normal'
    exe=t/(name+mode)
@@ -225,7 +241,8 @@ with tempfile.TemporaryDirectory(prefix='skite-length-facts-') as td:
     require(run_result.returncode==0 and run_result.stdout==want,f'{name}-{mode}-n{n}',cmd,src,data,exe,run_result.stdout,run_result.stderr,f'got status {run_result.returncode}, expected output {want!r}')
     checks+=1
  for name,body,traps,oracle in NEGATIVES:
-  src=t/(name+'.ck');src.write_text('fn main(){let raw=file(1);let a=view<i64>(raw);'+body+'}\n')
+  src=t/(name+'.ck');prefix='fn tail(a: [i64])->i64 {if len(a)>0 {return a[len(a)-1];}return 0;}' if name=='terminal_parameter' else ''
+  src.write_text(prefix+'fn main(){let raw=file(1);let a=view<i64>(raw);'+body+'}\n')
   for flag in [[],['--scalar']]:
    mode='scalar' if flag else 'normal'
    exe=t/(name+mode)

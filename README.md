@@ -72,6 +72,7 @@ What makes skite fast (all bit-exact: strict IEEE floats, wrapping integers, tra
   Unproven bounds and possibly-aliased arrays are checked once before the vector loop; on failure
   the ordinary loop runs and traps exactly where scalar code would.
 - **Range analysis** removes bounds checks it can prove, including checks dominated by an earlier one.
+  Guarded exact-length indices `a[len(a)-k]` are proven for positive constant `k` when `len(a) >= k`.
   Runtime-length facts also prove `a[i-k]` for constant `0 <= k <= i < len(a)`,
   including value-preserving integer casts; unsafe offsets and lost facts retain checks.
 - **Bounds versioning** guards optimized loop copies with index-range checks; a potentially trapping
@@ -111,6 +112,6 @@ SIGFPE outcomes. Failed cases retain generated sources and artifacts for inspect
 The runtime-length regression suite disables core dumps for expected traps and
 retains failing source, input, executable, and command diagnostics under
 `SKITE_ARTIFACT_DIR` (or `/tmp/skite-length-facts-artifacts`). Its timeouts and
-842 output/trap oracles remain unchanged. Output capture uses temporary files. On Linux, the runtime-length tests observe
+1442 output/trap oracles cover predecessor and terminal indices. Output capture uses temporary files. On Linux, the runtime-length tests observe
 bounds-check SIGILL stops before core reporting; the runner still checks the
 actual signal and captured output, and fails if tracing is unavailable.

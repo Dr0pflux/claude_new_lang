@@ -4,7 +4,11 @@ Updated 2026-10-28. Verified integration: `c4837cf83e284b588b30daaaa2d66824fffc4
 (PR #10); its tree matches tested head `5e86b4b06154452e3d517de4dabf828bffe96a6c`.
 The [team ledger](https://github.com/Dr0pflux/skite.ck/issues/3) records newer work.
 
-## Runtime predecessor proof (candidate)
+## Guarded terminal proof (candidate, 2026-10-29)
+
+`proven()` recognizes the exact hidden length variable of the accessed array minus a positive constant. The length lower bound must be at least that constant, and the original nonnegative-result guard remains. No length identity is inferred from shared storage or equal array bases. Identity casts retain the existing range annotations. The expanded length suite has 1442 normal/scalar output/trap cases. Local clean build/fixed point and earlier test gates passed, but this host denies ptrace, so the supervisor and full length suite require CI. No skipped gate is counted as passing. See [terminal evidence](../bench/length_facts/terminal.md).
+
+## Runtime predecessor proof (integrated at d10df4a)
 
 The candidate proves `a[i-k]` only with an existing fact for this array and
 `0 <= k <= i`, preserving the lower-bound and no-wrap checks. Identity casts

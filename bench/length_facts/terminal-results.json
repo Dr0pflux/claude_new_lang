@@ -1,0 +1,350 @@
+{
+  "before_commit": "0faaec8b74b77b5621756d382a1795064bb037e6",
+  "after_code_commit": "12367b40cec90dfe5777ca1859fbcb6b97f7d33c",
+  "before_source_sha256": "426ee7d42b10304eb9ab244d142caf895444db5de247b66f2e1de5b395ba5b3e",
+  "after_source_sha256": "d225e67fb6f02811d2bc7968f9b00d98a2cfea3881cf3a5f8d5735e43f172d78",
+  "compiler_sha256": {
+    "before": "160ec4a9b4b8447e57deaf24f9b993851be98b4d3208877e9bb152c125a1b85e",
+    "after": "ce42fc6fe628e137c2c55d89caa6cd26d523d687f84ca98cd09e3dc652848fae"
+  },
+  "cpu_model": "AMD EPYC 9V74 80-Core Processor",
+  "cpu_flags": "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology nonstop_tsc cpuid extd_apicid tsc_known_freq pni pclmulqdq ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand hypervisor lahf_lm cmp_legacy cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw topoext vmmcall fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves avx512_bf16 clzero xsaveerptr arat npt nrip_save tsc_scale vmcb_clean flushbyasid pausefilter pfthreshold v_vmsave_vmload avx512vbmi umip avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq rdpid fsrm arch_capabilities",
+  "allowed_cpus": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+  ],
+  "pinned_cpu": 0,
+  "runs": 11,
+  "tools": {
+    "gcc": "gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0",
+    "clang": null,
+    "rustc": null
+  },
+  "gcc_flags": [
+    "-O3",
+    "-march=native",
+    "-ffp-contract=off"
+  ],
+  "scope": "before/after Skite; GCC checksum/timing control; no Clang/Rust or best-compiler performance claim",
+  "kernels": {
+    "window": {
+      "source_sha256": {
+        "ck": "db20feb33565e0cbae8ef4f1a2bd695b31ce6adbc6b6821d8c3f3b38d32af382",
+        "c": "4778eb8267563cd2cebe149532ed537878d245c7fc59dcb09a74ab27eeeff992"
+      },
+      "binaries": {
+        "before": {
+          "binary_sha256": "1e6c2081d003f97ab18a9b91097423f9f1eb3c689b191b94138cd1e1d4781955",
+          "bytes": 815,
+          "compiler_report": "skite: wrote /tmp/skite-length-bench-z0d3nu6f/window.before (815 bytes, 559 machine-code bytes, 22 vars, 0 spills, 5 peak registers, 0 xmm, 3/3 bounds checks elided, 0 modulo reduced, 0 loops vectorized (0 element-wise, 0 byte-lane), 0 calls inlined, 0 loops unrolled)"
+        },
+        "after": {
+          "binary_sha256": "1e6c2081d003f97ab18a9b91097423f9f1eb3c689b191b94138cd1e1d4781955",
+          "bytes": 815,
+          "compiler_report": "skite: wrote /tmp/skite-length-bench-z0d3nu6f/window.after (815 bytes, 559 machine-code bytes, 22 vars, 0 spills, 5 peak registers, 0 xmm, 3/3 bounds checks elided, 0 modulo reduced, 0 loops vectorized (0 element-wise, 0 byte-lane), 0 calls inlined, 0 loops unrolled)"
+        },
+        "gcc": {
+          "binary_sha256": "c3a5d0572a4263fe3bc46ee23aa378d7896639a87d6e58c3910768d827d7e6c9",
+          "bytes": 16056
+        }
+      },
+      "checksums": [
+        {
+          "argc": 1,
+          "output": "4115658017\n"
+        },
+        {
+          "argc": 2,
+          "output": "12226\n"
+        },
+        {
+          "argc": 4,
+          "output": "-38003244\n"
+        }
+      ],
+      "timings": {
+        "before": {
+          "median_ms": 67.885819,
+          "q1_ms": 64.0170455,
+          "q3_ms": 67.95136049999999,
+          "min_ms": 63.795149,
+          "max_ms": 116.117851,
+          "samples_ms": [
+            116.117851,
+            67.885819,
+            67.982872,
+            64.084134,
+            67.919849,
+            67.910786,
+            63.96603,
+            64.068061,
+            63.795149,
+            114.136087,
+            63.846715
+          ]
+        },
+        "after": {
+          "median_ms": 67.238043,
+          "q1_ms": 64.002342,
+          "q3_ms": 67.761989,
+          "min_ms": 63.841191,
+          "max_ms": 68.052584,
+          "samples_ms": [
+            68.017042,
+            67.433752,
+            67.776327,
+            63.992304,
+            67.747651,
+            68.052584,
+            64.001634,
+            67.238043,
+            64.159982,
+            63.841191,
+            64.00305
+          ]
+        },
+        "gcc": {
+          "median_ms": 64.313583,
+          "q1_ms": 64.01021650000001,
+          "q3_ms": 67.180903,
+          "min_ms": 63.928595,
+          "max_ms": 114.387327,
+          "samples_ms": [
+            64.09767,
+            64.6668,
+            64.008429,
+            63.993836,
+            64.313583,
+            63.928595,
+            64.012004,
+            114.387327,
+            66.156777,
+            114.090178,
+            68.205029
+          ]
+        }
+      },
+      "orders": [
+        [
+          "before",
+          "after",
+          "gcc"
+        ],
+        [
+          "gcc",
+          "before",
+          "after"
+        ],
+        [
+          "before",
+          "after",
+          "gcc"
+        ],
+        [
+          "after",
+          "gcc",
+          "before"
+        ],
+        [
+          "gcc",
+          "after",
+          "before"
+        ],
+        [
+          "after",
+          "before",
+          "gcc"
+        ],
+        [
+          "before",
+          "gcc",
+          "after"
+        ],
+        [
+          "before",
+          "gcc",
+          "after"
+        ],
+        [
+          "after",
+          "gcc",
+          "before"
+        ],
+        [
+          "before",
+          "gcc",
+          "after"
+        ],
+        [
+          "before",
+          "gcc",
+          "after"
+        ]
+      ]
+    },
+    "prefix": {
+      "source_sha256": {
+        "ck": "b3c58096c3709c0698aa11eadd7fc04590f6f765dbb0ac736d39bad5cbc4879f",
+        "c": "b1a5aea2d27f89d6fa11929563c4f148b49399ff3908ae439388938f28408e68"
+      },
+      "binaries": {
+        "before": {
+          "binary_sha256": "76372d6f73696e007ee9fd79e4d6e6f0c72d9ab566f157dc99948bc28e523534",
+          "bytes": 892,
+          "compiler_report": "skite: wrote /tmp/skite-length-bench-z0d3nu6f/prefix.before (892 bytes, 636 machine-code bytes, 25 vars, 0 spills, 6 peak registers, 0 xmm, 5/6 bounds checks elided, 0 modulo reduced, 0 loops vectorized (0 element-wise, 0 byte-lane), 0 calls inlined, 0 loops unrolled)"
+        },
+        "after": {
+          "binary_sha256": "1346e6cd80b152ddd04aa71fad33598fa80c1d481f551b606ad5db1ff57103f9",
+          "bytes": 880,
+          "compiler_report": "skite: wrote /tmp/skite-length-bench-z0d3nu6f/prefix.after (880 bytes, 624 machine-code bytes, 25 vars, 0 spills, 6 peak registers, 0 xmm, 6/6 bounds checks elided, 0 modulo reduced, 0 loops vectorized (0 element-wise, 0 byte-lane), 0 calls inlined, 0 loops unrolled)"
+        },
+        "gcc": {
+          "binary_sha256": "0a7dae7f1c712cf58d30e92c98ba43887fa8dcd40e523f156d9f4ce7141352f4",
+          "bytes": 16016
+        }
+      },
+      "checksums": [
+        {
+          "argc": 1,
+          "output": "6847888326576765656\n-1410925276378051048\n"
+        },
+        {
+          "argc": 2,
+          "output": "828611098287151004\n-8541742214787516556\n"
+        },
+        {
+          "argc": 4,
+          "output": "6372989045956270287\n-5796792099035341458\n"
+        }
+      ],
+      "timings": {
+        "before": {
+          "median_ms": 217.26274,
+          "q1_ms": 215.0904425,
+          "q3_ms": 252.0909445,
+          "min_ms": 214.09475,
+          "max_ms": 269.351626,
+          "samples_ms": [
+            215.600598,
+            217.26274,
+            237.349354,
+            269.351626,
+            268.120214,
+            266.832535,
+            214.526393,
+            217.396855,
+            214.09475,
+            214.580287,
+            216.936135
+          ]
+        },
+        "after": {
+          "median_ms": 221.270036,
+          "q1_ms": 215.0256555,
+          "q3_ms": 265.97583099999997,
+          "min_ms": 214.344593,
+          "max_ms": 268.909058,
+          "samples_ms": [
+            215.207342,
+            214.628212,
+            227.457205,
+            265.455289,
+            266.496373,
+            268.909058,
+            268.831366,
+            221.270036,
+            214.344593,
+            214.843969,
+            217.372341
+          ]
+        },
+        "gcc": {
+          "median_ms": 216.542845,
+          "q1_ms": 214.8741315,
+          "q3_ms": 242.51630849999998,
+          "min_ms": 214.329532,
+          "max_ms": 269.236291,
+          "samples_ms": [
+            216.542845,
+            214.675194,
+            268.911536,
+            269.236291,
+            267.194594,
+            217.771419,
+            215.430145,
+            215.073069,
+            214.329532,
+            217.838023,
+            214.572319
+          ]
+        }
+      },
+      "orders": [
+        [
+          "before",
+          "after",
+          "gcc"
+        ],
+        [
+          "gcc",
+          "before",
+          "after"
+        ],
+        [
+          "before",
+          "after",
+          "gcc"
+        ],
+        [
+          "after",
+          "gcc",
+          "before"
+        ],
+        [
+          "gcc",
+          "after",
+          "before"
+        ],
+        [
+          "after",
+          "before",
+          "gcc"
+        ],
+        [
+          "before",
+          "gcc",
+          "after"
+        ],
+        [
+          "before",
+          "gcc",
+          "after"
+        ],
+        [
+          "after",
+          "gcc",
+          "before"
+        ],
+        [
+          "before",
+          "gcc",
+          "after"
+        ],
+        [
+          "before",
+          "gcc",
+          "after"
+        ]
+      ]
+    }
+  },
+  "local_tested_code_commit": "8eb0692",
+  "publication_note": "Published code tree exactly matches local code tree0a7c6bd8e1b9732ff167237be6282f8c99e0f453; commit metadata differs."
+}
