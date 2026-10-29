@@ -1,8 +1,8 @@
 fn decimal_arg(s: [u8]) -> i64 { let mut v: i64 = 0; let mut i: i64 = 0; while i < len(s) && s[i] >= 48 && s[i] <= 57 { v = v * 10 + (s[i] - 48); i += 1; } return v; }
 fn put_decimal(v: i64) { if v >= 10 { put_decimal(v / 10); } putc(v % 10 + 48); }
 fn main() {
- let mut n: i64 = 16000;
- if len(argv(1)) > 0 { n = decimal_arg(argv(1)); }
+ let arg = argv(1);
+ let n = decimal_arg(arg);
  if n < 1 || n > 100000 { return; }
  let mut workers = ncpu();
  if workers < 1 { workers = 1; } if workers > 256 { workers = 256; }
