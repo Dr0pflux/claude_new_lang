@@ -5450,7 +5450,9 @@ fn gen(e: i64, rg: i64, n: i64) {
     return;
   }
   // (x << c) | (x >> (64 - c)) on 64-bit x: one rotate
-  if (op == O_OR || op == O_XOR) && (nd[e].ty == TY_U64 || nd[e].ty == TY_I64) && nd[a].k == N_BIN && nd[b].k == N_BIN {
+  // Complementary logical shifts partition all 64 bits; OR, XOR, and wrapping
+  // ADD therefore have the same result, with ADD producing no carries.
+  if (op == O_OR || op == O_XOR || op == O_ADD) && (nd[e].ty == TY_U64 || nd[e].ty == TY_I64) && nd[a].k == N_BIN && nd[b].k == N_BIN {
     let mut l = a; let mut r = b;
     if nd[l].op == O_SHR && nd[r].op == O_SHL { l = b; r = a; }
     if nd[l].op == O_SHL && nd[r].op == O_SHR && is_const(nd[l].b) && is_const(nd[r].b) && expr_same(nd[l].a, nd[r].a) && ic_pure(nd[l].a)
