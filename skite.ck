@@ -5656,6 +5656,7 @@ let vp_iv = alloc<i64>(4096);
 let vp_npre = alloc<i64>(4096);
 let vp_u = alloc<i64>(4096);
 let vp_nv = alloc<i64>(4096);        // varying variables with registers
+let vp_tmp = alloc<i64>(4096);       // stream plans: deepest vector temporary
 let vp_need0 = alloc<i64>(4096);     // extracted variables: vp_need[vp_need0 .. vp_need0 + vp_nneed)
 let vp_nneed = alloc<i64>(4096);
 let vp_scr = alloc<i64>(4096);       // scratch offset in the vector area
@@ -6366,7 +6367,7 @@ fn plan_stream(s: i64, body: i64, inc: i64, iv: i64, nb: i64) {
   if !plan_extra(true, t0) { return; }
   let p = nplans; nplans += 1;
   vplan[s] = p + 1; vp_cadd[p] = PLAN_CADD;
-  vp_loop[p] = s; vp_iv[p] = iv; vp_npre[p] = nb; vp_u[p] = u; vp_nv[p] = nvar;
+  vp_loop[p] = s; vp_iv[p] = iv; vp_npre[p] = nb; vp_u[p] = u; vp_nv[p] = nvar; vp_tmp[p] = VK_TMP;
   vp_need0[p] = nvneed; vp_nneed[p] = 0; vp_v0[p] = nvlist; vp_scr[p] = vec_bytes;
   let mut g = 0;
   vv = 0;
@@ -6826,6 +6827,7 @@ fn vbc_gpr(d: i64, r: i64, lvl: i64) {      // vpbroadcastq d{k}, r64
 // broadcast a uniform scalar expression
 fn vbcast(e: i64, d: i64, lvl: i64) {
   let k = nd[e].k;
+  if k == N_VAR && hv_tag[nd[e].var] == HV_TAG { vmov(d, hv_reg[nd[e].var], lvl); return; }
   if k == N_CONST { vbc_pool(d, cp_u64(nd[e].v), lvl); return; }
   if k == N_VAR {
     loc(nd[e].var);
@@ -6840,6 +6842,7 @@ fn fp_nan(v: u64) -> bool { return (v & 9218868437227405312) == 9218868437227405
 fn vopnd(e: i64, t: i64) {
   if nd[e].k == N_CONST { VOK = 1; VOR = cp_u64(nd[e].v); return; }
   if nd[e].k == N_VAR && is_v(nd[e].var) { VOK = 0; VOR = VREG[nd[e].var]; return; }
+  if nd[e].k == N_VAR && hv_tag[nd[e].var] == HV_TAG { VOK = 0; VOR = hv_reg[nd[e].var]; return; }
   vgen_into(e, vr(t), -1, t); VOK = 0; VOR = vr(t);
 }
 fn vfop(op: i64) -> i64 { if op == O_FADD { return 88; } if op == O_FSUB { return 92; } if op == O_FMUL { return 89; } return 94; }
@@ -7246,6 +7249,65 @@ fn lane_load(dst: i64, x: bool, abs: i64) {
 }
 // the vectorized form of loop s (plan p), placed before the ordinary scalar loop; returns the
 // patch list of jumps to the scalar loop
+// stream loops: loop-invariant scalar variables read by vector expressions are broadcast once,
+// before the loop, into the zmm groups the plan leaves free
+let hv_tag = alloc<i64>(65536);
+let hv_reg = alloc<i64>(65536);
+let mut HV_TAG: i64 = 0;
+let mut HV_NEXT: i64 = 0;
+fn ivv_e(e: i64, iv: i64) -> bool {   // e reads iv outside array indices
+  if e < 0 { return false; }
+  let k = nd[e].k;
+  if k == N_VAR { return nd[e].var == iv; }
+  if k == N_CONST || k == N_ARR || k == N_NCPU { return false; }
+  if k == N_LOAD { return false; }
+  if k == N_CALL { return true; }
+  return ivv_e(nd[e].a, iv) || ivv_e(nd[e].b, iv);
+}
+fn ivv_s(c0: i64, iv: i64, n: i64) -> bool {
+  let mut c = c0; let mut i = 0;
+  while c >= 0 && i < n { if ivv_st(c, iv) { return true; } c = nd[c].next; i += 1; }
+  return false;
+}
+fn ivv_st(s: i64, iv: i64) -> bool {
+  if s < 0 { return false; }
+  let k = nd[s].k;
+  if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { if ivv_st(c, iv) { return true; } c = nd[c].next; } return false; }
+  if k == S_IF { return ivv_e(nd[s].a, iv) || ivv_st(nd[s].b, iv) || ivv_st(nd[s].c, iv); }
+  if k == S_STORE { return ivv_e(nd[s].b, iv); }
+  if k == S_WHILE { return true; }
+  if (k == S_LET || k == S_ASSIGN) && vars[nd[s].var].reads == 0 && !has_trap(nd[s].a) { return false; }   // dead: not generated
+  return ivv_e(nd[s].a, iv) || ivv_e(nd[s].b, iv);
+}
+fn hv_e(e: i64, s: i64) {   // invariant variables in vector expressions of e
+  if e < 0 { return; }
+  let k = nd[e].k;
+  if k == N_CONST || k == N_ARR || k == N_NCPU || k == N_CALL { return; }
+  if k == N_LOAD { return; }   // its index is scalar code
+  if k == N_VAR {
+    let v = nd[e].var;
+    if !is_v(v) && hv_tag[v] != HV_TAG && vars[v].arr == 0 && count_assign(s, v) == 0 && HV_NEXT + VU <= 32 {
+      hv_tag[v] = HV_TAG; hv_reg[v] = HV_NEXT; HV_NEXT += VU;
+      vbcast_raw(e, hv_reg[v]);
+    }
+    return;
+  }
+  hv_e(nd[e].a, s); hv_e(nd[e].b, s);
+}
+fn hv_st(c: i64, s: i64) {
+  if c < 0 { return; }
+  let k = nd[c].k;
+  if k == S_BLOCK || k == S_INL { let mut q = nd[c].a; while q >= 0 { hv_st(q, s); q = nd[q].next; } return; }
+  if k == S_IF { hv_e(nd[c].a, s); hv_st(nd[c].b, s); hv_st(nd[c].c, s); return; }
+  if k == S_STORE { hv_e(nd[c].b, s); return; }
+  if k == S_LET || k == S_ASSIGN { if vars[nd[c].var].reads != 0 { hv_e(nd[c].a, s); } return; }
+}
+fn hv_plan(p: i64, s: i64) {
+  HV_NEXT = 16 + (vp_nv[p] + vp_tmp[p] + 1) * VU;
+  let body = nd[s].b; let mut c = nd[body].a; let mut i = 0;
+  while c >= 0 && i < vp_npre[p] { hv_st(c, s); c = nd[c].next; i += 1; }
+}
+fn vbcast_raw(e: i64, d: i64) { let sv = HV_TAG; HV_TAG = -1; vbcast(e, d, -1); HV_TAG = sv; }
 fn gen_vloop(s: i64, p: i64) -> i64 {
   VP = p; VU = vp_u[p];
   plan_enter(p);
@@ -7261,13 +7323,17 @@ fn gen_vloop(s: i64, p: i64) -> i64 {
   let st = vp_stream[p];
   if byt && vp_brec[p] >= 0 { loc(vp_brec[p]); load(RAX, OK, ORR, OI); alui(A_CMP, RAX, 1); to_scalar = pl_add(to_scalar, jcc(CC_A)); }
   if st { vred_init(p); }
+  HV_TAG += 1;
+  if st && !byt { hv_plan(p, s); vex3(1, 0, 0, 1, 70, 7, 7, 7); }   // kxnorw k7: k7 only ever holds all ones
   let mut ex = -1;   // exits after the first block (stream loops: through the reduction epilogue)
   let vtop = clen;
   // all L lanes run: i + L - 1 (no overflow) < E  (or <= E)
-  bound_rcx(en);
+  let mut er = RCX;
+  if nd[en].k == N_VAR { loc(nd[en].var); if OK == K_REG { er = ORR; } }
+  if er == RCX { bound_rcx(en); }
   loc(iv); load(RAX, OK, ORR, OI);
   alui(A_ADD, RAX, (L - 1 + vp_cadd[p]) as u64); ex = pl_add(ex, jcc(0));
-  alu(A_CMP, K_REG, RAX, K_REG, RCX, 0);
+  alu(A_CMP, K_REG, RAX, K_REG, er, 0);
   if nd[cnd].op == O_LT { ex = pl_add(ex, jcc(CC_GE)); } else { ex = pl_add(ex, jcc(CC_G)); }
   if byt {
     vex3(1, 0, 1, 1, 70, 7, 7, 7);   // kxnorq k7, k7, k7
@@ -7292,17 +7358,20 @@ fn gen_vloop(s: i64, p: i64) -> i64 {
     vred_fini(p);
     return to_scalar;
   }
-  vex3(1, 0, 0, 1, 70, 7, 7, 7);   // kxnorw k7, k7, k7
-  // lanes of the induction variable: i + (0, 1, ..)
-  loc(iv); load(RAX, OK, ORR, OI);
-  let R = VREG[iv];
-  let mut h = 0;
-  while h < VU {
-    evx(2, 1, 1, 2, 124, R + h, 0, 0, RAX, 0, false, false);
-    VM_TAIL = 0; vm_pool(cp_iota(8 * h)); evx(1, 1, 1, 2, 212, R + h, R + h, 1, 0, 0, false, false);
-    h += 1;
-  }
+  if !st { vex3(1, 0, 0, 1, 70, 7, 7, 7); }   // kxnorw k7, k7, k7 (stream plans: before the loop)
   let body = nd[s].b;
+  // lanes of the induction variable: i + (0, 1, ..), when a vector expression reads i itself
+  // (indices are computed in scalar registers)
+  let mut h = 0;
+  if !st || ivv_s(nd[body].a, iv, vp_npre[p]) {
+    loc(iv); load(RAX, OK, ORR, OI);
+    let R = VREG[iv];
+    while h < VU {
+      evx(2, 1, 1, 2, 124, R + h, 0, 0, RAX, 0, false, false);
+      VM_TAIL = 0; vm_pool(cp_iota(8 * h)); evx(1, 1, 1, 2, 212, R + h, R + h, 1, 0, 0, false, false);
+      h += 1;
+    }
+  }
   let mut c = nd[body].a;
   let mut i = 0;
   if st {
