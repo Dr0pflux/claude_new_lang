@@ -117,3 +117,14 @@ and merge only the reviewed head after checking newer remote changes. Division
 changes additionally require `tests/run_divconst.sh`. Record actual tests, SHA,
 hardware limits and provider verdicts. Update the README, relevant reference docs
 and changelog when behavior, supported features or verified performance changes.
+
+## Runtime-length CI diagnostics
+
+PR #22 CI timed out in two different expected-SIGILL cases across two attempts
+(`different_arraynormal`, then `negative_offsetscalar`). The first case passed
+all 20 input lengths locally in normal/scalar modes and emitted no vector plans.
+Core-dump overhead is a hypothesis, not a demonstrated cause. The suite now
+disables subprocess core dumps and retains source/input/executable plus command
+and output diagnostics through the existing CI artifact directory. All 842
+cases and injected compiler-failure artifact retention pass locally; no timeout
+or oracle was relaxed. Successful CI remains required before merge.

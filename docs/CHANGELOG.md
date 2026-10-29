@@ -506,3 +506,6 @@ Temporaries at a statement are exactly the registers held by no variable whose i
 
 - **AST codegen versus a MIR/SSA stage.** v0.3 deliberately codegens from the AST, which keeps it small and auditable. SSA/GVN/LICM need a real CFG IR before G5.
   - Proposed objective test: introduce MIR only when an optimization that is measured on the runtime benchmarks requires it.
+
+- Runtime-length regression failures retain reproducer artifacts; expected trap
+  subprocesses disable core dumps. Existing timeouts and oracles are unchanged.

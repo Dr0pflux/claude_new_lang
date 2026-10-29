@@ -100,3 +100,8 @@ What makes skite fast (all bit-exact: strict IEEE floats, wrapping integers, tra
 | `.github/workflows/` | CI: clean build, fixed point, `make test`, divisor oracle |
 | `bench/game/` | Benchmarks Game suite in skite, C and Rust |
 | `bench/kernels/`, `bench/vigenere/` | arithmetic and text kernels (`textscan`, n-grams, ...) and a Vigenère solver |
+
+The runtime-length regression suite disables core dumps for expected traps and
+retains failing source, input, executable, and command diagnostics under
+`SKITE_ARTIFACT_DIR` (or `/tmp/skite-length-facts-artifacts`). Its timeouts and
+842 output/trap oracles remain unchanged.

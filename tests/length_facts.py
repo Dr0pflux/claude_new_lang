@@ -4,7 +4,7 @@
 SKITE selects a frozen compiler. Checks both normal and --scalar output;
 proof counters are mandatory for positive loops and incomplete for negatives.
 """
-import os,pathlib,re,signal,struct,subprocess,tempfile
+import os,pathlib,re,resource,shutil,signal,struct,subprocess,tempfile
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 SKITE=pathlib.Path(os.environ.get('SKITE',ROOT/'skite')).resolve()
 MASK=(1<<64)-1
@@ -13,6 +13,33 @@ def i64(x):
  x &= MASK
  return x if x<1<<63 else x-(1<<64)
 VALUES=[i64(i*9223372036854775783-9223372036854775500) for i in range(max(LENGTHS))]
+
+def disable_core_dumps():
+ resource.setrlimit(resource.RLIMIT_CORE,(0,0))
+
+def preserve_failure(label,cmd,src,data,exe,stdout=b'',stderr=b'',detail=''):
+ root=pathlib.Path(os.environ.get('SKITE_ARTIFACT_DIR',pathlib.Path(tempfile.gettempdir())/'skite-length-facts-artifacts'))
+ dest=root/label.replace('/','_')
+ dest.mkdir(parents=True,exist_ok=True)
+ for path in (src,data,exe):
+  if path is not None and pathlib.Path(path).is_file(): shutil.copy2(path,dest/pathlib.Path(path).name)
+ (dest/'failure.txt').write_text(
+  f'command: {cmd!r}\nsource: {src}\ninput: {data}\nexecutable: {exe}\n{detail}\n'
+  f'stdout:\n{stdout.decode(errors="replace") if isinstance(stdout,bytes) else stdout}\n'
+  f'stderr:\n{stderr.decode(errors="replace") if isinstance(stderr,bytes) else stderr}\n')
+ return dest
+
+def run(cmd,timeout,label,src,data=None,exe=None,text=False):
+ try:
+  return subprocess.run(cmd,capture_output=True,text=text,timeout=timeout,preexec_fn=disable_core_dumps)
+ except subprocess.TimeoutExpired as e:
+  dest=preserve_failure(label,cmd,src,data,exe,e.stdout or b'',e.stderr or b'',f'timed out after {timeout}s')
+  raise AssertionError(f'{label}: subprocess timed out after {timeout}s; artifacts={dest}') from e
+
+def require(ok,label,cmd,src,data=None,exe=None,stdout=b'',stderr=b'',detail=''):
+ if not ok:
+  dest=preserve_failure(label,cmd,src,data,exe,stdout,stderr,detail)
+  raise AssertionError(f'{label}: {detail}; artifacts={dest}')
 CASES=[
  ('zero_start','let mut s=0;for i in 0..len(a) {s+=a[i];}print(s);',lambda a:sum(a)),
  ('predecessor','let mut s=0;for i in 1..len(a) {s+=a[i-1];}print(s);',lambda a:sum(a[:-1])),
@@ -43,40 +70,58 @@ NEGATIVES=[
 checks=0
 with tempfile.TemporaryDirectory(prefix='skite-length-facts-') as td:
  t=pathlib.Path(td)
+ data=t/'data.bin'
  for name,body,oracle in CASES:
   src=t/(name+'.ck');src.write_text('fn main(){let raw=file(1);let a=view<i64>(raw);'+body+'}\n')
   for flag in [[],['--scalar']]:
-   exe=t/(name+('scalar' if flag else 'normal'))
-   cp=subprocess.run([str(SKITE),str(src),str(exe),*flag],capture_output=True,text=True,timeout=30)
-   assert cp.returncode==0,(name,cp.stderr)
+   mode='scalar' if flag else 'normal'
+   exe=t/(name+mode)
+   cmd=[str(SKITE),str(src),str(exe),*flag]
+   cp=run(cmd,30,f'{name}-{mode}-compile',src,data,exe,text=True)
+   require(cp.returncode==0,f'{name}-{mode}-compile',cmd,src,data,exe,cp.stdout,cp.stderr,f'compiler returned {cp.returncode}')
    m=re.search(r'(\d+)/(\d+) bounds checks elided',cp.stdout)
-   assert m and int(m[2])>0 and m[1]==m[2],(name,flag,cp.stdout)
+   require(bool(m and int(m[2])>0 and m[1]==m[2]),f'{name}-{mode}-proof',cmd,src,data,exe,cp.stdout,cp.stderr,'positive-loop proof counter missing or incomplete')
    for n in LENGTHS:
-    data=t/'data.bin';data.write_bytes(b''.join(struct.pack('<q',v) for v in VALUES[:n]))
-    run=subprocess.run([str(exe),str(data)],capture_output=True,timeout=5)
+    data.write_bytes(b''.join(struct.pack('<q',v) for v in VALUES[:n]))
+    cmd=[str(exe),str(data)]
+    run_result=run(cmd,5,f'{name}-{mode}-n{n}',src,data,exe)
     want=f'{i64(oracle(VALUES[:n]))}\n'.encode()
-    assert run.returncode==0 and run.stdout==want,(name,flag,n,run.returncode,run.stdout,want)
+    require(run_result.returncode==0 and run_result.stdout==want,f'{name}-{mode}-n{n}',cmd,src,data,exe,run_result.stdout,run_result.stderr,f'got status {run_result.returncode}, expected output {want!r}')
     checks+=1
  for name,body,traps,oracle in NEGATIVES:
   src=t/(name+'.ck');src.write_text('fn main(){let raw=file(1);let a=view<i64>(raw);'+body+'}\n')
   for flag in [[],['--scalar']]:
-   exe=t/(name+('scalar' if flag else 'normal'))
-   cp=subprocess.run([str(SKITE),str(src),str(exe),*flag],capture_output=True,text=True,timeout=30)
-   assert cp.returncode==0,(name,cp.stderr)
+   mode='scalar' if flag else 'normal'
+   exe=t/(name+mode)
+   cmd=[str(SKITE),str(src),str(exe),*flag]
+   cp=run(cmd,30,f'{name}-{mode}-compile',src,data,exe,text=True)
+   require(cp.returncode==0,f'{name}-{mode}-compile',cmd,src,data,exe,cp.stdout,cp.stderr,f'compiler returned {cp.returncode}')
    m=re.search(r'(\d+)/(\d+) bounds checks elided',cp.stdout)
-   assert m and int(m[1])<int(m[2]),(name,'unsafe checks vanished',cp.stdout)
+   require(bool(m and int(m[1])<int(m[2])),f'{name}-{mode}-proof',cmd,src,data,exe,cp.stdout,cp.stderr,'unsafe checks were fully elided')
    for n in LENGTHS:
-    data=t/'data.bin';data.write_bytes(b''.join(struct.pack('<q',v) for v in VALUES[:n]))
-    run=subprocess.run([str(exe),str(data)],capture_output=True,timeout=5)
-    if traps(n):assert run.returncode in (-signal.SIGILL,132),(name,flag,n,run.returncode,run.stdout)
-    else:assert run.returncode==0 and run.stdout==oracle(VALUES[:n]),(name,flag,n,run.returncode,run.stdout)
+    data.write_bytes(b''.join(struct.pack('<q',v) for v in VALUES[:n]))
+    cmd=[str(exe),str(data)]
+    run_result=run(cmd,5,f'{name}-{mode}-n{n}',src,data,exe)
+    if traps(n):
+     ok=run_result.returncode in (-signal.SIGILL,132)
+     detail=f'expected SIGILL, got status {run_result.returncode}'
+    else:
+     want=oracle(VALUES[:n])
+     ok=run_result.returncode==0 and run_result.stdout==want
+     detail=f'got status {run_result.returncode} and output {run_result.stdout!r}, expected 0 and {want!r}'
+    require(ok,f'{name}-{mode}-n{n}',cmd,src,data,exe,run_result.stdout,run_result.stderr,detail)
     checks+=1
  # A store value's observable output occurs before its invalid index traps.
  src=t/'store_order.ck';src.write_text('fn rhs()->i64 {print(71);return 9;}fn main(){let a=alloc<i64>(argc());let i=argc()-1;if i<len(a){a[i-1]=rhs();}}')
  for flag in [[],['--scalar']]:
-  exe=t/('store'+str(len(flag)));cp=subprocess.run([str(SKITE),str(src),str(exe),*flag],capture_output=True,timeout=30)
-  assert cp.returncode==0,cp.stderr
-  run=subprocess.run([str(exe)],capture_output=True,timeout=5)
-  assert run.returncode in (-signal.SIGILL,132) and run.stdout==b'71\n',(flag,run.returncode,run.stdout)
+  mode='scalar' if flag else 'normal'
+  exe=t/('store'+mode)
+  cmd=[str(SKITE),str(src),str(exe),*flag]
+  cp=run(cmd,30,f'store-order-{mode}-compile',src,None,exe,text=True)
+  require(cp.returncode==0,f'store-order-{mode}-compile',cmd,src,None,exe,cp.stdout,cp.stderr,f'compiler returned {cp.returncode}')
+  cmd=[str(exe)]
+  run_result=run(cmd,5,f'store-order-{mode}-run',src,None,exe)
+  ok=run_result.returncode in (-signal.SIGILL,132) and run_result.stdout==b'71\n'
+  require(ok,f'store-order-{mode}-run',cmd,src,None,exe,run_result.stdout,run_result.stderr,f'expected SIGILL after printing 71, got status {run_result.returncode} and {run_result.stdout!r}')
   checks+=1
 print(f'PASS {checks} runtime-length output/trap cases; positive accesses fully proven, negative controls retain checks (normal and --scalar)')
