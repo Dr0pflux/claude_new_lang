@@ -1,0 +1,36 @@
+name: Mandelbrot two-port runtime comparison
+on:
+  pull_request:
+    paths:
+      - 'bench/game/mandelbrot_gpp4_*.ck'
+      - '.github/workflows/mandelbrot-two-ports.yml'
+  workflow_dispatch:
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Skite
+        run: make
+      - name: Compile two ports
+        run: |
+          ./skite bench/game/mandelbrot_gpp4_exact.ck /tmp/mb-exact
+          ./skite bench/game/mandelbrot_gpp4_fast.ck /tmp/mb-fast
+      - name: Compare output and runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          lscpu | grep 'Model name'
+          nproc
+          for n in 400 1600 4000 16000; do
+            echo "===== N=$n ====="
+            /tmp/mb-exact "$n" > /tmp/mb-exact.pbm
+            /tmp/mb-fast "$n" > /tmp/mb-fast.pbm
+            cmp /tmp/mb-exact.pbm /tmp/mb-fast.pbm
+            sha256sum /tmp/mb-exact.pbm
+            for i in 1 2 3; do
+              /usr/bin/time -f "exact: %e seconds" /tmp/mb-exact "$n" > /dev/null
+              /usr/bin/time -f "fast: %e seconds" /tmp/mb-fast "$n" > /dev/null
+            done
+          done
