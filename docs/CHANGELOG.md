@@ -1,3 +1,7 @@
+# Complementary-shift addition (candidate, 2026-10-29)
+
+- Extend the existing 64-bit OR/XOR rotate recognizer to wrapping ADD when positive complementary logical shifts of an identical pure operand have disjoint bits. Existing type, purity and shift guards remain. The rotate-add diagnostic median improves96.72→62.97ms over11interleaved runs; all6Game binaries unchanged, no general speed claim. See bench/rotate_add/README.md and tests/rotate_add.py.
+
 # Guarded runtime terminal indices (candidate, 2026-10-29)
 
 - Prove exact-array `len(a)-k` indices for positive constant `k` and a sufficient length lower bound; keep empty/insufficient guards, casts, views and wrapping controls checked. Prefix kernel removes its final check and 12 code bytes; no runtime speedup claimed. See `bench/length_facts/terminal.md`.
