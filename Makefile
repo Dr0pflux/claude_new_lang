@@ -17,6 +17,7 @@ test: skite selfcheck
 	python3 tests/alignment.py
 	python3 tests/f32_literals.py
 	python3 tests/rotate_add.py
+	python3 tests/unsigned_even.py
 	python3 tests/fuzz_harness_test.py
 	PYTHONDONTWRITEBYTECODE=1 python3 tests/oracle_fuzz/test_harnesses.py
 	PYTHONDONTWRITEBYTECODE=1 python3 bench/game/test_run.py
