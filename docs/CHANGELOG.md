@@ -72,6 +72,11 @@
 - **Correctness and tooling fixes:** reject invalid `view<S>` element layouts (PR #2), bound fuzz
   runs and preserve artifacts on failure (PR #5), reject failed or unknown benchmark runs (PR #6),
   and align scoped buffers to 64 bytes (PR #8).
+- **Oracle fuzz harnesses (issue #23):** compiler/runtime errors and timeouts now fail nonzero
+  instead of being counted as agreement. Subprocesses use bounded finite timeouts with process-group
+  cleanup, and failures preserve source, inputs, executables and diagnostics. `make test` runs 75
+  deterministic fault-injection checks for agreement, mismatches, compile/runtime failures, timeouts
+  and SIGFPE outcomes.
 - **Calls and recursion:** avoid saving caller registers that are dead after a call and reuse
   already-passed bounds checks (`e872829`); add bounded tail-recursion modulo addition, copy
   coalescing, and one additional inline level for tiny recursive functions (`027a8d9`).

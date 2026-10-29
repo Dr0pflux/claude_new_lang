@@ -86,6 +86,13 @@ What makes skite fast (all bit-exact: strict IEEE floats, wrapping integers, tra
   periodic-index strength reduction. Paired division does not cross short-circuit `&&` or `||`;
   a skipped division keeps its original trap behavior.
 
+The differential oracle fuzzers under `tests/oracle_fuzz` fail nonzero on
+output/status mismatches and harness errors. Compiler and program subprocesses
+have bounded positive finite timeouts; timeout cleanup terminates their process
+groups. `make test` runs 75 deterministic fault-injection checks for agreement,
+mismatch, compiler errors, missing executables, timeouts, runtime failures and
+SIGFPE outcomes. Failed cases retain generated sources and artifacts for inspection.
+
 ## Layout
 
 | Path | Contents |
@@ -94,7 +101,7 @@ What makes skite fast (all bit-exact: strict IEEE floats, wrapping integers, tra
 | `bootstrap/` | `skite-seed` (prebuilt compiler that starts the build), `skite.c` (original C seed, audit only) |
 | `docs/` | tutorial, language reference, design notes, limitations, changelog, benchmarks, audit and handoff notes |
 | `examples/` | example and tutorial programs |
-| `tests/` | `run.sh` regressions; fuzzers with independent oracles (`cf_fuzz`, `ty_fuzz`, `dag_fuzz`, `divconst`, `vec_fuzz.py`, `stream_fuzz.py`); `stream_boundaries.py`, `alignment.py`, `zero_divisor.py` |
+| `tests/` | `run.sh` regressions; fuzzers with independent oracles (`cf_fuzz`, `ty_fuzz`, `dag_fuzz`, `divconst`, `vec_fuzz.py`, `stream_fuzz.py`, `oracle_fuzz/`); `stream_boundaries.py`, `alignment.py`, `zero_divisor.py` |
 | `.github/workflows/` | CI: clean build, fixed point, `make test`, divisor oracle |
 | `bench/game/` | Benchmarks Game suite in skite, C and Rust |
 | `bench/kernels/`, `bench/vigenere/` | arithmetic and text kernels (`textscan`, n-grams, ...) and a Vigenère solver |
