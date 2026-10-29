@@ -1,3 +1,7 @@
+# Unsigned even-divisor audit (candidate, 2026-10-29)
+
+For positive even u64 divisor d=2m, floor(n/d)=floor((n>>>1)/m). Both shifted dividend and halved divisor fit signed i64; existing signed magic division is reused with a proven nonnegative input. The original numerator is retained for n-q*d, whose mathematical product cannot exceed n. RAX/RCX/RDX are reserved scratch; zero/odd/runtime/signed cases retain prior paths. Tests cover high-bit/max-even divisors, boundary values, in-place/nested expressions and effectful dividends. The prior divisor oracle and fixed point pass. Local full tests stop at the mandatory ptrace gate because the host denies tracing; CI must pass it. Source and measurement evidence: bench/unsigned_even. Genuine Claude Saturday review pending.
+
 # Compiler audit and validation status
 
 Updated 2026-10-28. Verified integration: `c4837cf83e284b588b30daaaa2d66824fffc4e8f`

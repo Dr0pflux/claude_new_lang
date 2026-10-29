@@ -1,3 +1,9 @@
+# L45 unsigned even-divisor candidate, 2026-10-29
+
+Branchcodex/unsigned-even-divisors, base8a10353fd674bb45ae380563963c971614205620. Code83051cb16d39549ab0615098481124f00b0a170f, treec65120b17e30569a5253f807fa208c0e20d7ee94. Source6eb6ce7d8d8b42166af0db3ad84be1130498d7f58890e80ab71a9c766cc734d5. Luna implementation, independent preliminary safety GO; exact final head review/CI pending. Claude SaturdayOctober31cross-review queued, no capacity probe. Bootstrapissue25/SSE2ownership untouched.
+
+Even unsigned immediate divisors reuse signeddivconst on(n>>>1)/(d/2), reconstruct remainderfrom originalnumerator. 23,614independent outputs/84divisors and existing137programs/1,089divisorsPASS, fixedpointPASS. SixGame binaries unchanged. Dependentmod26 median333.18→231.25ms over11interleaved runs; GCC197.40ms remainsfaster. Compiler1,796,096→1,793,792B; kernel400→394codeB. Local fulltests earliergatesPASS then mandatoryptracesupervisor denied; CIrequired. Next: exactheadreview/publish/CI/basecheck beforemerge. Evidencebench/unsigned_even, READMEupdated. Earliercheckpointsbelowhistorical.
+
 # L44 rotate-add candidate, 2026-10-29
 
 Branch `codex/rotate-disjoint-forms`, base `70345389ba0154bcd270830a24f12686ab342c5c`, code commit `130a914da42aec54d63c81026b8ffce9037f082f`, tree `1d21be07ff6890ff3b46de674cb9bae22628e0fa`. Source `fb9e1a8d5c1ad89c374e9dad1300e826db96790b6a9b7c58bc6de6244bcf8e23`. One Luna implementer, independent preliminary safety GO; exact final head review/CI pending. Claude Saturday October31 review queued, no pre-reset probe. Existing bootstrap issue25/SSE2 ownership untouched.

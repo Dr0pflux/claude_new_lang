@@ -1,3 +1,7 @@
+# Unsigned even constant divisors (candidate, 2026-10-29)
+
+- Reuse signed reciprocal lowering for unsigned division by nonzero even constants after shifting/halving, preserving full-width quotient/remainder semantics. Independent23,614outputs, existing1,089divisor oracle, fixed point and unchangedGame binaries verified. Dependentmod26 diagnostic333.18→231.25ms; compiler2,304bytes smaller. See bench/unsigned_even/README.md.
+
 # Complementary-shift addition (candidate, 2026-10-29)
 
 - Extend the existing 64-bit OR/XOR rotate recognizer to wrapping ADD when positive complementary logical shifts of an identical pure operand have disjoint bits. Existing type, purity and shift guards remain. The rotate-add diagnostic median improves96.72→62.97ms over11interleaved runs; all6Game binaries unchanged, no general speed claim. See bench/rotate_add/README.md and tests/rotate_add.py.
