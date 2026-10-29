@@ -1,3 +1,7 @@
+# Unsigned odd-divisor audit (candidate, 2026-10-29)
+
+For odd1<d<2^63, M=ceil(2^64/d)=UINT64_MAX/d+1. The unsigned high product estimates the quotient exactly or one too high. Tentative n-q*d is below d when correct, and a modular negative value above d when high; unsigned comparison selects one correction. For d>=2^63 quotient is0/1. Reserved RAX/RCX/RDX scratch and unsigned MUL preserve the allocated destination and quotient. Boundary/random oracles cover both corrections, maximum inputs/divisors, in-place/nested forms and effectful dividends. Existingdivisororacle/fixedpoint pass; local mandatoryptrace gate is blocked by host permissions, so CI is required. Exact evidencebench/unsigned_odd; ClaudeSaturdayreview pending.
+
 # Unsigned even-divisor audit (candidate, 2026-10-29)
 
 For positive even u64 divisor d=2m, floor(n/d)=floor((n>>>1)/m). Both shifted dividend and halved divisor fit signed i64; existing signed magic division is reused with a proven nonnegative input. The original numerator is retained for n-q*d, whose mathematical product cannot exceed n. RAX/RCX/RDX are reserved scratch; zero/odd/runtime/signed cases retain prior paths. Tests cover high-bit/max-even divisors, boundary values, in-place/nested expressions and effectful dividends. The prior divisor oracle and fixed point pass. Local full tests stop at the mandatory ptrace gate because the host denies tracing; CI must pass it. Source and measurement evidence: bench/unsigned_even. Genuine Claude Saturday review pending.

@@ -1,3 +1,7 @@
+# Unsigned odd constant divisors (candidate, 2026-10-29)
+
+- Add exact unsigned reciprocal multiplication with one correction for odd immediate divisors below2^63, and comparison-based quotient/remainder above that boundary. Prior even/power-of-two, zero, signed and runtime paths remain. Expanded52,818oracle outputs/190divisors and existingdivisororacle pass; dependentmod29 median317.53→205.64ms, compiler+1,280bytes. NoGamegainclaim; see bench/unsigned_odd/README.md.
+
 # Unsigned even constant divisors (candidate, 2026-10-29)
 
 - Reuse signed reciprocal lowering for unsigned division by nonzero even constants after shifting/halving, preserving full-width quotient/remainder semantics. Independent23,614outputs, existing1,089divisor oracle, fixed point and unchangedGame binaries verified. Dependentmod26 diagnostic333.18→231.25ms; compiler2,304bytes smaller. See bench/unsigned_even/README.md.

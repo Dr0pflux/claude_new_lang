@@ -46,7 +46,7 @@ See [examples](examples/) for programs and [design notes](docs/DESIGN.md) for th
   features. Bounds and alias guards retain the original scalar path when needed.
 - **Scalar code generation:** register allocation/coalescing, bounded recursive
   inlining, tail-recursion accumulation, integer if-conversion, XMM floating-point
-  values, constant division (including unsigned even constants) and paired
+  values, constant division (including unsigned immediate constants) and paired
   division/remainder when both are evaluated.
   Complementary logical shifts of the same pure 64-bit value can use one rotate
   when combined with OR, XOR or wrapping ADD.
@@ -74,19 +74,21 @@ Recent focused measurements, with exact hashes, raw samples and limitations in e
 
 | Change | Measured result | Evidence |
 | --- | --- | --- |
+| Unsigned odd constant division/remainder | Dependent `% 29`: 317.53 to 205.64 ms; compiler +1,280 bytes | [Record](bench/unsigned_odd/README.md) |
 | Unsigned even constant division/remainder | Dependent `% 26`: 333.18 to 231.25 ms; compiler 2,304 bytes smaller | [Record](bench/unsigned_even/README.md) |
 | Complementary-shift ADD to rotate | 96.72 to 62.97 ms; kernel 10 bytes smaller | [Record](bench/rotate_add/README.md) |
 | Guarded terminal bounds proof | Prefix code 636 to 624 bytes; compiler +384 bytes; no reliable runtime win | [Record](bench/length_facts/terminal.md) |
 
-The first two diagnostics use 11 interleaved runs. Their six Game binaries are
+The three arithmetic diagnostics use 11 interleaved runs. Their six Game binaries are
 unchanged; these are focused improvements, not general C/Rust or Game speed
-claims. The unsigned-modulo diagnostic still trails GCC (197.40 ms). Clang and
+claims. The `% 26` diagnostic still trails its GCC control (197.40 ms); `% 29` locally
+measures below its GCC control (245.89 ms). Clang and
 Rust were unavailable for these local measurements.
 
 ## Validation and status
 
 `make test` checks the self-hosting fixed point, regressions and independent
-control-flow, typed, vector and stream oracles. It includes 23,614 unsigned-divisor and 9,096 rotate-add oracle outputs, plus 75 deterministic
+control-flow, typed, vector and stream oracles. It includes 52,818 unsigned-divisor and 9,096 rotate-add oracle outputs, plus 75 deterministic
 fuzz-harness fault checks and 1,442 runtime-length output/trap cases under normal
 and scalar compilation. Failures retain sources, inputs and diagnostics under
 `SKITE_ARTIFACT_DIR`; subprocess deadlines and process-group cleanup are enforced.

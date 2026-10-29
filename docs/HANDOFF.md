@@ -1,3 +1,9 @@
+# L46 unsigned odd-divisor candidate, 2026-10-29
+
+Branchcodex/unsigned-odd-divisors, basea71c907b52f3416087471c987a75b82536c146f6. Code5801e6369ac0f94c5cd69437023ea89c0aaa1ee6 tree84a1dd5c45863e40b255f18143b8fcdfbdb767c5. Sourcef43382240bd47067c043b1ae4577463aa6a8cbe88703e54c9727b7d0ae893382. Luna implementation, independent preliminary safetyGO; finalheadreview/CI pending. ClaudeSaturdayOct31crossreviewqueued, no earlyprobe; bootstrapissue25/SSE2ownership untouched.
+
+Odd unsigned immediates below2^63 use ceiling reciprocal/highmultiply+exactcorrection; highbit constants use quotient0/1. Expanded52,818outputs/190divisors normal+scalarPASS,137program/1089divisorCoraclePASS,fixedpointPASS,sixGamebinariesidentical. Dependentmod29 11interleaved medians317.53→205.64ms; GCC245.89ms control, noClangRustcoverage/noGameoruniversalclaim. Compiler+1280B, kernel-1B. Localfulltests earliergatesPASS thenmandatoryptracehostdenial; CIrequired. README/evidencebench/unsigned_odd updated. Nextfinalreview/publish/CI/basecheck beforemerge. Priorcheckpointsbelowhistorical.
+
 # L45 unsigned even-divisor candidate, 2026-10-29
 
 Branchcodex/unsigned-even-divisors, base8a10353fd674bb45ae380563963c971614205620. Code83051cb16d39549ab0615098481124f00b0a170f, treec65120b17e30569a5253f807fa208c0e20d7ee94. Source6eb6ce7d8d8b42166af0db3ad84be1130498d7f58890e80ab71a9c766cc734d5. Luna implementation, independent preliminary safety GO; exact final head review/CI pending. Claude SaturdayOctober31cross-review queued, no capacity probe. Bootstrapissue25/SSE2ownership untouched.
