@@ -149,3 +149,35 @@ shrinks 571 -> 559 code bytes. The prefix control is byte-identical. Runtime sam
 overlap; no reliable timing win or three-compiler ranking is claimed. The compiler
 ELF grows 512 bytes. Clang/Rust were unavailable on this host; GCC is a matched
 checksum/timing control only. See the record for exact flags, CPU and coverage.
+
+## Historical README snapshot, 2026-10-28
+
+The following record was moved from the README during its 2026-10-29 cleanup. It describes the named older heads, not current integration performance.
+
+Matched implementations (same algorithm in skite, C and Rust, byte-identical output required);
+gcc/clang `-O3 -march=native`, rustc `-C opt-level=3 -C target-cpu=native`. Quick sizes, Xeon
+(AVX-512, shared 4-vCPU cloud host, so expect ±10% noise), 2026-10-28, head `3a479db` (binarytrees `c0cbc2d`);
+Game medians of 3 runs, kernels of 5.
+Ratio = skite time / fastest other; below 1 means skite is faster.
+
+Benchmarks Game (`bench/game`):
+
+| workload | skite ms | best other | ratio |
+|---|---|---|---|
+| mandelbrot | 330 | gcc 942 | **0.35** |
+| fasta | 321 | rust 310 | 1.04 |
+| spectralnorm | 253 | gcc 240 | 1.06 |
+| fannkuchredux | 2592 | rust 2316 | 1.12 |
+| nbody | 268 | rust 205 | 1.30 |
+| binarytrees | 422 | gcc 335 | 1.26 |
+
+Arithmetic and text kernels (`bench/kernels`, `run.py 3`):
+
+| kernel | ratio | kernel | ratio | kernel | ratio |
+|---|---|---|---|---|---|
+| strsearch | **0.26** | hashmix | **0.97** | ngramhash | 1.11 |
+| textscan | **0.40** | polyeval | **0.98** | gcdsum | 1.14 |
+| wordcount | **0.64** | sieve | **0.99** | intsort | 1.17 |
+| collatz | **0.70** | divmod | 1.01 | matmul | 1.24 |
+| caseconv | **0.82** | histogram | 1.01 | editdist | 1.34 |
+| | | prefixsum | 1.08 | nqueens | 1.08 |

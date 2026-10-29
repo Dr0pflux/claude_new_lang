@@ -1,3 +1,34 @@
+# L46 unsigned odd-divisor candidate, 2026-10-29
+
+Branchcodex/unsigned-odd-divisors, basea71c907b52f3416087471c987a75b82536c146f6. Code5801e6369ac0f94c5cd69437023ea89c0aaa1ee6 tree84a1dd5c45863e40b255f18143b8fcdfbdb767c5. Sourcef43382240bd47067c043b1ae4577463aa6a8cbe88703e54c9727b7d0ae893382. Luna implementation, independent preliminary safetyGO; finalheadreview/CI pending. ClaudeSaturdayOct31crossreviewqueued, no earlyprobe; bootstrapissue25/SSE2ownership untouched.
+
+Odd unsigned immediates below2^63 use ceiling reciprocal/highmultiply+exactcorrection; highbit constants use quotient0/1. Expanded52,818outputs/190divisors normal+scalarPASS,137program/1089divisorCoraclePASS,fixedpointPASS,sixGamebinariesidentical. Dependentmod29 11interleaved medians317.53→205.64ms; GCC245.89ms control, noClangRustcoverage/noGameoruniversalclaim. Compiler+1280B, kernel-1B. Localfulltests earliergatesPASS thenmandatoryptracehostdenial; CIrequired. README/evidencebench/unsigned_odd updated. Nextfinalreview/publish/CI/basecheck beforemerge. Priorcheckpointsbelowhistorical.
+
+# L45 unsigned even-divisor candidate, 2026-10-29
+
+Branchcodex/unsigned-even-divisors, base8a10353fd674bb45ae380563963c971614205620. Code83051cb16d39549ab0615098481124f00b0a170f, treec65120b17e30569a5253f807fa208c0e20d7ee94. Source6eb6ce7d8d8b42166af0db3ad84be1130498d7f58890e80ab71a9c766cc734d5. Luna implementation, independent preliminary safety GO; exact final head review/CI pending. Claude SaturdayOctober31cross-review queued, no capacity probe. Bootstrapissue25/SSE2ownership untouched.
+
+Even unsigned immediate divisors reuse signeddivconst on(n>>>1)/(d/2), reconstruct remainderfrom originalnumerator. 23,614independent outputs/84divisors and existing137programs/1,089divisorsPASS, fixedpointPASS. SixGame binaries unchanged. Dependentmod26 median333.18→231.25ms over11interleaved runs; GCC197.40ms remainsfaster. Compiler1,796,096→1,793,792B; kernel400→394codeB. Local fulltests earliergatesPASS then mandatoryptracesupervisor denied; CIrequired. Next: exactheadreview/publish/CI/basecheck beforemerge. Evidencebench/unsigned_even, READMEupdated. Earliercheckpointsbelowhistorical.
+
+# L44 rotate-add candidate, 2026-10-29
+
+Branch `codex/rotate-disjoint-forms`, base `70345389ba0154bcd270830a24f12686ab342c5c`, code commit `130a914da42aec54d63c81026b8ffce9037f082f`, tree `1d21be07ff6890ff3b46de674cb9bae22628e0fa`. Source `fb9e1a8d5c1ad89c374e9dad1300e826db96790b6a9b7c58bc6de6244bcf8e23`. One Luna implementer, independent preliminary safety GO; exact final head review/CI pending. Claude Saturday October31 review queued, no pre-reset probe. Existing bootstrap issue25/SSE2 ownership untouched.
+
+Adds ADD only to the established pure64-bit complementary logical-shift rotate matcher. Independent9096outputs plus5OR/ADD binary-shape matches and100differential rotate programs PASS; before/after fixedpointPASS. SixGame binaries byte-identical. Diagnostic96.72→62.97ms,10bytes smaller; compiler ELF size unchanged. Raw samples/hardware/hashes in bench/rotate_add. Local cleanfulltest passes earlier gates then fails because ptrace is denied; supervisor/full1442length tests remain mandatoryCI, no skip. Next: exact-head review, publishPR, passingCI and latestbase check before integration.
+
+Previous checkpoints below are historical.
+
+# Current scoped checkpoint: L43 terminal-length proof (2026-10-29)
+
+Branch `codex/terminal-length-facts`, base `0faaec8b74b77b5621756d382a1795064bb037e6`.
+Code commit `12367b40cec90dfe5777ca1859fbcb6b97f7d33c`, tree `0a7c6bd8e1b9732ff167237be6282f8c99e0f453`.
+Source SHA-256 `d225e67fb6f02811d2bc7968f9b00d98a2cfea3881cf3a5f8d5735e43f172d78`.
+Luna implemented only `proven()` in `skite.ck`; Codex owns tests/docs; independent Codex source review GO. Exact final head review and CI pending. Genuine Claude review deferred until reported weekly reset October31 noon America/Chicago; no capacity probe.
+
+Prefix proof coverage5/6 to6/6, code636 to624 bytes; compiler+384 bytes. Eleven paired timing samples overlap, no runtime win. Window executable is byte-identical. All GCC output controls agree. Clang/Rust unavailable. Clean seed build/fixed point, earlier full test gates passed; local ptrace restriction blocks supervisor/length suite, not waived. Expanded suite1442 cases must pass CI. See [evidence](../bench/length_facts/terminal.md).
+
+Read latest issue3 and open issues before proceeding. L42 bootstrap recovery issue25 and SSE2 prototype belong to another task; no bootstrap/emitter edits here. Next: exact-head review, publish candidate PR, require CI before integration; update ledger on real state changes. Earlier notes below are historical snapshots, not current integration assertions.
+
 # Project handoff: verified state and pending work
 
 Read this with [TEAM_HANDOFF.md](TEAM_HANDOFF.md) (protocol) and the ledger issue

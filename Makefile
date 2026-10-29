@@ -12,16 +12,21 @@ test: skite selfcheck
 	./tests/run.sh
 	python3 tests/zero_divisor.py
 	python3 tests/divmod_pair.py
+	python3 tests/bv_guard_traps.py
 	python3 tests/ifconv_depth.py
 	python3 tests/alignment.py
 	python3 tests/f32_literals.py
+	python3 tests/rotate_add.py
+	python3 tests/unsigned_even.py
 	python3 tests/fuzz_harness_test.py
+	PYTHONDONTWRITEBYTECODE=1 python3 tests/oracle_fuzz/test_harnesses.py
 	PYTHONDONTWRITEBYTECODE=1 python3 bench/game/test_run.py
 	./tests/run_cf_fuzz.sh 100 1 1 1 1 1
 	./tests/run_ty_fuzz.sh 100 1
 	python3 tests/vec_fuzz.py 100 1
 	python3 tests/stream_fuzz.py 100 1
 	python3 tests/stream_boundaries.py
+	SKITE_LENGTH_FACTS_SUPERVISOR_TEST=1 python3 tests/length_facts.py
 	python3 tests/length_facts.py
 fuzz: skite
 	for s in 1 2 3 4 5 6 7 8; do for m in "0 0 0" "1 0 0" "0 1 0" "1 1 0" "0 0 1" "0 1 1" "1 1 1" "0 1 0 1" "1 1 1 1"; do ./tests/run_cf_fuzz.sh 1000 $$s $$m || exit 1; done; done

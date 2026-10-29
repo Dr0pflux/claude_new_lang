@@ -1,3 +1,19 @@
+# Unsigned odd constant divisors (candidate, 2026-10-29)
+
+- Add exact unsigned reciprocal multiplication with one correction for odd immediate divisors below2^63, and comparison-based quotient/remainder above that boundary. Prior even/power-of-two, zero, signed and runtime paths remain. Expanded52,818oracle outputs/190divisors and existingdivisororacle pass; dependentmod29 median317.53→205.64ms, compiler+1,280bytes. NoGamegainclaim; see bench/unsigned_odd/README.md.
+
+# Unsigned even constant divisors (candidate, 2026-10-29)
+
+- Reuse signed reciprocal lowering for unsigned division by nonzero even constants after shifting/halving, preserving full-width quotient/remainder semantics. Independent23,614outputs, existing1,089divisor oracle, fixed point and unchangedGame binaries verified. Dependentmod26 diagnostic333.18→231.25ms; compiler2,304bytes smaller. See bench/unsigned_even/README.md.
+
+# Complementary-shift addition (candidate, 2026-10-29)
+
+- Extend the existing 64-bit OR/XOR rotate recognizer to wrapping ADD when positive complementary logical shifts of an identical pure operand have disjoint bits. Existing type, purity and shift guards remain. The rotate-add diagnostic median improves96.72→62.97ms over11interleaved runs; all6Game binaries unchanged, no general speed claim. See bench/rotate_add/README.md and tests/rotate_add.py.
+
+# Guarded runtime terminal indices (candidate, 2026-10-29)
+
+- Prove exact-array `len(a)-k` indices for positive constant `k` and a sufficient length lower bound; keep empty/insufficient guards, casts, views and wrapping controls checked. Prefix kernel removes its final check and 12 code bytes; no runtime speedup claimed. See `bench/length_facts/terminal.md`.
+
 # Changelog
 
 ### Unreleased (2026-10-28)
@@ -40,6 +56,8 @@
   `E + k <= len(a)`) holds, else the checked original. After the analysis, a copy pair collapses to
   one loop when the guard always holds or the checked copy needs no check. ngramhash 241 → 208 ms,
   histogram 206 → 175 ms. Test: `tests/data/bversion.ck`.
+  Multicounter versioning leaves trapping invariant bounds in the original condition, preserving
+  short-circuit division traps. Regression: `tests/bv_guard_traps.py`.
 - **Recursive inlining:** tiny recursive bodies get an 8x statement budget for their inlined
   copies (binarytrees 524 → 454 ms on Xeon, gcc 296; compiler +2% size, same compile time).
 - **Loop-carried stores:** `a[i - 1]` after a store `a[i]` reads a register (prefixsum 994 → 204 ms).
@@ -72,6 +90,11 @@
 - **Correctness and tooling fixes:** reject invalid `view<S>` element layouts (PR #2), bound fuzz
   runs and preserve artifacts on failure (PR #5), reject failed or unknown benchmark runs (PR #6),
   and align scoped buffers to 64 bytes (PR #8).
+- **Oracle fuzz harnesses (issue #23):** compiler/runtime errors and timeouts now fail nonzero
+  instead of being counted as agreement. Subprocesses use bounded finite timeouts with process-group
+  cleanup, and failures preserve source, inputs, executables and diagnostics. `make test` runs 75
+  deterministic fault-injection checks for agreement, mismatches, compile/runtime failures, timeouts
+  and SIGFPE outcomes.
 - **Calls and recursion:** avoid saving caller registers that are dead after a call and reuse
   already-passed bounds checks (`e872829`); add bounded tail-recursion modulo addition, copy
   coalescing, and one additional inline level for tiny recursive functions (`027a8d9`).
@@ -504,3 +527,10 @@ Temporaries at a statement are exactly the registers held by no variable whose i
 
 - **AST codegen versus a MIR/SSA stage.** v0.3 deliberately codegens from the AST, which keeps it small and auditable. SSA/GVN/LICM need a real CFG IR before G5.
   - Proposed objective test: introduce MIR only when an optimization that is measured on the runtime benchmarks requires it.
+
+- Runtime-length regression failures retain reproducer artifacts; expected trap
+  subprocesses disable core dumps. Existing timeouts and oracles are unchanged.
+
+- Runtime-length tests capture output in temporary files. Their Linux supervisor
+  observes bounds-trap SIGILL before core reporting, avoiding the observed runner
+  kernel core-pipe stall without changing global OS settings or test oracles.

@@ -948,6 +948,15 @@ fn proven(a: i64, idx: i64, rlo: i64, rhi: i64, rbot: bool, env: i64) -> bool {
   if vars[a].lenv < 0 { return rhi < vars[a].alen; }
   let mut x = idx;
   while nd[x].k == N_UN && nd[x].nn != 0 { x = nd[x].a; }
+  // Exact length-minus-k is below the same array length when k > 0.
+  // The existing rlo guard proves the result nonnegative; the length lower
+  // bound also proves subtraction cannot underflow.
+  if nd[x].k == N_BIN && nd[x].op == O_SUB && nd[nd[x].a].k == N_VAR && is_const(nd[x].b) {
+    let k = nd[nd[x].b].v as i64;
+    let lenv = vars[a].lenv;
+    let L = env + LV(lenv);
+    if k > 0 && nd[nd[x].a].var == lenv && !envp[L].bot && envp[L].lo >= k { return true; }
+  }
   if vars[a].aid >= 0 {
     if nd[x].k == N_VAR && ((envp[env + LV(nd[x].var)].lt >> (vars[a].aid as u64)) & 1) != 0 { return true; }
     // If x is i-k, a proven i < len(a) also proves i-k < len(a), provided
@@ -4117,7 +4126,7 @@ fn bv_conj(c: i64, w: i64) {   // induction-variable conjuncts of the loop test
   if nd[c].k == N_BIN && nd[c].op == O_LAND { bv_conj(nd[c].a, w); bv_conj(nd[c].b, w); return; }
   if nd[c].k != N_BIN || (nd[c].op != O_LT && nd[c].op != O_LE) || nd[nd[c].a].k != N_VAR || BV_NIV >= 4 { return; }
   let v = nd[nd[c].a].var; let E = nd[c].b;
-  if vars[v].ty != TY_I64 || nd[E].ty != TY_I64 || !invariant(E, w) || has_call(E) || count_assign(w, v) != 1 || !bv_has_inc(nd[w].b, v) { return; }
+  if vars[v].ty != TY_I64 || nd[E].ty != TY_I64 || !invariant(E, w) || has_call(E) || has_trap(E) || count_assign(w, v) != 1 || !bv_has_inc(nd[w].b, v) { return; }
   let mut q = 0; while q < BV_NIV { if BV_IV[q] == v { return; } q += 1; }
   BV_IV[BV_NIV] = v; BV_IE[BV_NIV] = E; BV_ILE[BV_NIV] = nd[c].op == O_LE; BV_NIV += 1;
 }
@@ -5050,6 +5059,32 @@ fn apply(op: i64, r: i64, sk0: i64, sr0: i64, si: u64) {
       if op == O_MODU { alui(A_AND, r, si - 1); } else { shift_ri(5, r, k as i64); }
       return;
     }
+    if sk == K_IMM && si != 0 && (si & 1) == 0 {
+      // For d=2m, floor(n/d) = floor((n >> 1)/m); n >> 1 fits signed i64.
+      mov_rr(RCX, r); shift_ri(5, RCX, 1); divconst(RCX, si >> 1, false, true);
+      if op == O_DIVU { mov_rr(r, RCX); }
+      else { imul_r(RCX, K_IMM, 0, si); alur(A_SUB, r, RCX); }
+      return;
+    }
+    if sk == K_IMM && si != 0 {
+      if (si as i64) < 0 {
+        // For d >= 2^63, the unsigned quotient is only zero or one.
+        mov_ri(RAX, si);
+        if op == O_DIVU { alur(A_CMP, r, RAX); setcc_zx(CC_AE, RAX); mov_rr(r, RAX); }
+        else { mov_rr(RCX, r); alur(A_SUB, RCX, RAX); alur(A_CMP, r, RAX); cmov_rr(CC_AE, r, RCX); }
+        return;
+      }
+      // ceil(2^64/d) gives the exact high product or one too much for odd d.
+      let M = 18446744073709551615 / si + 1;
+      mov_ri(RAX, M); unop(4, K_REG, r);  // unsigned high product is in RDX
+      mov_rr(RCX, RDX); imul_r(RCX, K_IMM, 0, si); alur(A_SUB, r, RCX);
+      if op == O_DIVU {
+        alui(A_CMP, r, si); setcc_zx(CC_AE, RAX); alur(A_SUB, RDX, RAX); mov_rr(r, RDX);
+      } else {
+        mov_rr(RCX, r); alui(A_ADD, RCX, si); alui(A_CMP, r, si); cmov_rr(CC_AE, r, RCX);
+      }
+      return;
+    }
     if sk == K_IMM { mov_ri(RCX, si); } else { load(RCX, sk, sr, si); }
     mov_rr(RAX, r); div32_fast(false);
     if op == O_DIVU { mov_rr(r, RAX); } else { mov_rr(r, RDX); }
@@ -5455,7 +5490,9 @@ fn gen(e: i64, rg: i64, n: i64) {
     return;
   }
   // (x << c) | (x >> (64 - c)) on 64-bit x: one rotate
-  if (op == O_OR || op == O_XOR) && (nd[e].ty == TY_U64 || nd[e].ty == TY_I64) && nd[a].k == N_BIN && nd[b].k == N_BIN {
+  // Complementary logical shifts partition all 64 bits; OR, XOR, and wrapping
+  // ADD therefore have the same result, with ADD producing no carries.
+  if (op == O_OR || op == O_XOR || op == O_ADD) && (nd[e].ty == TY_U64 || nd[e].ty == TY_I64) && nd[a].k == N_BIN && nd[b].k == N_BIN {
     let mut l = a; let mut r = b;
     if nd[l].op == O_SHR && nd[r].op == O_SHL { l = b; r = a; }
     if nd[l].op == O_SHL && nd[r].op == O_SHR && is_const(nd[l].b) && is_const(nd[r].b) && expr_same(nd[l].a, nd[r].a) && ic_pure(nd[l].a)

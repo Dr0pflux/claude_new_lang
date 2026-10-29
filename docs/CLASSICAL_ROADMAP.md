@@ -14,7 +14,7 @@ Working priorities from the owner's 2026-10-28 specification. These are goals, n
 
 | Priority | Current status and next evidence |
 | --- | --- |
-| Runtime length facts | Candidate proves nonnegative constant predecessors from `i < len(a)`; 842 focused cases. See bench/length_facts. Runtime gain not established; terminal `a[len(a)-1]` remains a separate proof opportunity. |
+| Runtime length facts | Integrated predecessor proof plus candidate guarded terminal `a[len(a)-k]` proof; 1442 focused cases. See bench/length_facts. Both remove checks/code bytes; runtime gains are not established. |
 | Masked stream loops / max-min / widths | Implemented in the integration baseline, with native dispatch and scalar fallback. Extend only from a reproduced uncovered shape; retain mixed-width alias regressions. |
 | Unrolling / pipelining accumulators | Target real loop-carried kernels after profiling; exact reduction order and overflow behavior remain constraints. |
 | Branchy byte state machines | Byte-lane character classes and one-bit state recurrences exist. Measure unsupported scanner shapes before changing lowering. |

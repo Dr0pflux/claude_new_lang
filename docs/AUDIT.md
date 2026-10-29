@@ -1,10 +1,22 @@
+# Unsigned odd-divisor audit (candidate, 2026-10-29)
+
+For odd1<d<2^63, M=ceil(2^64/d)=UINT64_MAX/d+1. The unsigned high product estimates the quotient exactly or one too high. Tentative n-q*d is below d when correct, and a modular negative value above d when high; unsigned comparison selects one correction. For d>=2^63 quotient is0/1. Reserved RAX/RCX/RDX scratch and unsigned MUL preserve the allocated destination and quotient. Boundary/random oracles cover both corrections, maximum inputs/divisors, in-place/nested forms and effectful dividends. Existingdivisororacle/fixedpoint pass; local mandatoryptrace gate is blocked by host permissions, so CI is required. Exact evidencebench/unsigned_odd; ClaudeSaturdayreview pending.
+
+# Unsigned even-divisor audit (candidate, 2026-10-29)
+
+For positive even u64 divisor d=2m, floor(n/d)=floor((n>>>1)/m). Both shifted dividend and halved divisor fit signed i64; existing signed magic division is reused with a proven nonnegative input. The original numerator is retained for n-q*d, whose mathematical product cannot exceed n. RAX/RCX/RDX are reserved scratch; zero/odd/runtime/signed cases retain prior paths. Tests cover high-bit/max-even divisors, boundary values, in-place/nested expressions and effectful dividends. The prior divisor oracle and fixed point pass. Local full tests stop at the mandatory ptrace gate because the host denies tracing; CI must pass it. Source and measurement evidence: bench/unsigned_even. Genuine Claude Saturday review pending.
+
 # Compiler audit and validation status
 
 Updated 2026-10-28. Verified integration: `c4837cf83e284b588b30daaaa2d66824fffc4e8f`
 (PR #10); its tree matches tested head `5e86b4b06154452e3d517de4dabf828bffe96a6c`.
 The [team ledger](https://github.com/Dr0pflux/skite.ck/issues/3) records newer work.
 
-## Runtime predecessor proof (candidate)
+## Guarded terminal proof (candidate, 2026-10-29)
+
+`proven()` recognizes the exact hidden length variable of the accessed array minus a positive constant. The length lower bound must be at least that constant, and the original nonnegative-result guard remains. No length identity is inferred from shared storage or equal array bases. Identity casts retain the existing range annotations. The expanded length suite has 1442 normal/scalar output/trap cases. Local clean build/fixed point and earlier test gates passed, but this host denies ptrace, so the supervisor and full length suite require CI. No skipped gate is counted as passing. See [terminal evidence](../bench/length_facts/terminal.md).
+
+## Runtime predecessor proof (integrated at d10df4a)
 
 The candidate proves `a[i-k]` only with an existing fact for this array and
 `0 <= k <= i`, preserving the lower-bound and no-wrap checks. Identity casts
@@ -21,6 +33,12 @@ status belongs to the PR; this section does not claim integration or provider ap
   representations; it also adds propagated-zero division/remainder regressions and CI.
 - PR #5 bounds fuzz compilation/execution, retains failure artifacts and fixes
   false passes. Injected-hang tests cover the harnesses.
+- Issue #23 repairs five differential oracle fuzzers that previously could return
+  success after compiler failures or timeouts. Compile and runtime subprocesses use
+  finite positive deadlines and terminate the process group on timeout; failure
+  artifacts retain generated source, inputs, executables and diagnostics. The
+  deterministic harness policy suite has 75 fault-injection checks. Publication,
+  CI and provider review evidence are recorded in the fixing PR and shared ledger.
 - PR #6 makes the Game runner reject failed/timed-out executions and invalid
   selections; optional compiler availability is reported explicitly.
 - PR #8 aligns owned scoped buffers to 64 bytes. Allocation regressions and a
@@ -81,6 +99,17 @@ the confirmed 20-comparison repro fails on the frozen baseline and passes with
 the spill fix. The ordinary shallow case still emits `cmov`. The ledger records
 full-suite, exact-head review and CI evidence for integration.
 
+## Multicounter bounds guards and short-circuit traps (issue #21)
+
+The bounds-versioning guard could evaluate an invariant division in a later
+`&&` conjunct before the original loop test reached it. If an earlier conjunct
+was false, this introduced a division trap the source skipped. `bv_conj` now
+rejects bounds expressions that may trap. `tests/bv_guard_traps.py` checks
+skipped and evaluated divide-by-zero and signed-overflow cases, plus safe
+single- and two-counter bounds. The frozen baseline traps on the skipped case;
+the fix preserves the expected output. The ledger records full-suite, exact-head
+review and CI evidence for integration.
+
 ## Open findings
 
 1. [Issue #9](https://github.com/Dr0pflux/skite.ck/issues/9) is resolved: Claude
@@ -106,3 +135,52 @@ and merge only the reviewed head after checking newer remote changes. Division
 changes additionally require `tests/run_divconst.sh`. Record actual tests, SHA,
 hardware limits and provider verdicts. Update the README, relevant reference docs
 and changelog when behavior, supported features or verified performance changes.
+
+## Runtime-length CI diagnostics
+
+PR #22 CI timed out in two different expected-SIGILL cases across two attempts
+(`different_arraynormal`, then `negative_offsetscalar`). The first case passed
+all 20 input lengths locally in normal/scalar modes and emitted no vector plans.
+Core-dump overhead is a hypothesis, not a demonstrated cause. The suite now
+disables subprocess core dumps and retains source/input/executable plus command
+and output diagnostics through the existing CI artifact directory. All 842
+cases and injected compiler-failure artifact retention pass locally; no timeout
+or oracle was relaxed. Successful CI remains required before merge.
+
+The diagnostic CI attempt also timed out on `past_end-scalar-n255`; its retained
+executable is byte-identical to a fresh local build and both trap immediately
+on the saved input. No compiler defect was demonstrated. Further timeout
+diagnostics snapshot child process state and kernel core settings before
+killing/reaping the process group. A forked-sleeper injection verified snapshot
+retention and descendant cleanup; all 842 cases still pass locally.
+
+The next retained failure (`lost_fact-scalar-n32`) showed the child already
+exited as a zombie with status 132 while Python waited on capture-pipe EOF.
+The runner core pattern invokes `systemd-coredump`. Temporary-file output
+capture now waits for the direct child rather than inherited pipe writers.
+A detached-writer injection returns the child status/output promptly, while
+actual-child timeout capture and cleanup remain intact. The same 842 oracles
+and deadlines pass locally; this fixes the demonstrated pipe-wait mechanism
+without claiming an unobserved compiler defect.
+
+### Follow-up: kernel core-pipe backpressure
+
+Temporary-file capture alone did not resolve the CI stall. A later retained
+`lost_fact-scalar-n17` snapshot showed `CoreDumping: 1` and
+`wchan: anon_pipe_write`, with core limit zero and a piped systemd-coredump
+handler. The earlier zombie snapshot did not establish pipe EOF as the cause.
+The next candidate uses an unprivileged Linux runtime-only tracing supervisor
+to observe an actual SIGILL stop before core reporting, then terminate/reap
+that child. This is limited to these bounds-trap tests: current Skite has no
+SIGILL handler; other signals are delivered normally, including its SIGFPE
+handler. Compiler invocations are untraced. Exit/output oracles and deadlines
+remain unchanged; unavailable tracing is a failure, never a skipped check.
+No global kernel or privileged OS setting is changed. Integration/CI remain
+pending until the supervisor regressions, full cases and exact-head review pass.
+
+Local supervisor checks cover an observed SIGILL with preceding output, rejection
+of an unexpected positive-case SIGILL, delivery to a SIGFPE handler, normal exit,
+and timeout cleanup. The 842 real cases pass under supervision. `make test`
+runs the supervisor checks separately before those cases. Restricted local
+sandbox policy blocks tracing, so these unprivileged own-child checks ran in
+the approved host context; no account, provider limit or OS setting was changed.
