@@ -510,5 +510,6 @@ Temporaries at a statement are exactly the registers held by no variable whose i
 - Runtime-length regression failures retain reproducer artifacts; expected trap
   subprocesses disable core dumps. Existing timeouts and oracles are unchanged.
 
-- Runtime-length tests collect output through temporary files, avoiding a
-  capture-pipe EOF wait after the tested process has already trapped/exited.
+- Runtime-length tests capture output in temporary files. Their Linux supervisor
+  observes bounds-trap SIGILL before core reporting, avoiding the observed runner
+  kernel core-pipe stall without changing global OS settings or test oracles.

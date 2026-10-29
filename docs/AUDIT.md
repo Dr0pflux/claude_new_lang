@@ -144,3 +144,25 @@ A detached-writer injection returns the child status/output promptly, while
 actual-child timeout capture and cleanup remain intact. The same 842 oracles
 and deadlines pass locally; this fixes the demonstrated pipe-wait mechanism
 without claiming an unobserved compiler defect.
+
+### Follow-up: kernel core-pipe backpressure
+
+Temporary-file capture alone did not resolve the CI stall. A later retained
+`lost_fact-scalar-n17` snapshot showed `CoreDumping: 1` and
+`wchan: anon_pipe_write`, with core limit zero and a piped systemd-coredump
+handler. The earlier zombie snapshot did not establish pipe EOF as the cause.
+The next candidate uses an unprivileged Linux runtime-only tracing supervisor
+to observe an actual SIGILL stop before core reporting, then terminate/reap
+that child. This is limited to these bounds-trap tests: current Skite has no
+SIGILL handler; other signals are delivered normally, including its SIGFPE
+handler. Compiler invocations are untraced. Exit/output oracles and deadlines
+remain unchanged; unavailable tracing is a failure, never a skipped check.
+No global kernel or privileged OS setting is changed. Integration/CI remain
+pending until the supervisor regressions, full cases and exact-head review pass.
+
+Local supervisor checks cover an observed SIGILL with preceding output, rejection
+of an unexpected positive-case SIGILL, delivery to a SIGFPE handler, normal exit,
+and timeout cleanup. The 842 real cases pass under supervision. `make test`
+runs the supervisor checks separately before those cases. Restricted local
+sandbox policy blocks tracing, so these unprivileged own-child checks ran in
+the approved host context; no account, provider limit or OS setting was changed.

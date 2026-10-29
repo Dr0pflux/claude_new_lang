@@ -23,6 +23,7 @@ test: skite selfcheck
 	python3 tests/vec_fuzz.py 100 1
 	python3 tests/stream_fuzz.py 100 1
 	python3 tests/stream_boundaries.py
+	SKITE_LENGTH_FACTS_SUPERVISOR_TEST=1 python3 tests/length_facts.py
 	python3 tests/length_facts.py
 fuzz: skite
 	for s in 1 2 3 4 5 6 7 8; do for m in "0 0 0" "1 0 0" "0 1 0" "1 1 0" "0 0 1" "0 1 1" "1 1 1" "0 1 0 1" "1 1 1 1"; do ./tests/run_cf_fuzz.sh 1000 $$s $$m || exit 1; done; done

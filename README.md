@@ -104,6 +104,6 @@ What makes skite fast (all bit-exact: strict IEEE floats, wrapping integers, tra
 The runtime-length regression suite disables core dumps for expected traps and
 retains failing source, input, executable, and command diagnostics under
 `SKITE_ARTIFACT_DIR` (or `/tmp/skite-length-facts-artifacts`). Its timeouts and
-842 output/trap oracles remain unchanged. Output capture uses temporary files
-and waits for the tested process, so an external trap-reporting helper holding
-output descriptors cannot delay collection after that process exits.
+842 output/trap oracles remain unchanged. Output capture uses temporary files. On Linux, the runtime-length tests observe
+bounds-check SIGILL stops before core reporting; the runner still checks the
+actual signal and captured output, and fails if tracing is unavailable.
