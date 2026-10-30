@@ -3705,6 +3705,7 @@ fn init_regs() {
   allregs[6] = 3; allregs[7] = 5; allregs[8] = 12; allregs[9] = 13; allregs[10] = 14; allregs[11] = 15;
 }
 let mut nslots: i64 = 0;
+let mut nslp: i64 = 0;
 let mut spilled: i64 = 0;
 let mut peak_active: i64 = 0;
 fn cheaper(a: i64, b: i64) -> bool {
@@ -6013,7 +6014,7 @@ fn xstack_top() -> i64 {
   if cur_pos < 0 { return XREG0 - 1; }
   if !busy_built { build_busy(); }
   if cur_pos >= busy_n { return XREG0 - 1; }
-  let m = xbusy[cur_pos];
+  let m = xbusy[cur_pos] | XMASK_EXTRA;
   let mut i = 0;
   while i < NXREG && ((m >> i) & 1) == 0 { i += 1; }
   return XREG0 + i - 1;
@@ -8866,7 +8867,10 @@ fn gen_stmt_body(s: i64, is_final: bool, rg: i64, n: i64) {
   if k == S_INL {
     let L = ninlctx; ninlctx += 1; inl_list[L] = -1;
     let mut c = nd[s].a;
-    while c >= 0 { gen_stmt(c, false); c = nd[c].next; }
+    while c >= 0 {
+      if nd[c].next >= 0 && slp_pair(c) { c = nd[nd[c].next].next; continue; }
+      gen_stmt(c, false); c = nd[c].next;
+    }
     // a jump to the end emitted as the very last instruction falls through instead
     let hl = inl_list[L];
     if hl >= 0 && pl_at[hl] == clen - 4 && code[clen - 5] == 233 { clen -= 5; inl_list[L] = pl_next[hl]; }
@@ -8876,9 +8880,198 @@ fn gen_stmt_body(s: i64, is_final: bool, rg: i64, n: i64) {
   if k == S_CONT { cont_list[nloopctx - 1] = pl_add(cont_list[nloopctx - 1], jmp()); return; }
   if k == S_BLOCK {
     let mut c = nd[s].a;
-    while c >= 0 { gen_stmt(c, is_final && nd[c].next < 0); c = nd[c].next; }
+    while c >= 0 {
+      if nd[c].next >= 0 && slp_pair(c) { c = nd[nd[c].next].next; continue; }
+      gen_stmt(c, is_final && nd[c].next < 0); c = nd[c].next;
+    }
     return;
   }
+}
+// ---- SLP pairs: two consecutive plain stores to adjacent f64 locations (struct fields 8 bytes apart
+// in one element, or a[k] and a[k + 1] with proven checks) whose values are isomorphic trees of f64
+// + - * / sqrt and negation run in the two lanes of one SSE2 register: each lane performs the same
+// IEEE operation as the scalar code, bit for bit. Adjacent loads become one movupd, equal leaves a
+// broadcast and other leaf pairs are packed. The second value is computed before the first store,
+// so none of its loads may read the location that store writes. A store may also be the
+// `{ let t = E; a[i].f = .. t .. }` the parser makes of `a[i].f -= E`.
+let SLP_T = alloc<i64>(2);   // per lane: the hidden let variable and its value (-1: none)
+let SLP_E = alloc<i64>(2);
+let mut SLP_P: i64 = 0;      // packed operations, adjacent load pairs, broadcasts, packed leaf pairs
+let mut SLP_LD: i64 = 0;
+let mut SLP_BC: i64 = 0;
+let mut SLP_PK: i64 = 0;
+let mut SLP_BAD: bool = false;
+let mut SLP_A: i64 = -1;     // the first store: array, index, byte offset of its field
+let mut SLP_I: i64 = -1;
+let mut SLP_O: i64 = 0;
+let mut XMASK_EXTRA: i64 = 0;   // xmm registers live at the other statements of a pair
+fn slp_unit(c: i64, k: i64) -> i64 {   // the store of a pair member, or -1
+  SLP_T[k] = -1; SLP_E[k] = -1;
+  if c < 0 { return -1; }
+  if nd[c].k == S_STORE { if nd[c].op < 0 { return c; } return -1; }
+  if nd[c].k != S_BLOCK { return -1; }
+  let l = nd[c].a;
+  if l < 0 || nd[l].k != S_LET { return -1; }
+  let st = nd[l].next;
+  if st < 0 || nd[st].k != S_STORE || nd[st].op >= 0 || nd[st].next >= 0 { return -1; }
+  let t = nd[l].var;
+  if vars[t].ty != TY_F64 || ex_reads(nd[st].b, t) != 1 || ex_reads(nd[st].a, t) != 0 { return -1; }
+  SLP_T[k] = t; SLP_E[k] = nd[l].a;
+  return st;
+}
+fn slp_d(e: i64, k: i64) -> i64 { if nd[e].k == N_VAR && nd[e].var == SLP_T[k] { return SLP_E[k]; } return e; }
+fn slp_pure_eq(a: i64, b: i64) -> bool {   // equal pure index expressions
+  if !ix_pure(a, 0) || !ix_pure(b, 0) { return false; }
+  return ix_eq(a, b);
+}
+fn slp_f64(a: i64, f: i64) -> bool { return fld_ty(a, f) == TY_F64; }   // f: field + 1, or 0
+// a2[i2].f2 is the 8 bytes after a1[i1].f1 (fields: N_LOAD op / S_STORE c + 1 style, 0 for none)
+fn slp_adj(a1: i64, i1: i64, f1: i64, a2: i64, i2: i64, f2: i64) -> bool {
+  if a1 != a2 || !slp_f64(a1, f1) || !slp_f64(a2, f2) { return false; }
+  if is_struct(vars[a1].et) { return f1 > 0 && f2 > 0 && fld_off(a1, f2) == fld_off(a1, f1) + 8 && slp_pure_eq(i1, i2); }
+  // a[k], a[k + 1]
+  if !ix_pure(i1, 0) || !ix_pure(i2, 0) { return false; }
+  if is_const(i1) && is_const(i2) { return nd[i2].v == nd[i1].v + 1; }
+  if nd[i2].k == N_BIN && nd[i2].op == O_ADD && is_const(nd[i2].b) {
+    if nd[i2].b >= 0 && nd[nd[i2].b].v == 1 && ix_eq(nd[i2].a, i1) { return true; }
+    if nd[i1].k == N_BIN && nd[i1].op == O_ADD && is_const(nd[i1].b) && ix_eq(nd[i1].a, nd[i2].a) { return nd[nd[i2].b].v == nd[nd[i1].b].v + 1; }
+  }
+  return false;
+}
+// two indices that differ by a nonzero constant (k vs k', X + c vs X + d, X vs X + d)
+fn slp_kx(e: i64) -> i64 { if nd[e].k == N_BIN && nd[e].op == O_ADD && is_const(nd[e].b) { return nd[e].a; } return e; }
+fn slp_kc(e: i64) -> u64 { if nd[e].k == N_BIN && nd[e].op == O_ADD && is_const(nd[e].b) { return nd[nd[e].b].v; } return 0; }
+fn slp_diff_elem(i1: i64, i2: i64) -> bool {
+  if !ix_pure(i1, 0) || !ix_pure(i2, 0) { return false; }
+  if is_const(i1) && is_const(i2) { return nd[i1].v != nd[i2].v; }
+  let x1 = slp_kx(i1); let x2 = slp_kx(i2);
+  if is_const(x1) || is_const(x2) { return false; }
+  return ix_eq(x1, x2) && slp_kc(i1) != slp_kc(i2);
+}
+fn slp_static(a: i64) -> bool { let b = vars[a].basev; return vars[b].isconst != 0 && (vars[b].glob == 1 || vars[b].glob == 2); }
+// may this second-lane load read what the first store writes?
+fn slp_ld_ok(l: i64) -> bool {
+  let a = nd[l].var;
+  if !ix_pure(nd[l].a, 0) { return false; }
+  if a == SLP_A {
+    if slp_diff_elem(nd[l].a, SLP_I) { return true; }
+    if is_struct(vars[a].et) { return slp_pure_eq(nd[l].a, SLP_I) && fld_off(a, nd[l].op) != SLP_O; }
+    return false;
+  }
+  if vars[a].basev == vars[SLP_A].basev { return false; }
+  if vars[a].ro != 0 && vars[vars[a].basev].isconst != 0 && vars[vars[a].basev].glob == 2 { return true; }   // string data
+  return slp_static(a) && slp_static(SLP_A);
+}
+fn slp_leaf(e: i64) -> bool {
+  let k = nd[e].k;
+  if k == N_CONST { return nd[e].ty == TY_F64; }
+  if k == N_VAR { return nd[e].ty == TY_F64 && vars[nd[e].var].arr == 0 && vars[nd[e].var].ty == TY_F64; }
+  if k == N_LOAD { return nd[e].ty == TY_F64 && fld_ty(nd[e].var, nd[e].op) == TY_F64; }
+  return false;
+}
+fn slp_same(a: i64, b: i64) -> bool {
+  if nd[a].k == N_CONST && nd[b].k == N_CONST { return nd[a].v == nd[b].v; }
+  return nd[a].k == N_VAR && nd[b].k == N_VAR && nd[a].var == nd[b].var;
+}
+// isomorphic lanes; returns the xmm registers the pair needs (0: not pairable)
+fn slp_iso(a0: i64, b0: i64, d: i64) -> i64 {
+  let a = slp_d(a0, 0); let b = slp_d(b0, 1);
+  if d > 8 || SLP_BAD { SLP_BAD = true; return 0; }
+  if nd[b].k == N_LOAD && !slp_ld_ok(b) { SLP_BAD = true; return 0; }
+  if slp_leaf(a) && slp_leaf(b) {
+    if nd[a].k == N_LOAD && nd[b].k == N_LOAD && slp_adj(nd[a].var, nd[a].a, nd[a].op, nd[b].var, nd[b].a, nd[b].op) {
+      if !is_struct(vars[nd[a].var].et) && (nd[a].chk != 0 || nd[b].chk != 0) { SLP_BAD = true; return 0; }
+      SLP_LD += 1; return 1;
+    }
+    if slp_same(a, b) { SLP_BC += 1; return 1; }
+    SLP_PK += 1; return 2;
+  }
+  if nd[a].k != nd[b].k || nd[a].op != nd[b].op || nd[a].ty != TY_F64 || nd[b].ty != TY_F64 { SLP_BAD = true; return 0; }
+  if nd[a].k == N_UN && (nd[a].op == U_SQRTD || nd[a].op == U_FNEG) { SLP_P += 1; return slp_iso(nd[a].a, nd[b].a, d + 1); }
+  if nd[a].k == N_BIN && nd[a].op >= O_FADD && nd[a].op <= O_FDIV {
+    SLP_P += 1;
+    let na = slp_iso(nd[a].a, nd[b].a, d + 1);
+    let nb = slp_iso(nd[a].b, nd[b].b, d + 1) + 1;
+    if na > nb { return na; } return nb;
+  }
+  SLP_BAD = true; return 0;
+}
+fn slp_pos_mask(c: i64) -> i64 { if c < 0 || nd[c].pos < 0 || nd[c].pos >= busy_n { return 0; } return busy[nd[c].pos]; }
+fn slp_xmask(c: i64) -> i64 { if c < 0 || nd[c].pos < 0 || nd[c].pos >= busy_n { return 0; } return xbusy[nd[c].pos]; }
+fn slp_members(c: i64) -> i64 { if nd[c].k == S_BLOCK { return nd[c].a; } return c; }
+// try c and its successor as a pair; emits it and returns true
+fn slp_pair(c: i64) -> bool {
+  let c2 = nd[c].next;
+  if c2 < 0 || simd_off { return false; }
+  let s1 = slp_unit(c, 0); if s1 < 0 { return false; }
+  let t0 = SLP_T[0]; let e0 = SLP_E[0];
+  let s2 = slp_unit(c2, 1); if s2 < 0 { return false; }
+  SLP_T[0] = t0; SLP_E[0] = e0;
+  let a = nd[s1].var;
+  if !slp_adj(a, nd[s1].a, nd[s1].c + 1, nd[s2].var, nd[s2].a, nd[s2].c + 1) { return false; }
+  let st_struct = is_struct(vars[a].et);
+  if !st_struct && (nd[s1].chk != 0 || nd[s2].chk != 0) { return false; }
+  SLP_A = a; SLP_I = nd[s1].a; SLP_O = fld_off(a, nd[s1].c + 1);
+  SLP_P = 0; SLP_LD = 0; SLP_BC = 0; SLP_PK = 0; SLP_BAD = false;
+  let need = slp_iso(nd[s1].b, nd[s2].b, 0);
+  if SLP_BAD || need == 0 || SLP_P == 0 { return false; }
+  // packed ops, load pairs and the store save one instruction each; packing a leaf pair costs one
+  if SLP_P + SLP_LD + 1 < SLP_BC + SLP_PK + 2 { return false; }
+  if !busy_built { build_busy(); }
+  // registers free across every statement of the pair
+  let mut gm = 0; let mut xm = 0;
+  let mut q = slp_members(c); while q >= 0 { gm = gm | slp_pos_mask(q); xm = xm | slp_xmask(q); q = nd[q].next; }
+  q = slp_members(c2); while q >= 0 { gm = gm | slp_pos_mask(q); xm = xm | slp_xmask(q); q = nd[q].next; }
+  let mut i = 0;
+  while i < NXREG && ((xm >> i) & 1) == 0 { i += 1; }
+  let top = XREG0 + i - 1;
+  if 2 + need - 1 > top { return false; }
+  let rg = rgs_top; rgs_top += 12;
+  let mut n = 0;
+  i = 0;
+  while i < 12 { if ((gm >> i) & 1) == 0 { RGS[rg + n] = allregs[i]; n += 1; } i += 1; }
+  if n < 2 { rgs_top -= 12; return false; }
+  let sv_pos = cur_pos; let sv_x = XMASK_EXTRA; let sv_xt = xtop;
+  cur_pos = nd[s1].pos; XMASK_EXTRA = xm; xtop = 2;
+  slp_gen(nd[s1].b, nd[s2].b, 2, rg, n);
+  let mut ck = nd[s1].chk; if nd[s2].chk > ck { ck = nd[s2].chk; }
+  xtop = 3;
+  elem_addr(a, nd[s1].a, ck, SLP_O, rg, n);
+  memop(0, true, false, 2, 15, 17, 2, EA_B, EA_RI, EA_SC);   // movupd [a], xmm2
+  cur_pos = sv_pos; XMASK_EXTRA = sv_x; xtop = sv_xt;
+  rgs_top -= 12;
+  nslp += 1;
+  return true;
+}
+fn pd_op(o: i64, d: i64, r: i64) { byte(102); encr(0, false, 2, 15, o, d, r); }   // 66 0F o: packed double
+fn slp_gen(a0: i64, b0: i64, x: i64, rg: i64, n: i64) {
+  let a = slp_d(a0, 0); let b = slp_d(b0, 1);
+  if slp_leaf(a) && slp_leaf(b) {
+    if nd[a].k == N_LOAD && nd[b].k == N_LOAD && slp_adj(nd[a].var, nd[a].a, nd[a].op, nd[b].var, nd[b].a, nd[b].op) {
+      let mut ck = nd[a].chk; if nd[b].chk > ck { ck = nd[b].chk; }
+      let sv = xtop; xtop = x + 1;
+      elem_addr(nd[a].var, nd[a].a, ck, fld_off(nd[a].var, nd[a].op), rg, n);
+      xtop = sv;
+      memop(0, true, false, 2, 15, 16, x, EA_B, EA_RI, EA_SC);   // movupd x, [m]
+      return;
+    }
+    let sv = xtop; xtop = x + 1;
+    if slp_same(a, b) { genf(a, x, rg, n); xtop = sv; pd_op(20, x, x); return; }   // unpcklpd x, x
+    genf(a, x, rg, n); xtop = x + 2; genf(b, x + 1, rg, n); xtop = sv;
+    pd_op(20, x, x + 1); return;
+  }
+  if nd[a].k == N_UN && nd[a].op == U_SQRTD { slp_gen(nd[a].a, nd[b].a, x, rg, n); pd_op(81, x, x); return; }
+  if nd[a].k == N_UN {   // negation: xor with the sign bit of both lanes
+    slp_gen(nd[a].a, nd[b].a, x, rg, n);
+    mov_ri(RAX, 9223372036854775808); xmov_in(1, K_REG, RAX, 0); pd_op(20, 1, 1); pd_op(87, x, 1); return;
+  }
+  let op = fop_base(nd[a].op);
+  let mut o = 88; if op == O_FSUB { o = 92; } else if op == O_FMUL { o = 89; } else if op == O_FDIV { o = 94; }
+  slp_gen(nd[a].a, nd[b].a, x, rg, n);
+  let sv = xtop; xtop = x + 1;
+  slp_gen(nd[a].b, nd[b].b, x + 1, rg, n);
+  xtop = sv;
+  pd_op(o, x, x + 1);
 }
 fn print_signed_and_exit() {
   emh("4883ec30"); emh("488d74242f"); emh("c6060a"); emh("b901000000"); emh("4531c9"); emh("4885c0");
@@ -9854,7 +10047,7 @@ fn report(total: i64, out: [u8]) {
   write("skite: wrote "); write(out); write(" ("); putnum(total); write(" bytes, "); putnum(clen); write(" machine-code bytes, ");
   putnum(nv - 2); write(" vars, "); putnum(spilled); write(" spills, "); putnum(peak_active); write(" peak registers, "); putnum(xpeak); write(" xmm, ");
   putnum(nelided); putc('/'); putnum(nchecks); write(" bounds checks elided, "); putnum(nsr); write(" modulo reduced, "); putnum(nplans); write(" loops vectorized ("); let mut ns_ = 0; let mut q_ = 0; while q_ < nplans { if vp_stream[q_] { ns_ += 1; } q_ += 1; } putnum(ns_); write(" element-wise, "); ns_ = 0; q_ = 0; while q_ < nplans { if vp_byte[q_] { ns_ += 1; } q_ += 1; } putnum(ns_); write(" byte-lane), ");
-  putnum(ninlined + ninl_stmt); write(" calls inlined, "); putnum(nunrolled); write(" loops unrolled)\n");
+  putnum(ninlined + ninl_stmt); write(" calls inlined, "); putnum(nunrolled); write(" loops unrolled, "); putnum(nslp); write(" store pairs packed)\n");
 }
 fn main() {
   if argc() != 3 && argc() != 4 { ewrite("usage: skite input.ck output-executable [--scalar | --llvm]\n"); exit(2); }

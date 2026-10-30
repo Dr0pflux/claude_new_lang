@@ -25,6 +25,7 @@ test: skite selfcheck
 	./tests/run_ty_fuzz.sh 100 1
 	python3 tests/vec_fuzz.py 100 1
 	python3 tests/stream_fuzz.py 100 1
+	python3 tests/slp_fuzz.py 100 1
 	python3 tests/stream_boundaries.py
 	SKITE_LENGTH_FACTS_SUPERVISOR_TEST=1 python3 tests/length_facts.py
 	python3 tests/length_facts.py

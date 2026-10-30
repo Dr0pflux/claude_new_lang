@@ -364,6 +364,12 @@ rc=0; "$T/index_cse" x > "$T/index_cse.out" 2>/dev/null || rc=$?
 [[ $rc -eq 132 ]] || { echo "FAIL: index_cse must trap (rc=$rc)" >&2; exit 1; }
 cmp -s tests/data/index_cse.expected "$T/index_cse.out" || { echo 'FAIL: index_cse output' >&2; exit 1; }
 echo 'PASS: shared index expressions keep values and traps'
+# SSE2 store pairs: bit-identical lanes, no pairing across a dependence, unproven checks still trap
+"$SKITE" tests/data/slp_pairs.ck "$T/slp_pairs" > /dev/null
+rc=0; "$T/slp_pairs" x > "$T/slp_pairs.out" 2>/dev/null || rc=$?
+[[ $rc -eq 132 ]] || { echo "FAIL: slp_pairs must trap (rc=$rc)" >&2; exit 1; }
+cmp -s tests/data/slp_pairs.expected "$T/slp_pairs.out" || { echo 'FAIL: slp_pairs output' >&2; exit 1; }
+echo 'PASS: SSE2 store pairs keep bits, dependences and traps'
 "$SKITE" tests/data/bversion.ck "$T/bversion" > /dev/null
 if "$T/bversion" > "$T/bversion.out" 2>/dev/null; then echo 'FAIL: bversion must trap in its checked copy' >&2; exit 1; fi
 cmp -s tests/data/bversion.expected "$T/bversion.out" || { echo 'FAIL: bversion output' >&2; exit 1; }
