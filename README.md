@@ -39,9 +39,11 @@ traps even when the flat offset is in bounds. Checks are dropped only for consta
 array load (`if p(a[i])`) is now inlined, using one temporary for the load. Covered by
 `tests/matrix_test.py` (19 cases, run by `tests/run.sh`).
 
-**Known issue:** `bootstrap/skite-seed` (the old prebuilt seed) builds a compiler from this source
-that crashes; build with an existing compiler instead (`./skite skite.ck stage1 && ./stage1 skite.ck
-skite`) until the seed is refreshed. The committed `skite` binary is the fixed point.
+**Seed refreshed ([issue #25](https://github.com/Dr0pflux/skite.ck/issues/25)):** the old seed put BSS at
+`0x600000`, so any compiler image over 2 MiB overlapped it and crashed. `bootstrap/skite-seed` is now
+this branch's fixed point (SHA-256 `b8c88884…9b44d`), produced by the chain old seed
+(`cedfd47a…`) → integration `42d02c9` source → its fixed point → this `skite.ck` → fixed point.
+`make` now works from a clean tree and reproduces the seed byte for byte.
 
 ## Build and learn
 
@@ -131,10 +133,6 @@ PR #26 passed both CI runs and independent available-agent review. Genuine Claud
 cross-review is queued for Saturday, October 31; it is not claimed as completed.
 The [shared ledger](https://github.com/Dr0pflux/skite.ck/issues/3) records exact
 reviewed/tested commits and newer state.
-
-Known open correctness work includes the old bootstrap seed's image-size overlap
-[issue #25](https://github.com/Dr0pflux/skite.ck/issues/25). The current integration
-build passes; refreshing the seed is a separately owned task.
 
 Modules/separate compilation, shared-memory threads, stronger ownership/alias
 semantics, first-class SoA, broader compile-time evaluation, AVX2 lowering and an
