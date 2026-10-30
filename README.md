@@ -45,6 +45,27 @@ this branch's fixed point (SHA-256 `b8c88884…9b44d`), produced by the chain ol
 (`cedfd47a…`) → integration `42d02c9` source → its fixed point → this `skite.ck` → fixed point.
 `make` now works from a clean tree and reproduces the seed byte for byte.
 
+## General native code generation (branch `claude/affectionate-volta-nnb18v`, 2026-10-30)
+
+Language-wide changes to the default native backend, each covered by `make test` (fixed point,
+regressions, oracle fuzzers) and its own differential test:
+
+- **Index CSE:** a repeated pure index expression with two or more variables (`x + i`, `r * n + c`) is
+  computed once in a run of straight-line statements. Uses stop at any assignment to one of its
+  variables. The range analysis then proves the later accesses, so fewer bounds checks remain.
+  `v ± c` is left alone because relational length facts already prove it. The compiler itself
+  goes from 44,088 of 83,679 to 45,198 of 84,871 checks proven, and executes 6% fewer instructions
+  compiling `vig.ck`. Test: `tests/data/index_cse.ck`.
+- **Float registers:** float variables use xmm5..xmm15 (was xmm8..xmm15). Each statement's
+  expression stack may grow from xmm2 up to the lowest register a live variable holds.
+- **SLP store pairs:** consecutive stores to adjacent `f64` locations (struct fields 8 bytes apart,
+  or `a[k]`/`a[k + 1]`) with isomorphic `+ - * / sqrt` and negation trees run in the two SSE2
+  lanes. The lanes perform the same IEEE operations, so results are bit-identical. A pair whose
+  second value reads the first store's location is not packed. A struct-of-`f64` update loop went
+  from 115.5 to 68.6 ms. Tests: `tests/data/slp_pairs.ck` and `tests/slp_fuzz.py` (compared with
+  `--scalar` bit for bit).
+- **Copy loops** use `rep movsb` with a byte count (ERMS/FSRM fast path; same result).
+
 ## LLVM backend (`--llvm`, optional)
 
 `tools/skite-llvm prog.ck prog` compiles through LLVM: `skite prog.ck prog.ll --llvm` emits the
