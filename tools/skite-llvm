@@ -1,0 +1,15 @@
+#!/bin/sh
+# Compile a skite program through the LLVM backend: skite emits LLVM IR, clang optimizes and links.
+# usage: tools/skite-llvm input.ck output [extra clang flags...]   (SKITE_BIN, CLANG and SKITE_LLVM_FLAGS override)
+set -e
+[ $# -ge 2 ] || { echo "usage: $0 input.ck output [clang flags...]" >&2; exit 2; }
+here=$(cd "$(dirname "$0")/.." && pwd)
+skite=${SKITE_BIN:-$here/skite}
+clang=${CLANG:-clang}
+in=$1; out=$2; shift 2
+# native-backend options have no LLVM meaning
+case "${1:-}" in --scalar|--map) shift ;; esac
+ll=$(mktemp "${TMPDIR:-/tmp}/skite.XXXXXX.ll")
+trap 'rm -f "$ll"' EXIT
+"$skite" "$in" "$ll" --llvm >/dev/null
+"$clang" ${SKITE_LLVM_FLAGS:--O3 -march=native} -Wno-override-module "$ll" -o "$out" "$@"

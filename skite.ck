@@ -9097,6 +9097,605 @@ fn write_map() {
     f += 1;
   }
 }
+// ---------------------------------------------------------------- LLVM IR backend (--llvm)
+// Emits the typed AST, before the native passes, as one LLVM module. Integers and bools are i64
+// values (narrow types kept sign/zero-extended), floats are double/float. Traps, wrapping, shift
+// masking, saturating float->int casts and strict IEEE order follow the native backend.
+let llo = alloc<u8>(67108864);   // (function bodies are built in `code`, unused by this backend)   // module text
+let mut llon: i64 = 0;
+let mut llbn: i64 = 0;
+let mut ltmp: i64 = 0;             // %tN temporaries
+let mut llab: i64 = 0;             // %LN labels
+let mut lcur: i64 = 0;             // label of the block being filled
+let mut ltrap: bool = false;       // function uses its %trap block
+let mut lfpe: bool = false;
+let mut lstamp: i64 = 0;
+let lvstamp = alloc<i64>(65536);   // var has an alloca in the current function
+let lvkind = alloc<i64>(65536);    // 0 i64, 1 double, 2 float, 3 ptr
+let lloop_c = alloc<i64>(4096);    // loop stack: continue / break labels
+let lloop_x = alloc<i64>(4096);
+let mut lnl: i64 = 0;
+let linl = alloc<i64>(4096);       // inlined-call end labels
+let mut lninl: i64 = 0;
+fn fns_rett_unit(v: i64) -> bool { return vars[v].ty == TY_UNIT; }
+let mut lmain: bool = false;
+let mut want_llvm: bool = false;
+let HEXD = "0123456789ABCDEF";
+fn lfull(n: i64) { if n > 16777000 { fail("LLVM output too large"); } }
+fn ls(s: [u8]) { lfull(llbn + len(s)); let mut i = 0; while i < len(s) { code[llbn + i] = s[i]; i += 1; } llbn += len(s); }
+fn lc(c: i64) { lfull(llbn); code[llbn] = c as u8; llbn += 1; }
+fn ln(v: i64) {
+  if v < 0 { lc('-'); if v == INT64_MIN { ls("9223372036854775808"); return; } ln(0 - v); return; }
+  if v >= 10 { ln(v / 10); }
+  lc(v % 10 + 48);
+}
+fn lt(t: i64) { ls("%t"); ln(t); }
+fn ll(l: i64) { ls("%L"); ln(l); }
+fn lnew() -> i64 { ltmp += 1; return ltmp; }
+fn lbl() -> i64 { llab += 1; return llab; }
+fn ldef(t: i64) { ls("  "); lt(t); ls(" = "); }
+fn llabel(l: i64) { ls("L"); ln(l); ls(":\n"); lcur = l; }
+fn lbr(l: i64) { ls("  br label "); ll(l); lc(10); }
+fn lcbr(c: i64, a: i64, b: i64) { ls("  br i1 "); lt(c); ls(", label "); ll(a); ls(", label "); ll(b); lc(10); }
+fn ldead() { llabel(lbl()); }   // a block after a terminator (no predecessors)
+fn lkty(k: i64) { if k == 1 { ls("double"); } else if k == 2 { ls("float"); } else if k == 3 { ls("ptr"); } else { ls("i64"); } }
+fn tyk(t: i64) -> i64 { if t == TY_F64 || t == TY_FLIT { return 1; } if t == TY_F32 { return 2; } return 0; }
+fn lmty(t: i64) { // memory type of a scalar element
+  if t == TY_F64 { ls("double"); } else if t == TY_F32 { ls("float"); }
+  else { let w = ty_width(t); if w == 1 { ls("i8"); } else if w == 2 { ls("i16"); } else if w == 4 { ls("i32"); } else { ls("i64"); } }
+}
+fn lslot(v: i64, k: i64) { if lvstamp[v] != lstamp { lvstamp[v] = lstamp; lvkind[v] = k; } ls("%v"); ln(v); }
+fn lvar_kind(v: i64) -> i64 { return tyk(vars[v].ty); }
+fn lload_slot(v: i64, k: i64) -> i64 { let t = lnew(); ldef(t); ls("load "); lkty(k); ls(", ptr "); lslot(v, k); lc(10); return t; }
+fn lstore_slot(v: i64, k: i64, x: i64) { ls("  store "); lkty(k); lc(' '); lt(x); ls(", ptr "); lslot(v, k); lc(10); }
+fn lconst(k: i64, v: u64) -> i64 {
+  let t = lnew(); ldef(t);
+  if k == 1 { ls("bitcast i64 "); ln(v as i64); ls(" to double\n"); }
+  else if k == 2 { ls("bitcast i32 "); ln(((v & 4294967295) as u32 as i32) as i64); ls(" to float\n"); }
+  else { ls("add i64 0, "); ln(v as i64); lc(10); }
+  return t;
+}
+fn lci(v: i64) -> i64 { return lconst(0, v as u64); }
+fn ltrap_if(c: i64) { let ok = lbl(); ltrap = true; ls("  br i1 "); lt(c); ls(", label %trap, label "); ll(ok); lc(10); llabel(ok); }
+fn lfpe_if(c: i64) { let ok = lbl(); lfpe = true; ls("  br i1 "); lt(c); ls(", label %fpe, label "); ll(ok); lc(10); llabel(ok); }
+fn licmp(pred: [u8], a: i64, b: i64) -> i64 { let t = lnew(); ldef(t); ls("icmp "); ls(pred); ls(" i64 "); lt(a); ls(", "); lt(b); lc(10); return t; }
+fn lzext1(c: i64) -> i64 { let t = lnew(); ldef(t); ls("zext i1 "); lt(c); ls(" to i64\n"); return t; }
+fn lop2(op: [u8], a: i64, b: i64) -> i64 { let t = lnew(); ldef(t); ls(op); ls(" i64 "); lt(a); ls(", "); lt(b); lc(10); return t; }
+fn lnz(a: i64) -> i64 { let z = lci(0); return licmp("ne", a, z); }
+// natural LLVM kind of an expression's value (before a bits()/from_bits retag)
+fn lnat(e: i64) -> i64 {
+  let k = nd[e].k;
+  if k == N_CONST { return tyk(nd[e].ty); }
+  if k == N_VAR { if nd[e].var <= 1 { return 0; } return lvar_kind(nd[e].var); }
+  if k == N_LOAD { return tyk(lelem_ty(nd[e].var, nd[e].op - 1)); }
+  if k == N_CALL { return tyk(fns[nd[e].var].rett); }
+  if k == N_BIN { let op = nd[e].op; if is_fop(op) && !is_fcmp(op) { if fop_dbl(op) { return 1; } return 2; } return 0; }
+  if k == N_UN {
+    let op = nd[e].op;
+    if op == U_I2D || op == U_U2D || op == U_S2D || op == U_SQRTD || op == U_FNEG { return 1; }
+    if op == U_I2S || op == U_U2S || op == U_D2S || op == U_SQRTS || op == U_GNEG { return 2; }
+    return 0;
+  }
+  return 0;
+}
+fn lelem_ty(a: i64, fld: i64) -> i64 {
+  let et = vars[a].et;
+  if fld >= 0 && is_struct(et) { return sfty[(et - TY_STRUCT0) * 32 + fld]; }
+  return et;
+}
+// value of e in the kind of its type (bits()/from_bits reinterpret)
+fn lexv(e: i64) -> i64 {
+  let x = lex(e);
+  let from = lnat(e); let to = tyk(nd[e].ty);
+  if from == to { return x; }
+  let t = lnew(); ldef(t);
+  if from == 1 && to == 0 { ls("bitcast double "); lt(x); ls(" to i64\n"); return t; }
+  if from == 0 && to == 1 { ls("bitcast i64 "); lt(x); ls(" to double\n"); return t; }
+  if from == 2 && to == 0 { ls("bitcast float "); lt(x); ls(" to i32\n"); let u = lnew(); ldef(u); ls("zext i32 "); lt(t); ls(" to i64\n"); return u; }
+  if from == 0 && to == 2 { ls("trunc i64 "); lt(x); ls(" to i32\n"); let u = lnew(); ldef(u); ls("bitcast i32 "); lt(t); ls(" to float\n"); return u; }
+  if from == 1 && to == 2 { ls("fptrunc double "); lt(x); ls(" to float\n"); return t; }
+  ls("fpext float "); lt(x); ls(" to double\n"); return t;
+}
+fn larr_base(a: i64) -> i64 {
+  let bv = vars[a].basev;
+  let t = lnew();
+  if vars[bv].isconst != 0 {
+    ldef(t); ls("getelementptr i8, ptr ");
+    if vars[bv].glob == 2 { ls("@__S"); } else { ls("@__G"); }
+    ls(", i64 "); ln(vars[bv].cval as i64); lc(10);
+    return t;
+  }
+  ldef(t); ls("load ptr, ptr "); lslot(bv, 3); lc(10);
+  return t;
+}
+fn larr_len(a: i64) -> i64 {
+  if vars[a].lenv < 0 { return lci(vars[a].alen); }
+  return lload_slot(vars[a].lenv, 0);
+}
+// address of a[idx](.field); checks the index unless proven safe by the parser
+fn lelem_addr(a: i64, idxe: i64, safe: bool, fld: i64) -> i64 {
+  let idx = lexv(idxe);
+  let base = larr_base(a);
+  if !safe {
+    let n = larr_len(a);
+    ltrap_if(licmp("uge", idx, n));
+  }
+  let et = vars[a].et;
+  let p = lnew(); ldef(p);
+  if is_struct(et) {
+    ls("getelementptr inbounds ["); ln(ty_width(et)); ls(" x i8], ptr "); lt(base); ls(", i64 "); lt(idx);
+    ls(", i64 "); ln(sfoff[(et - TY_STRUCT0) * 32 + fld]); lc(10);
+  } else {
+    ls("getelementptr inbounds "); lmty(et); ls(", ptr "); lt(base); ls(", i64 "); lt(idx); lc(10);
+  }
+  return p;
+}
+fn lload_mem(t: i64, p: i64) -> i64 { // load a scalar of type t, widened to its value kind
+  let x = lnew(); ldef(x); ls("load "); lmty(t); ls(", ptr "); lt(p); ls(", align 1\n");
+  if ty_flt(t) || ty_width(t) == 8 { return x; }
+  let y = lnew(); ldef(y);
+  if ty_sint(t) { ls("sext "); } else { ls("zext "); }
+  lmty(t); lc(' '); lt(x); ls(" to i64\n");
+  return y;
+}
+fn lstore_mem(t: i64, p: i64, v: i64) {
+  let mut x = v;
+  if !ty_flt(t) && ty_width(t) != 8 { x = lnew(); ldef(x); ls("trunc i64 "); lt(v); ls(" to "); lmty(t); lc(10); }
+  ls("  store "); lmty(t); lc(' '); lt(x); ls(", ptr "); lt(p); ls(", align 1\n");
+}
+fn lfty(dbl: bool) { if dbl { ls("double"); } else { ls("float"); } }
+fn lcall_intr1(name: [u8], rt: [u8], at: [u8], x: i64) -> i64 {
+  let t = lnew(); ldef(t); ls("call "); ls(rt); ls(" @"); ls(name); lc('('); ls(at); lc(' '); lt(x); ls(")\n"); return t;
+}
+fn lex(e: i64) -> i64 {
+  let k = nd[e].k;
+  if k == N_CONST { return lconst(tyk(nd[e].ty), nd[e].v); }
+  if k == N_VAR {
+    let v = nd[e].var;
+    if v == 0 { let t = lnew(); ldef(t); ls("load i64, ptr @__argc\n"); return t; }
+    return lload_slot(v, lvar_kind(v));
+  }
+  if k == N_LOAD {
+    let a = nd[e].var; let fld = nd[e].op - 1;
+    let p = lelem_addr(a, nd[e].a, shape_safe[e] || nd[e].chk == 0, fld);
+    return lload_mem(lelem_ty(a, fld), p);
+  }
+  if k == N_CALL { return lcall(e); }
+  if k == N_NCPU { let t = lnew(); ldef(t); ls("call i64 @__ncpu()\n"); return t; }
+  if k == N_UN { return lunary(e); }
+  if k == N_BIN { return lbinary(e); }
+  fail("internal: LLVM backend: unexpected expression"); return 0;
+}
+fn lcall(e: i64) -> i64 {
+  let f = nd[e].var;
+  // arguments left to right
+  let vals = alloc<i64>(32);
+  let mut n = 0;
+  let mut ag = nd[e].a;
+  let mut i = 0;
+  while ag >= 0 {
+    if fpw[f * 16 + i] != 0 {
+      let a = nd[ag].var;
+      vals[n] = larr_base(a); vals[n + 1] = larr_len(a); n += 2;
+    } else { vals[n] = lexv(ag); n += 1; }
+    ag = nd[ag].next; i += 1;
+  }
+  let rt = fns[f].rett;
+  let mut t = -1;
+  if rt == TY_UNIT { ls("  call void "); } else { t = lnew(); ldef(t); ls("call "); lkty(tyk(rt)); lc(' '); }
+  ls("@f"); ln(f); lc('(');
+  let mut j = 0; i = 0;
+  while i < fns[f].np {
+    if j > 0 { ls(", "); }
+    if fpw[f * 16 + i] != 0 { ls("ptr "); lt(vals[j]); ls(", i64 "); lt(vals[j + 1]); j += 2; }
+    else { lkty(tyk(fpty[f * 16 + i])); lc(' '); lt(vals[j]); j += 1; }
+    i += 1;
+  }
+  ls(")\n");
+  if t < 0 { return lci(0); }
+  return t;
+}
+fn lunary(e: i64) -> i64 {
+  let op = nd[e].op;
+  let x = lexv(nd[e].a);
+  if op == U_SQRTD { return lcall_intr1("llvm.sqrt.f64", "double", "double", x); }
+  if op == U_SQRTS { return lcall_intr1("llvm.sqrt.f32", "float", "float", x); }
+  if op == U_D2I { return lcall_intr1("llvm.fptosi.sat.i64.f64", "i64", "double", x); }
+  if op == U_D2U { return lcall_intr1("llvm.fptoui.sat.i64.f64", "i64", "double", x); }
+  if op == U_S2I { return lcall_intr1("llvm.fptosi.sat.i64.f32", "i64", "float", x); }
+  if op == U_S2U { return lcall_intr1("llvm.fptoui.sat.i64.f32", "i64", "float", x); }
+  let t = lnew();
+  if op == U_NEG { ldef(t); ls("sub i64 0, "); lt(x); lc(10); return t; }
+  if op == U_NOT { ldef(t); ls("xor i64 "); lt(x); ls(", -1\n"); return t; }
+  if op == U_LNOT { ldef(t); ls("xor i64 "); lt(x); ls(", 1\n"); return t; }
+  if op >= U_SX8 && op <= U_ZX32 {
+    let mut w = 8; if op == U_SX16 || op == U_ZX16 { w = 16; } if op == U_SX32 || op == U_ZX32 { w = 32; }
+    ldef(t); ls("trunc i64 "); lt(x); ls(" to i"); ln(w); lc(10);
+    let u = lnew(); ldef(u);
+    if op <= U_SX32 { ls("sext i"); } else { ls("zext i"); }
+    ln(w); lc(' '); lt(t); ls(" to i64\n"); return u;
+  }
+  if op >= U_SATS8 && op <= U_SATU32 {
+    let kk = op - U_SATS8;
+    let lo = lci(sat_lo(kk)); let hi = lci(sat_hi(kk));
+    ldef(t); ls("call i64 @llvm.smax.i64(i64 "); lt(x); ls(", i64 "); lt(lo); ls(")\n");
+    let u = lnew(); ldef(u); ls("call i64 @llvm.smin.i64(i64 "); lt(t); ls(", i64 "); lt(hi); ls(")\n"); return u;
+  }
+  if op == U_FNEG { ldef(t); ls("fneg double "); lt(x); lc(10); return t; }
+  if op == U_GNEG { ldef(t); ls("fneg float "); lt(x); lc(10); return t; }
+  if op == U_I2D { ldef(t); ls("sitofp i64 "); lt(x); ls(" to double\n"); return t; }
+  if op == U_U2D { ldef(t); ls("uitofp i64 "); lt(x); ls(" to double\n"); return t; }
+  if op == U_I2S { ldef(t); ls("sitofp i64 "); lt(x); ls(" to float\n"); return t; }
+  if op == U_U2S { ldef(t); ls("uitofp i64 "); lt(x); ls(" to float\n"); return t; }
+  if op == U_D2S { ldef(t); ls("fptrunc double "); lt(x); ls(" to float\n"); return t; }
+  if op == U_S2D { ldef(t); ls("fpext float "); lt(x); ls(" to double\n"); return t; }
+  fail("internal: LLVM backend: bad unary operator"); return 0;
+}
+fn lbinary(e: i64) -> i64 {
+  let op = nd[e].op;
+  if op == O_LAND || op == O_LOR {
+    let a = lexv(nd[e].a);
+    let c = lnz(a);
+    let from = lcur;
+    let rhs = lbl(); let end = lbl();
+    if op == O_LAND { lcbr(c, rhs, end); } else { lcbr(c, end, rhs); }
+    llabel(rhs);
+    let b = lexv(nd[e].b);
+    let bl = lcur;
+    lbr(end); llabel(end);
+    let t = lnew(); ldef(t); ls("phi i64 [ ");
+    if op == O_LAND { ls("0"); } else { ls("1"); }
+    ls(", "); ll(from); ls(" ], [ "); lt(b); ls(", "); ll(bl); ls(" ]\n");
+    return t;
+  }
+  let a = lexv(nd[e].a);
+  let b = lexv(nd[e].b);
+  if is_fop(op) {
+    let dbl = fop_dbl(op); let bo = fop_base(op);
+    let t = lnew(); ldef(t);
+    if is_fcmp(op) {
+      ls("fcmp ");
+      if bo == O_FEQ { ls("oeq "); } else if bo == O_FNE { ls("une "); } else if bo == O_FLT { ls("olt "); }
+      else if bo == O_FLE { ls("ole "); } else if bo == O_FGT { ls("ogt "); } else { ls("oge "); }
+      lfty(dbl); lc(' '); lt(a); ls(", "); lt(b); lc(10);
+      return lzext1(t);
+    }
+    if bo == O_FADD { ls("fadd "); } else if bo == O_FSUB { ls("fsub "); } else if bo == O_FMUL { ls("fmul "); } else { ls("fdiv "); }
+    lfty(dbl); lc(' '); lt(a); ls(", "); lt(b); lc(10);
+    return t;
+  }
+  if op == O_ADD { return lop2("add", a, b); } if op == O_SUB { return lop2("sub", a, b); }
+  if op == O_MUL { return lop2("mul", a, b); } if op == O_AND { return lop2("and", a, b); }
+  if op == O_OR { return lop2("or", a, b); } if op == O_XOR { return lop2("xor", a, b); }
+  if op == O_SHL || op == O_SHR || op == O_SAR {
+    let m = lnew(); ldef(m); ls("and i64 "); lt(b); ls(", 63\n");
+    if op == O_SHL { return lop2("shl", a, m); } if op == O_SHR { return lop2("lshr", a, m); }
+    return lop2("ashr", a, m);
+  }
+  if op == O_DIV || op == O_MOD {
+    let z = lci(0);
+    if !(nd[nd[e].b].k == N_CONST) || nd[nd[e].b].v == 0 { lfpe_if(licmp("eq", b, z)); }
+    if !(nd[nd[e].b].k == N_CONST) || nd[nd[e].b].v == 18446744073709551615 {
+      let mn = lci(INT64_MIN); let m1 = lci(-1);
+      let c1 = licmp("eq", a, mn); let c2 = licmp("eq", b, m1);
+      let c = lnew(); ldef(c); ls("and i1 "); lt(c1); ls(", "); lt(c2); lc(10);
+      lfpe_if(c);
+    }
+    if op == O_DIV { return lop2("sdiv", a, b); } return lop2("srem", a, b);
+  }
+  if op == O_DIVU || op == O_MODU {
+    let z = lci(0);
+    if !(nd[nd[e].b].k == N_CONST) { lfpe_if(licmp("eq", b, z)); }
+    if op == O_DIVU { return lop2("udiv", a, b); } return lop2("urem", a, b);
+  }
+  if op == O_EQ { return lzext1(licmp("eq", a, b)); } if op == O_NE { return lzext1(licmp("ne", a, b)); }
+  if op == O_LT { return lzext1(licmp("slt", a, b)); } if op == O_LE { return lzext1(licmp("sle", a, b)); }
+  if op == O_GT { return lzext1(licmp("sgt", a, b)); } if op == O_GE { return lzext1(licmp("sge", a, b)); }
+  if op == O_LTU { return lzext1(licmp("ult", a, b)); } if op == O_LEU { return lzext1(licmp("ule", a, b)); }
+  if op == O_GTU { return lzext1(licmp("ugt", a, b)); } if op == O_GEU { return lzext1(licmp("uge", a, b)); }
+  fail("internal: LLVM backend: bad binary operator"); return 0;
+}
+// ---- statements
+fn lmark_save(mv: i64) { let t = lnew(); ldef(t); ls("load ptr, ptr @__atop\n"); ls("  store ptr "); lt(t); ls(", ptr "); lslot(mv, 3); lc(10); }
+fn lmark_restore(mv: i64) { let t = lnew(); ldef(t); ls("load ptr, ptr "); lslot(mv, 3); lc(10); ls("  store ptr "); lt(t); ls(", ptr @__atop\n"); }
+fn lstr_ptr(off: i64) -> i64 { let t = lnew(); ldef(t); ls("getelementptr i8, ptr @__S, i64 "); ln(off); lc(10); return t; }
+fn lstmt(s: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { lstmt(c); c = nd[c].next; } return; }
+  if k == S_LET || k == S_ASSIGN {
+    let v = nd[s].var;
+    let x = lexv(nd[s].a);
+    lstore_slot(v, lvar_kind(v), x);
+    return;
+  }
+  if k == S_EXPR { lex(nd[s].a); return; }
+  if k == S_INL {
+    let end = lbl();
+    linl[lninl] = end; lninl += 1;
+    let mut c = nd[s].a; while c >= 0 { lstmt(c); c = nd[c].next; }
+    lninl -= 1;
+    lbr(end); llabel(end);
+    return;
+  }
+  if k == S_IRET {
+    let v = nd[s].var;
+    let x = lexv(nd[s].a);
+    if fns_rett_unit(v) == false { lstore_slot(v, lvar_kind(v), x); }
+    lbr(linl[lninl - 1]); ldead();
+    return;
+  }
+  if k == S_IF {
+    let c = lnz(lexv(nd[s].a));
+    let th = lbl(); let el = lbl(); let jn = lbl();
+    lcbr(c, th, el);
+    llabel(th); lstmt(nd[s].b); lbr(jn);
+    llabel(el); lstmt(nd[s].c); lbr(jn);
+    llabel(jn);
+    return;
+  }
+  if k == S_WHILE {
+    let mv = nd[s].c;
+    if mv >= 0 { lmark_save(mv); }
+    let lc_ = lbl(); let lb_ = lbl(); let lx = lbl();
+    lbr(lc_); llabel(lc_);
+    let c = lnz(lexv(nd[s].a));
+    lcbr(c, lb_, lx);
+    llabel(lb_);
+    if mv >= 0 { lmark_restore(mv); }
+    lloop_c[lnl] = lc_; lloop_x[lnl] = lx; lnl += 1;
+    lstmt(nd[s].b);
+    lnl -= 1;
+    lbr(lc_);
+    llabel(lx);
+    if mv >= 0 { lmark_restore(mv); }
+    return;
+  }
+  if k == S_BRK { lbr(lloop_x[lnl - 1]); ldead(); return; }
+  if k == S_CONT { lbr(lloop_c[lnl - 1]); ldead(); return; }
+  if k == S_RET {
+    let f = curfn;
+    let rt = fns[f].rett;
+    let mut x = -1;
+    if rt != TY_UNIT { x = lexv(nd[s].a); }
+    if lmain {
+      if rt != TY_UNIT { ls("  call void @__print_i(i64 "); lt(x); ls(")\n"); }
+      ls("  call void @__exit(i64 0)\n  unreachable\n"); ldead(); return;
+    }
+    if fns[f].mark >= 0 { lmark_restore(fns[f].mark); }
+    if rt == TY_UNIT { ls("  ret void\n"); } else { ls("  ret "); lkty(tyk(rt)); lc(' '); lt(x); lc(10); }
+    ldead(); return;
+  }
+  if k == S_STORE {
+    let a = nd[s].var; let fld = nd[s].c;
+    let et = lelem_ty(a, fld);
+    let x = lexv(nd[s].b);
+    let p = lelem_addr(a, nd[s].a, shape_safe[s] || nd[s].chk == 0, fld);
+    if nd[s].op < 0 { lstore_mem(et, p, x); return; }
+    let old = lload_mem(et, p);
+    let op = nd[s].op;
+    let mut r = 0;
+    if op == O_ADD { r = lop2("add", old, x); } else if op == O_SUB { r = lop2("sub", old, x); }
+    else if op == O_AND { r = lop2("and", old, x); } else if op == O_OR { r = lop2("or", old, x); }
+    else if op == O_XOR { r = lop2("xor", old, x); } else { fail("internal: LLVM backend: bad compound store"); }
+    lstore_mem(et, p, r);
+    return;
+  }
+  if k == S_PRINT {
+    let x = lexv(nd[s].a);
+    if nd[s].op != 0 { ls("  call void @__print_u(i64 "); } else { ls("  call void @__print_i(i64 "); }
+    lt(x); ls(")\n"); return;
+  }
+  if k == S_PUTC {
+    let x = lexv(nd[s].a);
+    if nd[s].op == 1 { ls("  call void @__exit(i64 "); lt(x); ls(")\n  unreachable\n"); ldead(); return; }
+    ls("  call void @__putc(i64 "); lt(x); ls(")\n"); return;
+  }
+  if k == S_WRITE {
+    let av = nd[s].var;
+    let mut p = 0; let mut n = 0;
+    if av < 0 { p = lstr_ptr(nd[s].v as i64); n = lci(nd[s].c); }
+    else if nd[s].a < 0 { p = larr_base(av); n = larr_len(av); }
+    else {
+      let o = lexv(nd[s].a); let cnt = lexv(nd[s].b);
+      let ln_ = larr_len(av);
+      ltrap_if(licmp("ugt", o, ln_));
+      let room = lop2("sub", ln_, o);
+      ltrap_if(licmp("ugt", cnt, room));
+      let b = larr_base(av);
+      p = lnew(); ldef(p); ls("getelementptr i8, ptr "); lt(b); ls(", i64 "); lt(o); lc(10);
+      n = cnt;
+    }
+    if nd[s].op == 1 { ls("  call void @__ewrite(ptr "); } else { ls("  call void @__write(ptr "); }
+    lt(p); ls(", i64 "); lt(n); ls(")\n");
+    return;
+  }
+  if k == S_SAVE {
+    let av = nd[s].var;
+    let kk = lexv(nd[s].a); let n = lexv(nd[s].b);
+    let b = larr_base(av); let l = larr_len(av);
+    ls("  call void @__save(i64 "); lt(kk); ls(", ptr "); lt(b); ls(", i64 "); lt(l); ls(", i64 "); lt(n); ls(")\n");
+    return;
+  }
+  if k == S_ARR { larr(s); return; }
+  if k == S_PAR {
+    let kv = nd[s].var; let ev = nd[s].op;
+    let a = lexv(nd[s].a); let b = lexv(nd[s].b);
+    lstore_slot(kv, 0, a); lstore_slot(ev, 0, b);
+    let cnt = lop2("sub", b, a);
+    ltrap_if(licmp("sgt", cnt, lci(256)));
+    let top = lbl(); let fk = lbl(); let child = lbl(); let nx = lbl(); let done = lbl();
+    lbr(top); llabel(top);
+    let kx = lload_slot(kv, 0); let ex = lload_slot(ev, 0);
+    lcbr(licmp("sge", kx, ex), done, fk);
+    llabel(fk);
+    let pid = lnew(); ldef(pid); ls("call i64 @__fork()\n");
+    lcbr(licmp("eq", pid, lci(0)), child, nx);
+    llabel(nx);
+    let k1 = lop2("add", lload_slot(kv, 0), lci(1));
+    lstore_slot(kv, 0, k1); lbr(top);
+    llabel(child);
+    ls("  call void @__fork_child()\n");
+    lstmt(nd[s].c);
+    ls("  call void @_exit(i32 0)\n  unreachable\n");
+    llabel(done);
+    ls("  call void @__par_wait()\n");
+    return;
+  }
+  fail("internal: LLVM backend: unexpected statement");
+}
+fn larr(s: i64) {
+  let v = nd[s].var; let kind = nd[s].op;
+  if kind == A_STR {
+    let p = lstr_ptr(nd[s].v as i64);
+    ls("  store ptr "); lt(p); ls(", ptr "); lslot(vars[v].basev, 3); lc(10);
+    return;
+  }
+  if kind == A_VIEW {
+    let srcv = nd[s].c;
+    if vars[v].lenv >= 0 {
+      let n = larr_len(srcv);
+      let q = lop2("udiv", n, lci(vars[v].arr));
+      lstore_slot(vars[v].lenv, 0, q);
+    }
+    return;
+  }
+  if kind == A_ARG || kind == A_FILE {
+    let kk = lexv(nd[s].a);
+    let p = lnew(); ldef(p);
+    if kind == A_ARG { ls("call ptr @__arg(i64 "); } else { ls("call ptr @__file(i64 "); }
+    lt(kk); ls(", ptr "); lslot(vars[v].lenv, 0); ls(")\n");
+    ls("  store ptr "); lt(p); ls(", ptr "); lslot(vars[v].basev, 3); lc(10);
+    return;
+  }
+  // A_ALLOC
+  let n = lexv(nd[s].a);
+  let m1 = lop2("sub", n, lci(1));
+  ltrap_if(licmp("ugt", m1, lci(2147483646)));
+  let bytes = lop2("mul", n, lci(vars[v].arr));
+  let p = lnew(); ldef(p);
+  if nd[s].v != 0 { ls("call ptr @__arena(i64 "); lt(bytes); ls(")\n"); }
+  else { ls("call ptr @__map(i64 "); lt(bytes); ls(", i64 "); ln(vars[v].shared); ls(")\n"); }
+  ls("  store ptr "); lt(p); ls(", ptr "); lslot(vars[v].basev, 3); lc(10);
+  if vars[v].lenv >= 0 { lstore_slot(vars[v].lenv, 0, n); }
+}
+// ---- module
+let LLRT = "; skite runtime for the LLVM backend (libc system-call wrappers only)\n@__ob = internal global [65536 x i8] zeroinitializer, align 64\n@__on = internal global i64 0\n@__argc = internal global i64 0\n@__argv = internal global ptr null\n@__atop = internal global ptr null\n@__aend = internal global ptr null\n@__pfail = internal global i32 0\ndeclare i64 @write(i32, ptr, i64)\ndeclare void @_exit(i32) noreturn nounwind\ndeclare ptr @mmap(ptr, i64, i32, i32, i32, i64)\ndeclare i32 @open(ptr, i32, ...)\ndeclare i64 @lseek(i32, i64, i32)\ndeclare i32 @close(i32)\ndeclare i32 @fork()\ndeclare i32 @wait(ptr)\ndeclare i32 @sched_getaffinity(i32, i64, ptr)\ndeclare i32 @kill(i32, i32)\ndeclare i32 @getpid()\ndeclare ptr @signal(i32, ptr)\ndeclare i64 @strlen(ptr)\ndeclare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\ndeclare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\ndeclare void @llvm.trap() noreturn nounwind\ndeclare double @llvm.sqrt.f64(double)\ndeclare float @llvm.sqrt.f32(float)\ndeclare i64 @llvm.fptosi.sat.i64.f64(double)\ndeclare i64 @llvm.fptoui.sat.i64.f64(double)\ndeclare i64 @llvm.fptosi.sat.i64.f32(float)\ndeclare i64 @llvm.fptoui.sat.i64.f32(float)\ndeclare i64 @llvm.smax.i64(i64, i64)\ndeclare i64 @llvm.smin.i64(i64, i64)\ndeclare i64 @llvm.ctpop.i64(i64)\ndefine internal void @__wr(i32 %fd, ptr %p, i64 %n) {\nentry:\n  br label %l\nl:\n  %pp = phi ptr [ %p, %entry ], [ %p2, %more ]\n  %nn = phi i64 [ %n, %entry ], [ %n2, %more ]\n  %z = icmp sle i64 %nn, 0\n  br i1 %z, label %done, label %w\nw:\n  %r = call i64 @write(i32 %fd, ptr %pp, i64 %nn)\n  %bad = icmp sle i64 %r, 0\n  br i1 %bad, label %done, label %more\nmore:\n  %p2 = getelementptr i8, ptr %pp, i64 %r\n  %n2 = sub i64 %nn, %r\n  br label %l\ndone:\n  ret void\n}\ndefine internal void @__flush() noinline {\n  %n = load i64, ptr @__on\n  call void @__wr(i32 1, ptr @__ob, i64 %n)\n  store i64 0, ptr @__on\n  ret void\n}\ndefine internal void @__putc(i64 %c) alwaysinline {\nentry:\n  %n = load i64, ptr @__on\n  %full = icmp eq i64 %n, 65536\n  br i1 %full, label %fl, label %put\nfl:\n  call void @__flush()\n  br label %put\nput:\n  %m = phi i64 [ %n, %entry ], [ 0, %fl ]\n  %p = getelementptr inbounds [65536 x i8], ptr @__ob, i64 0, i64 %m\n  %b = trunc i64 %c to i8\n  store i8 %b, ptr %p\n  %m1 = add i64 %m, 1\n  store i64 %m1, ptr @__on\n  ret void\n}\ndefine internal void @__write(ptr %s, i64 %len) {\nentry:\n  %n = load i64, ptr @__on\n  %room = sub i64 65536, %n\n  %fits = icmp ule i64 %len, %room\n  br i1 %fits, label %copy, label %fl\nfl:\n  call void @__flush()\n  %big = icmp uge i64 %len, 65536\n  br i1 %big, label %direct, label %copy\ndirect:\n  call void @__wr(i32 1, ptr %s, i64 %len)\n  ret void\ncopy:\n  %m = phi i64 [ %n, %entry ], [ 0, %fl ]\n  %p = getelementptr inbounds [65536 x i8], ptr @__ob, i64 0, i64 %m\n  call void @llvm.memcpy.p0.p0.i64(ptr %p, ptr %s, i64 %len, i1 false)\n  %m1 = add i64 %m, %len\n  store i64 %m1, ptr @__on\n  ret void\n}\ndefine internal void @__ewrite(ptr %s, i64 %len) {\n  call void @__flush()\n  call void @__wr(i32 2, ptr %s, i64 %len)\n  ret void\n}\ndefine internal void @__pu(i64 %x) {\nentry:\n  %buf = alloca [24 x i8], align 1\n  br label %l\nl:\n  %v = phi i64 [ %x, %entry ], [ %q, %l ]\n  %i = phi i64 [ 24, %entry ], [ %i1, %l ]\n  %q = udiv i64 %v, 10\n  %r0 = urem i64 %v, 10\n  %r = add i64 %r0, 48\n  %i1 = sub i64 %i, 1\n  %p = getelementptr inbounds [24 x i8], ptr %buf, i64 0, i64 %i1\n  %b = trunc i64 %r to i8\n  store i8 %b, ptr %p\n  %more = icmp ne i64 %q, 0\n  br i1 %more, label %l, label %done\ndone:\n  %s = getelementptr inbounds [24 x i8], ptr %buf, i64 0, i64 %i1\n  %len = sub i64 24, %i1\n  call void @__write(ptr %s, i64 %len)\n  ret void\n}\ndefine internal void @__print_u(i64 %x) {\n  call void @__pu(i64 %x)\n  call void @__putc(i64 10)\n  ret void\n}\ndefine internal void @__print_i(i64 %x) {\nentry:\n  %neg = icmp slt i64 %x, 0\n  br i1 %neg, label %n, label %p\nn:\n  call void @__putc(i64 45)\n  %m = sub i64 0, %x\n  br label %p\np:\n  %v = phi i64 [ %x, %entry ], [ %m, %n ]\n  call void @__pu(i64 %v)\n  call void @__putc(i64 10)\n  ret void\n}\ndefine internal void @__trap() noreturn cold noinline nounwind {\n  call void @__flush()\n  call void @llvm.trap()\n  unreachable\n}\ndefine internal void @__fpe() noreturn cold noinline nounwind {\n  call void @__flush()\n  %o = call ptr @signal(i32 8, ptr null)\n  %pid = call i32 @getpid()\n  %k = call i32 @kill(i32 %pid, i32 8)\n  call void @llvm.trap()\n  unreachable\n}\ndefine internal void @__exit(i64 %c) noreturn noinline {\n  call void @__flush()\n  %c32 = trunc i64 %c to i32\n  call void @_exit(i32 %c32)\n  unreachable\n}\ndefine internal ptr @__map(i64 %bytes, i64 %shared) noinline {\n  %sh = icmp ne i64 %shared, 0\n  %fl = select i1 %sh, i32 33, i32 34\n  %p = call ptr @mmap(ptr null, i64 %bytes, i32 3, i32 %fl, i32 -1, i64 0)\n  %pi = ptrtoint ptr %p to i64\n  %bad = icmp uge i64 %pi, -4096\n  br i1 %bad, label %t, label %ok\nt:\n  call void @__trap()\n  unreachable\nok:\n  ret ptr %p\n}\ndefine internal void @__arena_init() noinline {\n  %p = call ptr @mmap(ptr null, i64 17179869184, i32 3, i32 16418, i32 -1, i64 0)\n  %pi = ptrtoint ptr %p to i64\n  %bad = icmp uge i64 %pi, -4096\n  br i1 %bad, label %t, label %ok\nt:\n  call void @__trap()\n  unreachable\nok:\n  store ptr %p, ptr @__atop\n  %e = getelementptr i8, ptr %p, i64 17179869184\n  store ptr %e, ptr @__aend\n  ret void\n}\ndefine internal ptr @__arena(i64 %bytes) {\n  %r0 = add i64 %bytes, 63\n  %r = and i64 %r0, -64\n  %top = load ptr, ptr @__atop\n  %end = load ptr, ptr @__aend\n  %ti = ptrtoint ptr %top to i64\n  %ei = ptrtoint ptr %end to i64\n  %room = sub i64 %ei, %ti\n  %bad = icmp ugt i64 %r, %room\n  br i1 %bad, label %t, label %ok\nt:\n  call void @__trap()\n  unreachable\nok:\n  %nt = getelementptr i8, ptr %top, i64 %r\n  store ptr %nt, ptr @__atop\n  call void @llvm.memset.p0.i64(ptr align 64 %top, i8 0, i64 %r, i1 false)\n  ret ptr %top\n}\ndefine internal ptr @__argp(i64 %k) {\n  %ac = load i64, ptr @__argc\n  %bad = icmp uge i64 %k, %ac\n  br i1 %bad, label %t, label %ok\nt:\n  call void @__trap()\n  unreachable\nok:\n  %av = load ptr, ptr @__argv\n  %pp = getelementptr ptr, ptr %av, i64 %k\n  %p = load ptr, ptr %pp\n  ret ptr %p\n}\ndefine internal ptr @__arg(i64 %k, ptr %lenout) {\n  %p = call ptr @__argp(i64 %k)\n  %n = call i64 @strlen(ptr %p)\n  store i64 %n, ptr %lenout\n  ret ptr %p\n}\ndefine internal ptr @__file(i64 %k, ptr %lenout) noinline {\nentry:\n  %path = call ptr @__argp(i64 %k)\n  %fd = call i32 (ptr, i32, ...) @open(ptr %path, i32 0)\n  %badf = icmp slt i32 %fd, 0\n  br i1 %badf, label %t, label %o1\no1:\n  %sz = call i64 @lseek(i32 %fd, i64 0, i32 2)\n  %bads = icmp slt i64 %sz, 0\n  br i1 %bads, label %t, label %o2\no2:\n  %p = call ptr @mmap(ptr null, i64 %sz, i32 1, i32 2, i32 %fd, i64 0)\n  %pi = ptrtoint ptr %p to i64\n  %badm = icmp uge i64 %pi, -4096\n  br i1 %badm, label %t, label %ok\nt:\n  call void @__trap()\n  unreachable\nok:\n  %c = call i32 @close(i32 %fd)\n  store i64 %sz, ptr %lenout\n  ret ptr %p\n}\ndefine internal void @__save(i64 %k, ptr %base, i64 %len, i64 %n) noinline {\nentry:\n  %ac = load i64, ptr @__argc\n  %b1 = icmp uge i64 %k, %ac\n  %b2 = icmp ugt i64 %n, %len\n  %b = or i1 %b1, %b2\n  br i1 %b, label %t, label %o1\no1:\n  %path = call ptr @__argp(i64 %k)\n  %fd = call i32 (ptr, i32, ...) @open(ptr %path, i32 577, i32 493)\n  %badf = icmp slt i32 %fd, 0\n  br i1 %badf, label %t, label %l\nl:\n  %pp = phi ptr [ %base, %o1 ], [ %p2, %more ]\n  %nn = phi i64 [ %n, %o1 ], [ %n2, %more ]\n  %z = icmp eq i64 %nn, 0\n  br i1 %z, label %done, label %w\nw:\n  %r = call i64 @write(i32 %fd, ptr %pp, i64 %nn)\n  %bad = icmp sle i64 %r, 0\n  br i1 %bad, label %t, label %more\nmore:\n  %p2 = getelementptr i8, ptr %pp, i64 %r\n  %n2 = sub i64 %nn, %r\n  br label %l\nt:\n  call void @__trap()\n  unreachable\ndone:\n  %c = call i32 @close(i32 %fd)\n  ret void\n}\ndefine internal i64 @__ncpu() noinline {\nentry:\n  %buf = alloca [16 x i64], align 8\n  call void @llvm.memset.p0.i64(ptr %buf, i8 0, i64 128, i1 false)\n  %r = call i32 @sched_getaffinity(i32 0, i64 128, ptr %buf)\n  %bad = icmp ne i32 %r, 0\n  br i1 %bad, label %z, label %l\nz:\n  ret i64 0\nl:\n  %i = phi i64 [ 0, %entry ], [ %i1, %l ]\n  %s = phi i64 [ 0, %entry ], [ %s1, %l ]\n  %p = getelementptr inbounds [16 x i64], ptr %buf, i64 0, i64 %i\n  %w = load i64, ptr %p\n  %c = call i64 @llvm.ctpop.i64(i64 %w)\n  %s1 = add i64 %s, %c\n  %i1 = add i64 %i, 1\n  %more = icmp ult i64 %i1, 16\n  br i1 %more, label %l, label %done\ndone:\n  ret i64 %s1\n}\ndefine internal void @__fork_child() {\n  store i64 0, ptr @__on\n  ret void\n}\ndefine internal i64 @__fork() noinline {\n  %p = call i32 @fork()\n  %bad = icmp slt i32 %p, 0\n  br i1 %bad, label %t, label %ok\nt:\n  call void @__trap()\n  unreachable\nok:\n  %r = sext i32 %p to i64\n  ret i64 %r\n}\ndefine internal void @__par_wait() noinline {\nentry:\n  %st = alloca i32, align 4\n  br label %l\nl:\n  %r = call i32 @wait(ptr %st)\n  %done = icmp slt i32 %r, 0\n  br i1 %done, label %fin, label %chk\nchk:\n  %s = load i32, ptr %st\n  %bad = icmp ne i32 %s, 0\n  br i1 %bad, label %mark, label %l\nmark:\n  store i32 1, ptr @__pfail\n  br label %l\nfin:\n  %f = load i32, ptr @__pfail\n  %fb = icmp ne i32 %f, 0\n  br i1 %fb, label %t, label %ok\nt:\n  call void @__trap()\n  unreachable\nok:\n  ret void\n}\n";
+fn lo_s(s: [u8]) { if llon + len(s) > 67108000 { fail("LLVM output too large"); } let mut i = 0; while i < len(s) { llo[llon + i] = s[i]; i += 1; } llon += len(s); }
+fn lo_c(c: i64) { if llon > 67108000 { fail("LLVM output too large"); } llo[llon] = c as u8; llon += 1; }
+fn lo_n(v: i64) { if v < 0 { lo_c('-'); lo_n(0 - v); return; } if v >= 10 { lo_n(v / 10); } lo_c(v % 10 + 48); }
+fn lo_body() { if llon + llbn > 67108000 { fail("LLVM output too large"); } let mut i = 0; while i < llbn { llo[llon + i] = code[i]; i += 1; } llon += llbn; }
+fn lo_allocas() {
+  let mut v = 0;
+  while v < nv {
+    if lvstamp[v] == lstamp {
+      lo_s("  %v"); lo_n(v); lo_s(" = alloca ");
+      let k = lvkind[v];
+      if k == 1 { lo_s("double"); } else if k == 2 { lo_s("float"); } else if k == 3 { lo_s("ptr"); } else { lo_s("i64"); }
+      lo_s(", align 8\n");
+    }
+    v += 1;
+  }
+}
+fn lo_kty(k: i64) { if k == 1 { lo_s("double"); } else if k == 2 { lo_s("float"); } else { lo_s("i64"); } }
+fn lfunc(f: i64) {
+  curfn = f; lmain = f == mainfn;
+  lstamp += 1; llbn = 0; ltmp = 0; llab = 0; ltrap = false; lfpe = false; lnl = 0; lninl = 0;
+  // body first: allocas are collected while it is emitted
+  ls("L0:\n"); lcur = 0;
+  if lmain {
+    ls("  %argc64 = sext i32 %argc to i64\n  store i64 %argc64, ptr @__argc\n  store ptr %argv, ptr @__argv\n");
+    if use_arena { ls("  call void @__arena_init()\n"); }
+  }
+  let mut i = 0;
+  while i < fns[f].np {
+    let pv = fpvar[f * 16 + i];
+    if fpw[f * 16 + i] != 0 {
+      ls("  store ptr %p"); ln(i); ls("b, ptr "); lslot(vars[pv].basev, 3); lc(10);
+      ls("  store i64 %p"); ln(i); ls("l, ptr "); lslot(vars[pv].lenv, 0); lc(10);
+    } else {
+      let kk = tyk(fpty[f * 16 + i]);
+      ls("  store "); lkty(kk); ls(" %p"); ln(i); ls(", ptr "); lslot(pv, kk); lc(10);
+    }
+    i += 1;
+  }
+  if !lmain && fns[f].mark >= 0 { lmark_save(fns[f].mark); }
+  lstmt(fns[f].body);
+  if lmain { ls("  call void @__exit(i64 0)\n  unreachable\n"); }
+  else if fns[f].rett == TY_UNIT { if fns[f].mark >= 0 { lmark_restore(fns[f].mark); } ls("  ret void\n"); }
+  else { ls("  unreachable\n"); }
+  if ltrap { ls("trap:\n  call void @__trap()\n  unreachable\n"); }
+  if lfpe { ls("fpe:\n  call void @__fpe()\n  unreachable\n"); }
+  // header
+  if lmain { lo_s("define i32 @main(i32 %argc, ptr %argv) {\n"); }
+  else {
+    lo_s("define internal ");
+    if fns[f].rett == TY_UNIT { lo_s("void"); } else { lo_kty(tyk(fns[f].rett)); }
+    lo_s(" @f"); lo_n(f); lo_c('(');
+    i = 0;
+    while i < fns[f].np {
+      if i > 0 { lo_s(", "); }
+      if fpw[f * 16 + i] != 0 { lo_s("ptr %p"); lo_n(i); lo_s("b, i64 %p"); lo_n(i); lo_s("l"); }
+      else { lo_kty(tyk(fpty[f * 16 + i])); lo_s(" %p"); lo_n(i); }
+      i += 1;
+    }
+    lo_s(") {\n");
+  }
+  lo_s("entry:\n");
+  lo_allocas();
+  lo_s("  br label %L0\n");
+  lo_body();
+  lo_s("}\n");
+}
+fn lo_bytes(name: [u8], b: [u8], n: i64, cst: bool) {
+  lo_s(name); lo_s(" = internal ");
+  if cst { lo_s("constant ["); } else { lo_s("global ["); }
+  let mut m = n; if m < 1 { m = 1; }
+  lo_n(m); lo_s(" x i8] ");
+  if n < 1 || !cst { lo_s("zeroinitializer"); }
+  else {
+    lo_s("c\"");
+    let mut i = 0;
+    while i < n {
+      let c = b[i] as i64;
+      if c >= 32 && c < 127 && c != '"' && c != '\\' { lo_c(c); }
+      else { lo_c('\\'); lo_c(HEXD[c >> 4] as i64); lo_c(HEXD[c & 15] as i64); }
+      i += 1;
+    }
+    lo_c('"');
+  }
+  lo_s(", align 64\n");
+}
+// the front half of allocate(): tail recursion, inlining, then bounds versioning and the range
+// analysis that removes provable checks. The remaining native passes are left to LLVM.
+fn llvm_prepare() {
+  let mut g = 0;
+  while g < nfn { if !starts2u(fns[g].noff, fns[g].nlen) { tre_fn(g); } g += 1; }
+  g = 0;
+  while g < nfn { fn_nr[g] = noreturn(g, 0); g += 1; }
+  inline_calls();
+  g = 0;
+  while g < nfn { if !starts2u(fns[g].noff, fns[g].nlen) { lift_calls(fns[g].body); } g += 1; }
+  make_templates();
+  if nfn > 1 { inl_growth = 0; rec_growth = 0; inline_stmts(fns[mainfn].body); }
+  let mut f = 0;
+  while f < nfn { if f != mainfn { inl_growth = 0; rec_growth = 0; inline_stmts(fns[f].body); } f += 1; }
+  inline_calls();
+  mark_used();
+  f = 0;
+  while f < nfn { if fns[f].used != 0 { CS_F = f; bv_walk(fns[f].body); } f += 1; }
+  analyze();
+  bv_prune();
+}
+fn llvm_emit() {
+  lo_s("; generated by skite --llvm\n");
+  lo_s(LLRT);
+  lo_bytes("@__G", sdata, glob_bytes, false);
+  lo_bytes("@__S", sdata, sdlen, true);
+  llvm_prepare();
+  let mut f = 0;
+  while f < nfn { if fns[f].body >= 0 && fns[f].used != 0 { lfunc(f); } f += 1; }
+}
 fn report(total: i64, out: [u8]) {
   write("skite: wrote "); write(out); write(" ("); putnum(total); write(" bytes, "); putnum(clen); write(" machine-code bytes, ");
   putnum(nv - 2); write(" vars, "); putnum(spilled); write(" spills, "); putnum(peak_active); write(" peak registers, "); putnum(xpeak); write(" xmm, ");
@@ -9104,12 +9703,13 @@ fn report(total: i64, out: [u8]) {
   putnum(ninlined + ninl_stmt); write(" calls inlined, "); putnum(nunrolled); write(" loops unrolled)\n");
 }
 fn main() {
-  if argc() != 3 && argc() != 4 { ewrite("usage: skite input.ck output-executable [--scalar]\n"); exit(2); }
+  if argc() != 3 && argc() != 4 { ewrite("usage: skite input.ck output-executable [--scalar | --llvm]\n"); exit(2); }
   if argc() == 4 {
     let o = argv(3);
     if len(o) == 8 && o[2] == 's' && o[3] == 'c' { simd_off = true; }
     else if len(o) == 5 && o[2] == 'm' && o[3] == 'a' { want_map = true; }
-    else { ewrite("skite: unknown option (--scalar, --map)\n"); exit(2); }
+    else if len(o) == 6 && o[2] == 'l' && o[3] == 'l' { want_llvm = true; }
+    else { ewrite("skite: unknown option (--scalar, --map, --llvm)\n"); exit(2); }
   }
   let input = file(1);
   let nm = argv(1);
@@ -9131,6 +9731,13 @@ fn main() {
   src_len = user_start + len(input);
   init_regs();
   parse();
+  if want_llvm {
+    llvm_emit();
+    save(2, llo, llon);
+    let llp = argv(2);
+    write("skite: wrote "); write(llp); write(" (LLVM IR, "); putnum(llon); write(" bytes)\n");
+    return;
+  }
   generate();
   let total = build_elf();
   if want_map { write_map(); }

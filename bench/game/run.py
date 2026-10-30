@@ -12,6 +12,7 @@ import hashlib, os, shutil, statistics, subprocess, sys, tempfile, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 SKITE = os.path.join(ROOT, "skite")
+SKITE_LLVM = os.path.join(ROOT, "tools", "skite-llvm")
 # name -> argument (standard Benchmarks Game sizes where they run in ~1 s)
 SIZES = [("nbody", "50000000"), ("spectralnorm", "5500"), ("mandelbrot", "16000"),
          ("fannkuchredux", "12"), ("fasta", "25000000"), ("binarytrees", "21")]
@@ -45,6 +46,12 @@ def build(name, tmp):
             out[name] = exe + "." + name
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             print(f"  ({name} unavailable or build failed; skipped: {exc})", file=sys.stderr)
+    if "clang" in out:   # skite's LLVM backend needs clang to optimize and link
+        try:
+            sh([SKITE_LLVM, src + ".ck", exe + ".skite-llvm"])
+            out["skite-llvm"] = exe + ".skite-llvm"
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            print(f"  (skite-llvm build failed; skipped: {exc})", file=sys.stderr)
     return out
 
 def main():
@@ -74,7 +81,7 @@ def main():
             print("  " + (version[0] if version else f"{c[0]}: unavailable"))
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
             print(f"  {c[0]}: unavailable")
-    print(f"{'benchmark':14s} {'arg':>9s} {'skite':>8s} {'gcc':>8s} {'clang':>8s} {'rust':>8s}  skite vs best")
+    print(f"{'benchmark':14s} {'arg':>9s} {'skite':>8s} {'s-llvm':>8s} {'gcc':>8s} {'clang':>8s} {'rust':>8s}  skite (best of both backends) vs best")
     tmp = tempfile.mkdtemp()
     try:
         for name, arg in SIZES:
@@ -100,11 +107,12 @@ def main():
                     t[v].append((time.perf_counter() - s) * 1000)
             med = {v: statistics.median(x) for v, x in t.items()}
             cells = " ".join(f"{med[v]:8.0f}" if v in med else f"{'-':>8s}"
-                              for v in ("skite", "gcc", "clang", "rust"))
-            competitors = [(m, v) for v, m in med.items() if v != "skite"]
-            if competitors:
+                              for v in ("skite", "skite-llvm", "gcc", "clang", "rust"))
+            competitors = [(m, v) for v, m in med.items() if not v.startswith("skite")]
+            ours = [m for v, m in med.items() if v.startswith("skite")]
+            if competitors and ours:
                 best = min(competitors)
-                r = med["skite"] / best[0]
+                r = min(ours) / best[0]
                 verdict = f"{1/r:.2f}x faster than {best[1]}" if r < 1 else f"{r:.2f}x SLOWER than {best[1]}"
             else:
                 verdict = "no comparator available"

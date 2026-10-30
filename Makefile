@@ -1,7 +1,7 @@
 # skite is written in skite (skite.ck). bootstrap/skite-seed is a prebuilt skite
 # executable, so building needs no C compiler, assembler, linker or libc.
 # bootstrap/skite.c is the original C seed, kept only for auditing the chain.
-.PHONY: all selfcheck test fuzz bench kernels seed-from-c clean
+.PHONY: all selfcheck test test-llvm fuzz bench kernels seed-from-c clean
 all: skite
 skite: skite.ck
 	./bootstrap/skite-seed skite.ck skite.tmp && ./skite.tmp skite.ck skite && rm -f skite.tmp
@@ -28,6 +28,13 @@ test: skite selfcheck
 	python3 tests/stream_boundaries.py
 	SKITE_LENGTH_FACTS_SUPERVISOR_TEST=1 python3 tests/length_facts.py
 	python3 tests/length_facts.py
+# the LLVM backend (needs clang): the regression suite and oracle fuzzers through tools/skite-llvm
+test-llvm: skite
+	SKITE=tools/skite-llvm ./tests/run.sh
+	python3 tests/llvm_game.py
+	SKITE=tools/skite-llvm SKITE_COMPILE_TIMEOUT=60 ./tests/run_cf_fuzz.sh 100 1 1 1 1 1
+	SKITE=tools/skite-llvm SKITE_COMPILE_TIMEOUT=60 ./tests/run_ty_fuzz.sh 100 1
+	SKITE=tools/skite-llvm SKITE_COMPILE_TIMEOUT=60 python3 tests/vec_fuzz.py 100 1
 fuzz: skite
 	for s in 1 2 3 4 5 6 7 8; do for m in "0 0 0" "1 0 0" "0 1 0" "1 1 0" "0 0 1" "0 1 1" "1 1 1" "0 1 0 1" "1 1 1 1"; do ./tests/run_cf_fuzz.sh 1000 $$s $$m || exit 1; done; done
 	for s in 1 2 3 4 5 6 7 8; do ./tests/run_ty_fuzz.sh 1000 $$s || exit 1; done

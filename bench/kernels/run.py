@@ -12,6 +12,7 @@ import os, subprocess, sys, tempfile, time, statistics, hashlib, shutil
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SKITE = os.path.join(ROOT, "skite")
+SKITE_LLVM = os.path.join(ROOT, "tools", "skite-llvm")
 B = os.path.join(ROOT, "bench")
 V = os.path.join(B, "vigenere")
 D = os.path.join(V, "data")
@@ -55,6 +56,11 @@ def build(name, base, kind, tmp):
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     exe = os.path.join(tmp, name)
     run([SKITE, base + ".ck", exe + ".skite"]); out["skite"] = exe + ".skite"
+    if shutil.which("clang"):   # the LLVM backend (tools/skite-llvm)
+        try:
+            run([SKITE_LLVM, base + ".ck", exe + ".skite-llvm"]); out["skite-llvm"] = exe + ".skite-llvm"
+        except subprocess.CalledProcessError:
+            print(f"  (skite-llvm build of {name} failed; skipped)", file=sys.stderr)
     extra = {"c": [], "cm": ["-lm"], "omp": ["-fopenmp"]}[kind]
     for cc in ("gcc", "clang"):
         try:
@@ -92,9 +98,11 @@ def main():
                     subprocess.run([e] + args, stdout=subprocess.DEVNULL)
                     t[v].append((time.perf_counter() - s) * 1000)
             med = {v: statistics.median(x) for v, x in t.items()}
-            best = min((m, v) for v, m in med.items() if v != "skite")
+            best = min((m, v) for v, m in med.items() if not v.startswith("skite"))
             cells = "  ".join(f"{v} {med[v]:7.1f}" for v in exes)
-            print(f"{name:11s} {cells}   skite/best-other = {med['skite']/best[0]:.3f} ({best[1]})", flush=True)
+            ratio = f"skite/best-other = {med['skite']/best[0]:.3f} ({best[1]})"
+            if "skite-llvm" in med: ratio += f"  skite-llvm/best-other = {med['skite-llvm']/best[0]:.3f}"
+            print(f"{name:11s} {cells}   {ratio}", flush=True)
             rows.append((name, med))
     finally:
         shutil.rmtree(tmp)
