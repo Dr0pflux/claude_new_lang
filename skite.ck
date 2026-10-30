@@ -3754,10 +3754,11 @@ fn new_slot(v: i64) {
   vars[v].slot = fslot[fo]; fslot[fo] += 1; nslots += 1; spilled += 1;
 }
 let active = alloc<i64>(11);
-// float scalars are allocated to xmm8..xmm15 (xmm0/1 are scratch, xmm2..7 the expression stack)
-let XREG0 = 8;
-let NXREG = 8;
-let xactive = alloc<i64>(8);
+// float scalars are allocated to xmm5..xmm15, highest first (xmm0/1 are scratch). The expression
+// stack starts at xmm2 and may grow up to the lowest register a live variable holds (xstack_top)
+let XREG0 = 5;
+let NXREG = 11;
+let xactive = alloc<i64>(16);
 let mut xspilled: i64 = 0;
 let mut xpeak: i64 = 0;
 fn is_xvar(v: i64) -> bool {
@@ -4854,11 +4855,11 @@ fn allocate() {
   let mut nf = 12;
   i = 0;
   while i < 12 { freer[i] = allregs[i]; i += 1; }
-  let xfree = alloc<i64>(8);
+  let xfree = alloc<i64>(16);
   let mut nxf = NXREG;
   let mut nxa = 0;
   i = 0;
-  while i < NXREG { xfree[i] = XREG0 + NXREG - 1 - i; i += 1; }
+  while i < NXREG { xfree[i] = XREG0 + i; i += 1; }   // taken from the end: xmm15 first
   i = 0;
   while i < no {
     let vv = order[i];
@@ -5907,7 +5908,7 @@ fn gen_call(e: i64, rg: i64, n: i64) {
   mov_rr(RGS[rg], RAX);
   tdepth -= nscal;
 }
-// ---- float expression trees in an XMM stack (xmm2..xmm15)
+// ---- float expression trees in an XMM stack (from xmm2 up to xstack_top())
 fn fprec(e: i64) -> bool {
   let k = nd[e].k;
   let op = nd[e].op;
@@ -5982,7 +5983,7 @@ fn genf(e: i64, x: i64, rg: i64, n: i64) {
     }
     if hoisted_x(b) >= 0 { sse(pfx, 0, o, x, K_REG, hoisted_x(b)); return; }
     if fmem_ok(b, dbl) { fop_mem(pfx, o, x, b, rg, n); return; }
-    if x < XSTACK_TOP { genf(b, x + 1, rg, n); sse(pfx, 0, o, x, K_REG, x + 1); return; }
+    if x < xstack_top() { genf(b, x + 1, rg, n); sse(pfx, 0, o, x, K_REG, x + 1); return; }
     gen_x(b, x, rg, n); xmov_in(1, K_REG, RGS[rg], 0); sse(pfx, 0, o, x, K_REG, 1); return;
   }
   if k == N_UN {
@@ -6006,8 +6007,18 @@ fn genf(e: i64, x: i64, rg: i64, n: i64) {
   }
   gen_x(e, x - 1, rg, n); xmov_in(x, K_REG, RGS[rg], 0);
 }
-let XSTACK_TOP = 7;   // expression stack xmm2..xmm7
-fn xroom(e: i64) -> bool { return ftree(e) && !has_call(e) && xtop <= XSTACK_TOP - 2; }
+// the highest register the expression stack may use at the statement being generated: below every
+// xmm register a variable live there holds (at least xmm2..xmm4, since variables start at xmm5)
+fn xstack_top() -> i64 {
+  if cur_pos < 0 { return XREG0 - 1; }
+  if !busy_built { build_busy(); }
+  if cur_pos >= busy_n { return XREG0 - 1; }
+  let m = xbusy[cur_pos];
+  let mut i = 0;
+  while i < NXREG && ((m >> i) & 1) == 0 { i += 1; }
+  return XREG0 + i - 1;
+}
+fn xroom(e: i64) -> bool { return ftree(e) && !has_call(e) && xtop <= xstack_top() - 2; }
 fn genf_root(e: i64, r: i64, rg: i64, n: i64) { let x = xtop; genf(e, x, rg, n); fstore(r, x, fprec(e)); }
 let mut clobm: i64 = 0;   // callee-saved registers written while generating the current function
 fn gen(e: i64, rg: i64, n: i64) {
@@ -6111,7 +6122,7 @@ fn cond_jump(e: i64, sense: bool, list0: i64, rg: i64, n: i64) -> i64 {
     else { let mut t = -1; t = cond_jump(nd[e].a, true, t, rg, n); list = cond_jump(nd[e].b, false, list, rg, n); pl_patch(t, clen); }
     return list;
   }
-  if k == N_BIN && is_fcmp(op) && !has_call(e) && xtop <= XSTACK_TOP - 1 {
+  if k == N_BIN && is_fcmp(op) && !has_call(e) && xtop <= xstack_top() - 1 {
     let bs = fop_base(op); let dbl = fop_dbl(op); let sw = bs == O_FLT || bs == O_FLE; let mut xa = xtop; let mut xb = xtop + 1;
     // operands in xmm variables are compared in place (ucomis* only reads them)
     if xvar_node(nd[e].a) { xa = vars[nd[nd[e].a].var].xr; } else { genf(nd[e].a, xa, rg, n); }
@@ -8621,8 +8632,11 @@ fn cpl_gen(w: i64) -> i64 {   // emits the fast copy; returns the fallback patch
   i = 0;
   while i < CP_N {
     load(RDI, K_MEM, tbase + base + 2 * i, 0); load(RSI, K_MEM, tbase + base + 2 * i + 1, 0); load(RCX, K_MEM, sn, 0);
+    // bytes forward: the same result as elements forward (overlaps are whole elements apart), and
+    // rep movsb takes the fast-string path for short copies too (ERMS / FSRM)
     let wd = vars[CP_A[i]].arr;
-    if wd == 8 { emh("f348a5"); } else if wd == 4 { emh("f3a5"); } else if wd == 2 { emh("66f3a5"); } else { emh("f3a4"); }
+    if wd > 1 { shift_ri(4, RCX, lg(wd)); }
+    emh("f3a4");
     i += 1;
   }
   load(RSI, K_MEM, ssi, 0); load(RDI, K_MEM, sdi, 0);
