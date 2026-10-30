@@ -4936,36 +4936,58 @@ fn busy_reg_of(v: i64, i: i64) -> bool {
   if i >= 12 { return vars[v].xr == XREG0 + i - 12; }
   return vars[v].reg == allregs[i];
 }
+// one sweep over the pcs with each interval's start and end as events (per pc lists), instead of
+// one sweep per register
+let ev_t = alloc<i32>(262144);    // event: register index * 4 + kind (0/1 busy +/-, 2/3 live +/-)
+let ev_nx = alloc<i32>(262144);
+let ev_cnt = alloc<i64>(32);
+let ev_lcnt = alloc<i64>(32);
+fn reg_index(v: i64) -> i64 {
+  let mut i = 0;
+  while i < 12 { if vars[v].reg == allregs[i] { return i; } i += 1; }
+  if vars[v].xr >= XREG0 && vars[v].xr < XREG0 + NXREG { return 12 + vars[v].xr - XREG0; }
+  return -1;
+}
+fn ev_add(p: i64, t: i64, ne: i64) -> i64 { ev_t[ne] = t as i32; ev_nx[ne] = busyd[p]; busyd[p] = ne as i32; return ne + 1; }
 fn build_busy() {
   busy_n = pc + 2;
   if busy_n > 4194304 { fail("program too large"); }
-  let mut i = 0;
-  while i < 12 + NXREG {
-    let mut p = 0;
-    while p < busy_n { busyd[p] = 0; lived[p] = 0; p += 1; }
-    let mut any = false;
-    let mut v = 0;
-    while v < nv {
-      if vars[v].start <= vars[v].end && busy_reg_of(v, i) {
+  let mut p = 0;
+  while p < busy_n { busyd[p] = -1; p += 1; }
+  let mut ne = 0;
+  let mut v = 0;
+  while v < nv {
+    if vars[v].start <= vars[v].end {
+      let i = reg_index(v);
+      if i >= 0 {
         let mut a = vars[v].start; if a < 0 { a = 0; }
         let mut b = vars[v].end + 1; if b > busy_n - 1 { b = busy_n - 1; }
-        busyd[a] += 1; busyd[b] -= 1; any = true;
-        if !lext[v] { b -= 1; }
-        if a < b { lived[a] += 1; lived[b] -= 1; }
-      }
-      v += 1;
-    }
-    if any {
-      let mut c = 0; let mut cl = 0;
-      p = 0;
-      while p < busy_n {
-        c += busyd[p] as i64; cl += lived[p] as i64;
-        if c > 0 { if i < 12 { busy[p] = busy[p] | (1 << i); } else { xbusy[p] = xbusy[p] | (1 << (i - 12)); } }
-        if cl > 0 && i < 12 { livem[p] = livem[p] | (1 << i); }
-        p += 1;
+        ne = ev_add(a, i * 4, ne); ne = ev_add(b, i * 4 + 1, ne);
+        if i < 12 {
+          if !lext[v] { b -= 1; }
+          if a < b { ne = ev_add(a, i * 4 + 2, ne); ne = ev_add(b, i * 4 + 3, ne); }
+        }
       }
     }
-    i += 1;
+    v += 1;
+  }
+  let mut i = 0;
+  while i < 32 { ev_cnt[i] = 0; ev_lcnt[i] = 0; i += 1; }
+  let mut gm = 0; let mut xm = 0; let mut lm = 0;
+  p = 0;
+  while p < busy_n {
+    let mut e = busyd[p] as i64;
+    while e >= 0 {
+      let t = ev_t[e] as i64; let r = t >> 2; let kd = t & 3;
+      if kd == 0 { ev_cnt[r] += 1; } else if kd == 1 { ev_cnt[r] -= 1; } else if kd == 2 { ev_lcnt[r] += 1; } else { ev_lcnt[r] -= 1; }
+      if kd <= 1 {
+        if r < 12 { if ev_cnt[r] > 0 { gm = gm | (1 << r); } else { gm = gm & ~(1 << r); } }
+        else { if ev_cnt[r] > 0 { xm = xm | (1 << (r - 12)); } else { xm = xm & ~(1 << (r - 12)); } }
+      } else { if ev_lcnt[r] > 0 { lm = lm | (1 << r); } else { lm = lm & ~(1 << r); } }
+      e = ev_nx[e] as i64;
+    }
+    busy[p] = gm; xbusy[p] = xm; livem[p] = lm;
+    p += 1;
   }
   busy_built = true;
 }
@@ -5823,12 +5845,22 @@ fn gen_call(e: i64, rg: i64, n: i64) {
   let mut a = nd[e].a;
   while a >= 0 { if nd[a].k == N_ARR { words += 2; } else { words += 1; if has_call(a) { direct = false; } } a = nd[a].next; }
   let slot = alloc<i64>(16);
+  let aslot = alloc<i64>(16);   // per argument: the frame slot it was evaluated into (-1: evaluated in place)
   let mut k = 0;
   if !direct {
+    // arguments with calls run first, into frame slots, before the stack is adjusted (a nested call
+    // resets it). So does every other argument left of the last such call, unless it is a constant or
+    // local variable, which no call can change; the rest are evaluated straight into their slots.
+    let mut last = -1; let mut ai = 0;
     a = nd[e].a;
+    while a >= 0 { if nd[a].k != N_ARR && has_call(a) { last = ai; } ai += 1; a = nd[a].next; }
+    ai = 0; a = nd[e].a;
     while a >= 0 {
-      if nd[a].k != N_ARR { gen(a, rg, n); slot[k] = tslot_push(); store(K_MEM, slot[k], RGS[rg]); k += 1; nscal += 1; }
-      a = nd[a].next;
+      aslot[ai] = -1;
+      if nd[a].k != N_ARR && (rc || has_call(a) || (!simple(a) && ai < last)) {
+        gen(a, rg, n); slot[k] = tslot_push(); store(K_MEM, slot[k], RGS[rg]); aslot[ai] = slot[k]; k += 1; nscal += 1;
+      }
+      ai += 1; a = nd[a].next;
     }
   }
   let svr = alloc<i64>(12);
@@ -5883,6 +5915,7 @@ fn gen_call(e: i64, rg: i64, n: i64) {
     if direct && j >= 1 { mov_rr(RCX, RGS[rg]); }
     if direct && j >= 2 { mov_rr(RDX, RGS[rg + 1]); }
   }
+  let mut ai = 0;
   while a >= 0 {
     if nd[a].k == N_ARR {
       let av = nd[a].var;
@@ -5890,11 +5923,12 @@ fn gen_call(e: i64, rg: i64, n: i64) {
       if vars[av].lenv < 0 { mov_ri(RAX, vars[av].alen as u64); } else { loc(vars[av].lenv); load(RAX, OK, ORR, OI); }
       store_out(8 * w + 8, RAX); w += 2;
     } else {
-      if direct { gen(a, rg, n); store_out(8 * w, RGS[rg]); }
-      else { load(RAX, K_MEM, slot[k], 0); k += 1; store_out(8 * w, RAX); }
+      if (direct || aslot[ai] < 0) && nd[a].k == N_VAR && vars[nd[a].var].reg >= 0 { store_out(8 * w, vars[nd[a].var].reg); }
+      else if direct || aslot[ai] < 0 { gen(a, rg, n); store_out(8 * w, RGS[rg]); }
+      else { load(RAX, K_MEM, aslot[ai], 0); store_out(8 * w, RAX); }
       w += 1;
     }
-    a = nd[a].next;
+    ai += 1; a = nd[a].next;
   }
   sp_adj = 0;
   byte(232); fns[f].calls = pl_add(fns[f].calls, clen); u32_(0);
@@ -9448,7 +9482,7 @@ fn write_map() {
 // Emits the typed AST, before the native passes, as one LLVM module. Integers and bools are i64
 // values (narrow types kept sign/zero-extended), floats are double/float. Traps, wrapping, shift
 // masking, saturating float->int casts and strict IEEE order follow the native backend.
-let llo = alloc<u8>(67108864);   // module text (function bodies are built in `code`, unused by this backend)
+let llo = alloc<u8>(62914560);   // module text (function bodies are built in `code`, unused by this backend)
 let mut llon: i64 = 0;
 let mut llbn: i64 = 0;
 let mut ltmp: i64 = 0;             // %tN temporaries
@@ -9928,10 +9962,10 @@ fn larr(s: i64) {
 }
 // ---- module
 let LLRT = "; skite runtime for the LLVM backend (libc system-call wrappers only)\n@__ob = internal global [65536 x i8] zeroinitializer, align 64\n@__on = internal global i64 0\n@__argc = internal global i64 0\n@__argv = internal global ptr null\n@__atop = internal global ptr null\n@__aend = internal global ptr null\n@__pfail = internal global i32 0\ndeclare i64 @write(i32, ptr, i64)\ndeclare void @_exit(i32) noreturn nounwind\ndeclare ptr @mmap(ptr, i64, i32, i32, i32, i64)\ndeclare i32 @open(ptr, i32, ...)\ndeclare i64 @lseek(i32, i64, i32)\ndeclare i32 @close(i32)\ndeclare i32 @fork()\ndeclare i32 @wait(ptr)\ndeclare i32 @sched_getaffinity(i32, i64, ptr)\ndeclare i32 @kill(i32, i32)\ndeclare i32 @getpid()\ndeclare ptr @signal(i32, ptr)\ndeclare i64 @strlen(ptr)\ndeclare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\ndeclare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\ndeclare void @llvm.trap() noreturn nounwind\ndeclare double @llvm.sqrt.f64(double)\ndeclare float @llvm.sqrt.f32(float)\ndeclare i64 @llvm.fptosi.sat.i64.f64(double)\ndeclare i64 @llvm.fptoui.sat.i64.f64(double)\ndeclare i64 @llvm.fptosi.sat.i64.f32(float)\ndeclare i64 @llvm.fptoui.sat.i64.f32(float)\ndeclare i64 @llvm.smax.i64(i64, i64)\ndeclare i64 @llvm.smin.i64(i64, i64)\ndeclare i64 @llvm.ctpop.i64(i64)\ndefine internal void @__wr(i32 %fd, ptr %p, i64 %n) {\nentry:\n  br label %l\nl:\n  %pp = phi ptr [ %p, %entry ], [ %p2, %more ]\n  %nn = phi i64 [ %n, %entry ], [ %n2, %more ]\n  %z = icmp sle i64 %nn, 0\n  br i1 %z, label %done, label %w\nw:\n  %r = call i64 @write(i32 %fd, ptr %pp, i64 %nn)\n  %bad = icmp sle i64 %r, 0\n  br i1 %bad, label %done, label %more\nmore:\n  %p2 = getelementptr i8, ptr %pp, i64 %r\n  %n2 = sub i64 %nn, %r\n  br label %l\ndone:\n  ret void\n}\ndefine internal void @__flush() noinline {\n  %n = load i64, ptr @__on\n  call void @__wr(i32 1, ptr @__ob, i64 %n)\n  store i64 0, ptr @__on\n  ret void\n}\ndefine internal void @__putc(i64 %c) alwaysinline {\nentry:\n  %n = load i64, ptr @__on\n  %full = icmp eq i64 %n, 65536\n  br i1 %full, label %fl, label %put\nfl:\n  call void @__flush()\n  br label %put\nput:\n  %m = phi i64 [ %n, %entry ], [ 0, %fl ]\n  %p = getelementptr inbounds [65536 x i8], ptr @__ob, i64 0, i64 %m\n  %b = trunc i64 %c to i8\n  store i8 %b, ptr %p\n  %m1 = add i64 %m, 1\n  store i64 %m1, ptr @__on\n  ret void\n}\ndefine internal void @__write(ptr %s, i64 %len) {\nentry:\n  %n = load i64, ptr @__on\n  %room = sub i64 65536, %n\n  %fits = icmp ule i64 %len, %room\n  br i1 %fits, label %copy, label %fl\nfl:\n  call void @__flush()\n  %big = icmp uge i64 %len, 65536\n  br i1 %big, label %direct, label %copy\ndirect:\n  call void @__wr(i32 1, ptr %s, i64 %len)\n  ret void\ncopy:\n  %m = phi i64 [ %n, %entry ], [ 0, %fl ]\n  %p = getelementptr inbounds [65536 x i8], ptr @__ob, i64 0, i64 %m\n  call void @llvm.memcpy.p0.p0.i64(ptr %p, ptr %s, i64 %len, i1 false)\n  %m1 = add i64 %m, %len\n  store i64 %m1, ptr @__on\n  ret void\n}\ndefine internal void @__ewrite(ptr %s, i64 %len) {\n  call void @__flush()\n  call void @__wr(i32 2, ptr %s, i64 %len)\n  ret void\n}\ndefine internal void @__pu(i64 %x) {\nentry:\n  %buf = alloca [24 x i8], align 1\n  br label %l\nl:\n  %v = phi i64 [ %x, %entry ], [ %q, %l ]\n  %i = phi i64 [ 24, %entry ], [ %i1, %l ]\n  %q = udiv i64 %v, 10\n  %r0 = urem i64 %v, 10\n  %r = add i64 %r0, 48\n  %i1 = sub i64 %i, 1\n  %p = getelementptr inbounds [24 x i8], ptr %buf, i64 0, i64 %i1\n  %b = trunc i64 %r to i8\n  store i8 %b, ptr %p\n  %more = icmp ne i64 %q, 0\n  br i1 %more, label %l, label %done\ndone:\n  %s = getelementptr inbounds [24 x i8], ptr %buf, i64 0, i64 %i1\n  %len = sub i64 24, %i1\n  call void @__write(ptr %s, i64 %len)\n  ret void\n}\ndefine internal void @__print_u(i64 %x) {\n  call void @__pu(i64 %x)\n  call void @__putc(i64 10)\n  ret void\n}\ndefine internal void @__print_i(i64 %x) {\nentry:\n  %neg = icmp slt i64 %x, 0\n  br i1 %neg, label %n, label %p\nn:\n  call void @__putc(i64 45)\n  %m = sub i64 0, %x\n  br label %p\np:\n  %v = phi i64 [ %x, %entry ], [ %m, %n ]\n  call void @__pu(i64 %v)\n  call void @__putc(i64 10)\n  ret void\n}\ndefine internal void @__trap() noreturn cold noinline nounwind {\n  call void @__flush()\n  call void @llvm.trap()\n  unreachable\n}\ndefine internal void @__fpe() noreturn cold noinline nounwind {\n  call void @__flush()\n  %o = call ptr @signal(i32 8, ptr null)\n  %pid = call i32 @getpid()\n  %k = call i32 @kill(i32 %pid, i32 8)\n  call void @llvm.trap()\n  unreachable\n}\ndefine internal void @__exit(i64 %c) noreturn noinline {\n  call void @__flush()\n  %c32 = trunc i64 %c to i32\n  call void @_exit(i32 %c32)\n  unreachable\n}\ndefine internal ptr @__map(i64 %bytes, i64 %shared) noinline {\n  %sh = icmp ne i64 %shared, 0\n  %fl = select i1 %sh, i32 33, i32 34\n  %p = call ptr @mmap(ptr null, i64 %bytes, i32 3, i32 %fl, i32 -1, i64 0)\n  %pi = ptrtoint ptr %p to i64\n  %bad = icmp uge i64 %pi, -4096\n  br i1 %bad, label %t, label %ok\nt:\n  call void @__trap()\n  unreachable\nok:\n  ret ptr %p\n}\ndefine internal void @__arena_init() noinline {\n  %p = call ptr @mmap(ptr null, i64 17179869184, i32 3, i32 16418, i32 -1, i64 0)\n  %pi = ptrtoint ptr %p to i64\n  %bad = icmp uge i64 %pi, -4096\n  br i1 %bad, label %t, label %ok\nt:\n  call void @__trap()\n  unreachable\nok:\n  store ptr %p, ptr @__atop\n  %e = getelementptr i8, ptr %p, i64 17179869184\n  store ptr %e, ptr @__aend\n  ret void\n}\ndefine internal noalias ptr @__arena(i64 %bytes) noinline {\n  %r0 = add i64 %bytes, 63\n  %r = and i64 %r0, -64\n  %top = load ptr, ptr @__atop\n  %end = load ptr, ptr @__aend\n  %ti = ptrtoint ptr %top to i64\n  %ei = ptrtoint ptr %end to i64\n  %room = sub i64 %ei, %ti\n  %bad = icmp ugt i64 %r, %room\n  br i1 %bad, label %t, label %ok\nt:\n  call void @__trap()\n  unreachable\nok:\n  %nt = getelementptr i8, ptr %top, i64 %r\n  store ptr %nt, ptr @__atop\n  call void @llvm.memset.p0.i64(ptr align 64 %top, i8 0, i64 %r, i1 false)\n  ret ptr %top\n}\ndefine internal ptr @__argp(i64 %k) {\n  %ac = load i64, ptr @__argc\n  %bad = icmp uge i64 %k, %ac\n  br i1 %bad, label %t, label %ok\nt:\n  call void @__trap()\n  unreachable\nok:\n  %av = load ptr, ptr @__argv\n  %pp = getelementptr ptr, ptr %av, i64 %k\n  %p = load ptr, ptr %pp\n  ret ptr %p\n}\ndefine internal ptr @__arg(i64 %k, ptr %lenout) {\n  %p = call ptr @__argp(i64 %k)\n  %n = call i64 @strlen(ptr %p)\n  store i64 %n, ptr %lenout\n  ret ptr %p\n}\ndefine internal ptr @__file(i64 %k, ptr %lenout) noinline {\nentry:\n  %path = call ptr @__argp(i64 %k)\n  %fd = call i32 (ptr, i32, ...) @open(ptr %path, i32 0)\n  %badf = icmp slt i32 %fd, 0\n  br i1 %badf, label %t, label %o1\no1:\n  %sz = call i64 @lseek(i32 %fd, i64 0, i32 2)\n  %bads = icmp slt i64 %sz, 0\n  br i1 %bads, label %t, label %o2\no2:\n  %p = call ptr @mmap(ptr null, i64 %sz, i32 1, i32 2, i32 %fd, i64 0)\n  %pi = ptrtoint ptr %p to i64\n  %badm = icmp uge i64 %pi, -4096\n  br i1 %badm, label %t, label %ok\nt:\n  call void @__trap()\n  unreachable\nok:\n  %c = call i32 @close(i32 %fd)\n  store i64 %sz, ptr %lenout\n  ret ptr %p\n}\ndefine internal void @__save(i64 %k, ptr %base, i64 %len, i64 %n) noinline {\nentry:\n  %ac = load i64, ptr @__argc\n  %b1 = icmp uge i64 %k, %ac\n  %b2 = icmp ugt i64 %n, %len\n  %b = or i1 %b1, %b2\n  br i1 %b, label %t, label %o1\no1:\n  %path = call ptr @__argp(i64 %k)\n  %fd = call i32 (ptr, i32, ...) @open(ptr %path, i32 577, i32 493)\n  %badf = icmp slt i32 %fd, 0\n  br i1 %badf, label %t, label %l\nl:\n  %pp = phi ptr [ %base, %o1 ], [ %p2, %more ]\n  %nn = phi i64 [ %n, %o1 ], [ %n2, %more ]\n  %z = icmp eq i64 %nn, 0\n  br i1 %z, label %done, label %w\nw:\n  %r = call i64 @write(i32 %fd, ptr %pp, i64 %nn)\n  %bad = icmp sle i64 %r, 0\n  br i1 %bad, label %t, label %more\nmore:\n  %p2 = getelementptr i8, ptr %pp, i64 %r\n  %n2 = sub i64 %nn, %r\n  br label %l\nt:\n  call void @__trap()\n  unreachable\ndone:\n  %c = call i32 @close(i32 %fd)\n  ret void\n}\ndefine internal i64 @__ncpu() noinline {\nentry:\n  %buf = alloca [16 x i64], align 8\n  call void @llvm.memset.p0.i64(ptr %buf, i8 0, i64 128, i1 false)\n  %r = call i32 @sched_getaffinity(i32 0, i64 128, ptr %buf)\n  %bad = icmp ne i32 %r, 0\n  br i1 %bad, label %z, label %l\nz:\n  ret i64 0\nl:\n  %i = phi i64 [ 0, %entry ], [ %i1, %l ]\n  %s = phi i64 [ 0, %entry ], [ %s1, %l ]\n  %p = getelementptr inbounds [16 x i64], ptr %buf, i64 0, i64 %i\n  %w = load i64, ptr %p\n  %c = call i64 @llvm.ctpop.i64(i64 %w)\n  %s1 = add i64 %s, %c\n  %i1 = add i64 %i, 1\n  %more = icmp ult i64 %i1, 16\n  br i1 %more, label %l, label %done\ndone:\n  ret i64 %s1\n}\ndefine internal void @__fork_child() {\n  store i64 0, ptr @__on\n  ret void\n}\ndefine internal i64 @__fork() noinline {\n  %p = call i32 @fork()\n  %bad = icmp slt i32 %p, 0\n  br i1 %bad, label %t, label %ok\nt:\n  call void @__trap()\n  unreachable\nok:\n  %r = sext i32 %p to i64\n  ret i64 %r\n}\ndefine internal void @__par_wait() noinline {\nentry:\n  %st = alloca i32, align 4\n  br label %l\nl:\n  %r = call i32 @wait(ptr %st)\n  %done = icmp slt i32 %r, 0\n  br i1 %done, label %fin, label %chk\nchk:\n  %s = load i32, ptr %st\n  %bad = icmp ne i32 %s, 0\n  br i1 %bad, label %mark, label %l\nmark:\n  store i32 1, ptr @__pfail\n  br label %l\nfin:\n  %f = load i32, ptr @__pfail\n  %fb = icmp ne i32 %f, 0\n  br i1 %fb, label %t, label %ok\nt:\n  call void @__trap()\n  unreachable\nok:\n  ret void\n}\n";
-fn lo_s(s: [u8]) { if llon + len(s) > 67108000 { fail("LLVM output too large"); } let mut i = 0; while i < len(s) { llo[llon + i] = s[i]; i += 1; } llon += len(s); }
-fn lo_c(c: i64) { if llon > 67108000 { fail("LLVM output too large"); } llo[llon] = c as u8; llon += 1; }
+fn lo_s(s: [u8]) { if llon + len(s) > 62914000 { fail("LLVM output too large"); } let mut i = 0; while i < len(s) { llo[llon + i] = s[i]; i += 1; } llon += len(s); }
+fn lo_c(c: i64) { if llon > 62914000 { fail("LLVM output too large"); } llo[llon] = c as u8; llon += 1; }
 fn lo_n(v: i64) { if v < 0 { lo_c('-'); lo_n(0 - v); return; } if v >= 10 { lo_n(v / 10); } lo_c(v % 10 + 48); }
-fn lo_body() { if llon + llbn > 67108000 { fail("LLVM output too large"); } let mut i = 0; while i < llbn { llo[llon + i] = code[i]; i += 1; } llon += llbn; }
+fn lo_body() { if llon + llbn > 62914000 { fail("LLVM output too large"); } let mut i = 0; while i < llbn { llo[llon + i] = code[i]; i += 1; } llon += llbn; }
 fn lo_allocas() {
   let mut v = 0;
   while v < nv {
