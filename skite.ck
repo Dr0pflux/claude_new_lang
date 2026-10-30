@@ -4805,6 +4805,8 @@ fn allocate() {
   while f < nfn { if fns[f].used != 0 { CS_F = f; gi_walk(fns[f].body); bi_walk(fns[f].body); sw_walk(fns[f].body); sm_walk(fns[f].body); su_walk(fns[f].body); ss_walk(fns[f].body, false); cs_walk(fns[f].body); lh_walk(fns[f].body); bv_walk(fns[f].body); mm_walk(fns[f].body, false); dm_walk(fns[f].body); } f += 1; }
   let mut v = 0;
   while v < nv { if vars[v].owner >= 0 && fns[vars[v].owner].used == 0 { vars[v].reads = 0; } v += 1; }
+  f = 0;
+  while f < nfn { if fns[f].used != 0 { ix_stmt(fns[f].body, f); } f += 1; }
   analyze();
   bv_prune();
   strength_reduce();
@@ -4975,6 +4977,144 @@ fn temps_at(p: i64) -> i64 {
   while i < 12 { if ((m >> i) & 1) == 0 { TMPS[n] = allregs[i]; n += 1; } i += 1; }
   if n < 2 { fail("internal: fewer than two temporary registers"); }
   return n;
+}
+// ---- index CSE: in a run of straight-line statements, a pure i64 index expression (variables and
+// constants under + - * << >> >>> & | ^, not just v +- c) used by several array accesses is computed once into a
+// hidden variable before the first of them. No variable of the expression may be assigned in between
+// (nested statements count), so every use sees the same value. Evaluating it early cannot trap or
+// change output. Besides the address arithmetic this saves, the range analysis then knows the
+// variable is in bounds after its first checked access and removes the later checks.
+let IX_H = alloc<i64>(4096);    // accesses (N_LOAD / S_STORE) whose index is a candidate
+let IX_M = alloc<i64>(4096);    // ... and the statement position holding each
+let IX_ST = alloc<i64>(4097);   // the block's statements
+let IX_PRE = alloc<i64>(4097);  // the node now linked before IX_ST[m] (-1: the block's head)
+let IX_A0 = alloc<i64>(4098);   // assigned variables of statement m: IX_AV[IX_A0[m] .. IX_A0[m + 1])
+let IX_AV = alloc<i64>(131072);
+let IX_EV = alloc<i64>(64);     // variables of the expression being shared
+let mut ix_nh: i64 = 0;
+let mut ix_na: i64 = 0;
+let mut ix_nev: i64 = 0;
+let mut ix_n: i64 = 0;
+let mut ix_over: bool = false;
+fn ix_pure(e: i64, d: i64) -> bool {
+  if e < 0 || d > 6 { return false; }
+  let k = nd[e].k;
+  if k == N_CONST { return true; }
+  if k == N_VAR { return vars[nd[e].var].arr == 0; }
+  if k != N_BIN { return false; }
+  let op = nd[e].op;
+  if op != O_ADD && op != O_SUB && op != O_MUL && op != O_SHL && op != O_SHR && op != O_SAR && op != O_AND && op != O_OR && op != O_XOR { return false; }
+  return ix_pure(nd[e].a, d + 1) && ix_pure(nd[e].b, d + 1);
+}
+// v + c and v - c are left alone: the range analysis proves them relationally (i < len(a) gives
+// a[i - k]; len(a) - k), which a hidden copy would hide
+fn ix_cand(e: i64) -> bool {
+  if e < 0 || nd[e].k != N_BIN || nd[e].ty != TY_I64 || !ix_pure(e, 0) { return false; }
+  let op = nd[e].op;
+  if (op == O_ADD || op == O_SUB) && (nd[nd[e].a].k == N_CONST || nd[nd[e].b].k == N_CONST) && (nd[nd[e].a].k == N_VAR || nd[nd[e].b].k == N_VAR) { return false; }
+  return true;
+}
+fn ix_eq(a: i64, b: i64) -> bool {
+  if nd[a].k != nd[b].k || nd[a].ty != nd[b].ty { return false; }
+  if nd[a].k == N_CONST { return nd[a].v == nd[b].v; }
+  if nd[a].k == N_VAR { return nd[a].var == nd[b].var; }
+  return nd[a].op == nd[b].op && ix_eq(nd[a].a, nd[b].a) && ix_eq(nd[a].b, nd[b].b);
+}
+fn ix_vars(e: i64) {
+  if nd[e].k == N_VAR { if ix_nev < 64 { IX_EV[ix_nev] = nd[e].var; ix_nev += 1; } return; }
+  if nd[e].k == N_BIN { ix_vars(nd[e].a); ix_vars(nd[e].b); }
+}
+fn ix_hold(h: i64, m: i64) { if ix_nh < 4096 && ix_cand(nd[h].a) { IX_H[ix_nh] = h; IX_M[ix_nh] = m; ix_nh += 1; } }
+fn ix_simple(c: i64, m: i64) {   // the accesses of one statement's own expressions
+  let k = nd[c].k;
+  if k == S_LET || k == S_ASSIGN || k == S_IRET || k == S_RET || k == S_EXPR || k == S_PRINT || k == S_PUTC || k == S_IF { ix_expr(nd[c].a, m); }
+  if k == S_STORE { ix_hold(c, m); ix_expr(nd[c].a, m); ix_expr(nd[c].b, m); }
+}
+fn ix_expr(e: i64, m: i64) {
+  if e < 0 { return; }
+  let k = nd[e].k;
+  if k == N_LOAD { ix_hold(e, m); ix_expr(nd[e].a, m); return; }
+  if k == N_CALL { let mut x = nd[e].a; while x >= 0 { ix_expr(x, m); x = nd[x].next; } return; }
+  if k == N_BIN || k == N_UN { ix_expr(nd[e].a, m); ix_expr(nd[e].b, m); }
+}
+fn ix_assigned(s: i64) {   // every scalar the statement may assign, nested statements included
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if (k == S_LET || k == S_ASSIGN || k == S_IRET) && nd[s].var >= 0 && ix_na < 131072 { IX_AV[ix_na] = nd[s].var; ix_na += 1; }
+  if k == S_ARR && ix_na < 131070 { IX_AV[ix_na] = vars[nd[s].var].basev; IX_AV[ix_na + 1] = vars[nd[s].var].lenv; ix_na += 2; }
+  if k == S_PAR && ix_na < 131070 { IX_AV[ix_na] = nd[s].var; IX_AV[ix_na + 1] = nd[s].op; ix_na += 2; ix_assigned(nd[s].c); }
+  if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { ix_assigned(c); c = nd[c].next; } }
+  if k == S_IF { ix_assigned(nd[s].b); ix_assigned(nd[s].c); }
+  if k == S_WHILE { ix_assigned(nd[s].b); }
+  if ix_na >= 131070 { ix_over = true; }   // table full: treat every statement as assigning everything
+}
+fn ix_kills(m: i64) -> bool {   // statement m assigns a variable of the shared expression
+  if ix_over { return true; }
+  let mut j = IX_A0[m];
+  while j < IX_A0[m + 1] {
+    let mut q = 0; while q < ix_nev { if IX_EV[q] == IX_AV[j] { return true; } q += 1; }
+    j += 1;
+  }
+  return false;
+}
+fn ix_block(b: i64, f: i64) {
+  let mut ns = 0;
+  ix_nh = 0; ix_na = 0; ix_over = false;
+  let mut c = nd[b].a;
+  while c >= 0 && ns < 4096 {
+    IX_ST[ns] = c;
+    if ns == 0 { IX_PRE[ns] = -1; } else { IX_PRE[ns] = IX_ST[ns - 1]; }
+    ix_simple(c, ns);
+    IX_A0[ns] = ix_na;
+    ix_assigned(c);
+    ns += 1; c = nd[c].next;
+  }
+  IX_A0[ns] = ix_na;
+  let mut i = 0;
+  while i < ix_nh {
+    let h = IX_H[i];
+    let e = nd[h].a;
+    if !ix_cand(e) { i += 1; continue; }   // already shared
+    ix_nev = 0; ix_vars(e);
+    // later accesses with the same index, up to the first statement that changes one of its variables
+    let mut uses = 1;
+    let mut m = IX_M[i];
+    let mut j = i + 1;
+    let mut lim = ns;
+    while j < ix_nh {
+      while m < IX_M[j] { if ix_kills(m) { lim = m; m = ns; } else { m += 1; } }
+      if IX_M[j] > lim { break; }
+      if ix_cand(nd[IX_H[j]].a) && ix_eq(nd[IX_H[j]].a, e) { uses += 1; }
+      j += 1;
+    }
+    if uses >= 2 {
+      let t = hidden(); vars[t].ty = TY_I64; vars[t].owner = f;
+      let l = mk(S_LET); nd[l].var = t; nd[l].a = e;
+      let at = IX_M[i];
+      nd[l].next = IX_ST[at];
+      if IX_PRE[at] < 0 { nd[b].a = l; } else { nd[IX_PRE[at]].next = l; }
+      IX_PRE[at] = l;
+      nd[h].a = mk_var(t);
+      j = i + 1;
+      while j < ix_nh && IX_M[j] <= lim {
+        if ix_cand(nd[IX_H[j]].a) && ix_eq(nd[IX_H[j]].a, e) { nd[IX_H[j]].a = mk_var(t); }
+        j += 1;
+      }
+      ix_n += 1;
+    }
+    i += 1;
+  }
+  // nested blocks, after this block's tables are no longer needed
+  c = nd[b].a;
+  while c >= 0 { ix_stmt(c, f); c = nd[c].next; }
+}
+fn ix_stmt(s: i64, f: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK || k == S_INL { ix_block(s, f); return; }
+  if k == S_IF { ix_stmt(nd[s].b, f); ix_stmt(nd[s].c, f); return; }
+  if k == S_WHILE { ix_stmt(nd[s].b, f); return; }
+  if k == S_PAR { ix_stmt(nd[s].c, f); }
 }
 // ---------------------------------------------------------------- x86-64 encoder
 let code = alloc<u8>(16777216);
@@ -9101,7 +9241,7 @@ fn write_map() {
 // Emits the typed AST, before the native passes, as one LLVM module. Integers and bools are i64
 // values (narrow types kept sign/zero-extended), floats are double/float. Traps, wrapping, shift
 // masking, saturating float->int casts and strict IEEE order follow the native backend.
-let llo = alloc<u8>(67108864);   // (function bodies are built in `code`, unused by this backend)   // module text
+let llo = alloc<u8>(67108864);   // module text (function bodies are built in `code`, unused by this backend)
 let mut llon: i64 = 0;
 let mut llbn: i64 = 0;
 let mut ltmp: i64 = 0;             // %tN temporaries

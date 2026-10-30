@@ -358,6 +358,12 @@ cmp -s tests/data/carry.trap "$T/carry.out" || { echo 'FAIL: carry trap output' 
 "$SKITE" tests/data/lhoist_trap.ck "$T/lhoist_trap" > /dev/null
 if "$T/lhoist_trap" > "$T/lhoist_trap.out" 2>/dev/null; then echo 'FAIL: hoisted load must trap' >&2; exit 1; fi
 [[ "$(cat "$T/lhoist_trap.out")" == $'0\n0' ]] || { echo 'FAIL: hoisted load trapped in a zero-trip loop' >&2; exit 1; }
+# index CSE: shared index values never cross a change of their variables; a shorter array keeps its check
+"$SKITE" tests/data/index_cse.ck "$T/index_cse" > /dev/null
+rc=0; "$T/index_cse" x > "$T/index_cse.out" 2>/dev/null || rc=$?
+[[ $rc -eq 132 ]] || { echo "FAIL: index_cse must trap (rc=$rc)" >&2; exit 1; }
+cmp -s tests/data/index_cse.expected "$T/index_cse.out" || { echo 'FAIL: index_cse output' >&2; exit 1; }
+echo 'PASS: shared index expressions keep values and traps'
 "$SKITE" tests/data/bversion.ck "$T/bversion" > /dev/null
 if "$T/bversion" > "$T/bversion.out" 2>/dev/null; then echo 'FAIL: bversion must trap in its checked copy' >&2; exit 1; fi
 cmp -s tests/data/bversion.expected "$T/bversion.out" || { echo 'FAIL: bversion output' >&2; exit 1; }
