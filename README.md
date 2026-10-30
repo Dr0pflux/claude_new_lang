@@ -10,6 +10,30 @@ VM or libc. A prebuilt Skite seed starts the build; self-hosting is checked by
 reproducing the compiler byte for byte. The original C bootstrap is retained
 only for auditing.
 
+## Native code and runtime work (branch `claude/native-runtime-20261030`)
+
+Machine-code and runtime changes, verified by self-hosting fixed point, `tests/run.sh`
+and differential fuzzing (no benchmark claims):
+
+- **Loop layout:** loop heads are padded (never executed) and innermost loops are laid out so
+  their branches do not cross 32-byte lines (the JCC erratum made such loops up to ~1.9x slower);
+  main's empty frame is replaced by a NOP instead of being cut out, which shifted every loop.
+- **Bounds checks:** `alloc(n)` with an immutable `n` makes `i < n` prove `i < len(a)`; proven
+  accesses no longer keep the array length live in a register.
+- **Allocation runtime:** `alloc<T>(n)` bumps a pointer in a lazily faulted 1 GiB reservation
+  (one `mmap` per chunk instead of one syscall and six register saves per array).
+- **Copy loops:** `A[i + d] = B[i + s]` loops over static arrays become `rep movs` when every copied
+  range is in bounds (the checked loop runs otherwise, so traps are unchanged).
+- **Compiler speed:** the range analysis keeps its environments as separate field arrays, copies
+  once per `if`, iterates loops only over assigned variables, and resets its loop cache
+  incrementally; hoisted loop constants are kept in per-loop lists. Self-compile 5.9 s → 1.7 s.
+- **Also:** `x * 3/5/9` as `lea`, 8-bit stack adjustments (owner's local experiment), loop-local
+  copies of read-only scalars, stream loops without dead iota or per-block broadcasts.
+
+**Known issue:** `bootstrap/skite-seed` (the old prebuilt seed) builds a compiler from this source
+that crashes; build with an existing compiler instead (`./skite skite.ck stage1 && ./stage1 skite.ck
+skite`) until the seed is refreshed. The committed `skite` binary is the fixed point.
+
 ## Build and learn
 
 ```sh

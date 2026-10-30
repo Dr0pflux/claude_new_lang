@@ -763,7 +763,10 @@ let arr_leader = alloc<i64>(65536);
 // environments: blocks of env_n+1 entries in one pool; index env_n is the "dead" flag (lo != 0)
 struct VR { lo: i64, hi: i64, lt: u64, bot: bool }
 let ENV_CAP = 16000000;
-let envp = alloc<VR>(16000000);
+let env_lo = alloc<i64>(16000000);   // analysis environments, one array per field (copies vectorize)
+let env_hi = alloc<i64>(16000000);
+let env_lt = alloc<u64>(16000000);
+let env_bot = alloc<bool>(16000000);
 let mut env_n: i64 = 0;
 let mut pool_bump: i64 = 0;          // temporaries grow up from 0
 let mut pool_top: i64 = 16000000;    // loop-entry snapshots (kept for strength reduction) grow down
@@ -781,7 +784,7 @@ fn env_new() -> i64 {
   let e = env_alloc();
   let bs = env_n + 1;
   let mut i = 0;
-  while i < bs { envp[e + i].lo = 0; envp[e + i].hi = 0; envp[e + i].lt = 0; envp[e + i].bot = false; i += 1; }
+  while i < bs { env_lo[e + i] = 0; env_hi[e + i] = 0; env_lt[e + i] = 0; env_bot[e + i] = false; i += 1; }
   return e;
 }
 fn env_new_keep() -> i64 { // never freed
@@ -790,17 +793,17 @@ fn env_new_keep() -> i64 { // never freed
   if pool_top < pool_bump { fail("analysis memory exhausted"); }
   let e = pool_top;
   let mut i = 0;
-  while i < bs { envp[e + i].lo = 0; envp[e + i].hi = 0; envp[e + i].lt = 0; envp[e + i].bot = false; i += 1; }
+  while i < bs { env_lo[e + i] = 0; env_hi[e + i] = 0; env_lt[e + i] = 0; env_bot[e + i] = false; i += 1; }
   return e;
 }
 fn env_free(e: i64) { freeb[nfreeb] = e; nfreeb += 1; }
-fn dead(e: i64) -> bool { return envp[e + env_n].lo != 0; }
-fn set_dead(e: i64) { envp[e + env_n].lo = 1; }
+fn dead(e: i64) -> bool { return env_lo[e + env_n] != 0; }
+fn set_dead(e: i64) { env_lo[e + env_n] = 1; }
 fn env_copy(d: i64, s: i64) {
   let mut i = 0;
   while i <= env_n {
     let j = d + i; let k = s + i;
-    envp[j].lo = envp[k].lo; envp[j].hi = envp[k].hi; envp[j].lt = envp[k].lt; envp[j].bot = envp[k].bot;
+    env_lo[j] = env_lo[k]; env_hi[j] = env_hi[k]; env_lt[j] = env_lt[k]; env_bot[j] = env_bot[k];
     i += 1;
   }
 }
@@ -809,12 +812,12 @@ fn env_join(d: i64, s: i64) {
   if dead(d) { env_copy(d, s); return; }
   let mut v = 0;
   while v < env_n {
-    if envp[d + v].bot { envp[d + v].lo = envp[s + v].lo; envp[d + v].hi = envp[s + v].hi; envp[d + v].bot = envp[s + v].bot; }
-    else if !envp[s + v].bot {
-      if envp[s + v].lo < envp[d + v].lo { envp[d + v].lo = envp[s + v].lo; }
-      if envp[s + v].hi > envp[d + v].hi { envp[d + v].hi = envp[s + v].hi; }
+    if env_bot[d + v] { env_lo[d + v] = env_lo[s + v]; env_hi[d + v] = env_hi[s + v]; env_bot[d + v] = env_bot[s + v]; }
+    else if !env_bot[s + v] {
+      if env_lo[s + v] < env_lo[d + v] { env_lo[d + v] = env_lo[s + v]; }
+      if env_hi[s + v] > env_hi[d + v] { env_hi[d + v] = env_hi[s + v]; }
     }
-    envp[d + v].lt = envp[d + v].lt & envp[s + v].lt;
+    env_lt[d + v] = env_lt[d + v] & env_lt[s + v];
     v += 1;
   }
 }
@@ -822,15 +825,18 @@ fn env_eq(a: i64, b: i64) -> bool {
   if dead(a) != dead(b) { return false; }
   let mut v = 0;
   while v < env_n {
-    if envp[a + v].lt != envp[b + v].lt || envp[a + v].bot != envp[b + v].bot { return false; }
-    if !envp[a + v].bot && (envp[a + v].lo != envp[b + v].lo || envp[a + v].hi != envp[b + v].hi) { return false; }
+    if env_lt[a + v] != env_lt[b + v] || env_bot[a + v] != env_bot[b + v] { return false; }
+    if !env_bot[a + v] && (env_lo[a + v] != env_lo[b + v] || env_hi[a + v] != env_hi[b + v]) { return false; }
     v += 1;
   }
   return true;
 }
+let wc_set = alloc<i64>(1048576);
+let mut nwc_set: i64 = 0;
 fn wcache_free() {
   let mut i = 0;
-  while i < nn { wcache[i] = 0; i += 1; }
+  while i < nwc_set { wcache[wc_set[i]] = 0; i += 1; }   // only the entries set since the last reset
+  nwc_set = 0;
   wcache_bytes = 0;
   pool_reset();
 }
@@ -928,16 +934,16 @@ fn env_widen(old: i64, nw: i64, use_thr: bool) {
   if dead(old) { return; }
   let mut v = 0;
   while v < env_n {
-    if !envp[old + v].bot && !envp[nw + v].bot {
-      if envp[nw + v].lo < envp[old + v].lo {
+    if !env_bot[old + v] && !env_bot[nw + v] {
+      if env_lo[nw + v] < env_lo[old + v] {
         let mut t = INT64_MIN;
-        if use_thr { let mut i = nthr - 1; while i >= 0 { if thr[i] <= envp[nw + v].lo { t = thr[i]; break; } i -= 1; } }
-        envp[nw + v].lo = t;
+        if use_thr { let mut i = nthr - 1; while i >= 0 { if thr[i] <= env_lo[nw + v] { t = thr[i]; break; } i -= 1; } }
+        env_lo[nw + v] = t;
       }
-      if envp[nw + v].hi > envp[old + v].hi {
+      if env_hi[nw + v] > env_hi[old + v] {
         let mut t = INT64_MAX;
-        if use_thr { let mut i = 0; while i < nthr { if thr[i] >= envp[nw + v].hi { t = thr[i]; break; } i += 1; } }
-        envp[nw + v].hi = t;
+        if use_thr { let mut i = 0; while i < nthr { if thr[i] >= env_hi[nw + v] { t = thr[i]; break; } i += 1; } }
+        env_hi[nw + v] = t;
       }
     }
     v += 1;
@@ -955,21 +961,21 @@ fn proven(a: i64, idx: i64, rlo: i64, rhi: i64, rbot: bool, env: i64) -> bool {
     let k = nd[nd[x].b].v as i64;
     let lenv = vars[a].lenv;
     let L = env + LV(lenv);
-    if k > 0 && nd[nd[x].a].var == lenv && !envp[L].bot && envp[L].lo >= k { return true; }
+    if k > 0 && nd[nd[x].a].var == lenv && !env_bot[L] && env_lo[L] >= k { return true; }
   }
   if vars[a].aid >= 0 {
-    if nd[x].k == N_VAR && ((envp[env + LV(nd[x].var)].lt >> (vars[a].aid as u64)) & 1) != 0 { return true; }
+    if nd[x].k == N_VAR && ((env_lt[env + LV(nd[x].var)] >> (vars[a].aid as u64)) & 1) != 0 { return true; }
     // If x is i-k, a proven i < len(a) also proves i-k < len(a), provided
     // the inferred interval shows the subtraction cannot underflow or wrap.
     if nd[x].k == N_BIN && nd[x].op == O_SUB && nd[nd[x].a].k == N_VAR && is_const(nd[x].b) {
       let k = nd[nd[x].b].v as i64;
       let v = nd[nd[x].a].var;
       let vi = env + LV(v);
-      if k >= 0 && !envp[vi].bot && envp[vi].lo >= k && ((envp[vi].lt >> (vars[a].aid as u64)) & 1) != 0 { return true; }
+      if k >= 0 && !env_bot[vi] && env_lo[vi] >= k && ((env_lt[vi] >> (vars[a].aid as u64)) & 1) != 0 { return true; }
     }
   }
   let L = env + LV(vars[a].lenv);
-  return !envp[L].bot && rhi < envp[L].lo;
+  return !env_bot[L] && rhi < env_lo[L];
 }
 fn narrow_tgt(op: i64) -> i64 {
   let k = (op - U_SX8) % 6;
@@ -979,7 +985,7 @@ fn narrow_tgt(op: i64) -> i64 {
 fn er(e: i64, env: i64) { // range of expression e -> R*
   let k = nd[e].k;
   if k == N_CONST { ret_rg(nd[e].v as i64, nd[e].v as i64); return; }
-  if k == N_VAR { let i = env + LV(nd[e].var); RLO = envp[i].lo; RHI = envp[i].hi; RBOT = envp[i].bot; return; }
+  if k == N_VAR { let i = env + LV(nd[e].var); RLO = env_lo[i]; RHI = env_hi[i]; RBOT = env_bot[i]; return; }
   if k == N_ARR { ret_bot(); return; }
   if k == N_NCPU { ret_rg(1, 1024); return; }
   if k == N_CALL {
@@ -1040,42 +1046,54 @@ let mut er_refine: bool = false;
 fn chk_refine(a: i64, idx: i64, env: i64) {
   if !er_refine || nd[idx].k != N_VAR || dead(env) { return; }
   let x = env + LV(nd[idx].var);
-  if envp[x].bot { return; }
-  if envp[x].lo < 0 { envp[x].lo = 0; }
-  if vars[a].lenv < 0 { if envp[x].hi > vars[a].alen - 1 { envp[x].hi = vars[a].alen - 1; } }
+  if env_bot[x] { return; }
+  if env_lo[x] < 0 { env_lo[x] = 0; }
+  if vars[a].lenv < 0 { if env_hi[x] > vars[a].alen - 1 { env_hi[x] = vars[a].alen - 1; } }
   else {
     let L = env + LV(vars[a].lenv);
-    if !envp[L].bot && envp[L].hi < INT64_MAX && envp[x].hi > envp[L].hi - 1 { envp[x].hi = envp[L].hi - 1; }
-    if vars[a].aid >= 0 { envp[x].lt = envp[x].lt | ((1 as u64) << (vars[a].aid as u64)); }
+    if !env_bot[L] && env_hi[L] < INT64_MAX && env_hi[x] > env_hi[L] - 1 { env_hi[x] = env_hi[L] - 1; }
+    if vars[a].aid >= 0 { env_lt[x] = env_lt[x] | ((1 as u64) << (vars[a].aid as u64)); }
   }
-  if envp[x].lo > envp[x].hi { set_dead(env); }
+  if env_lo[x] > env_hi[x] { set_dead(env); }
 }
+let szmask = alloc<u64>(65536);
+let sz_defs = alloc<i64>(65536);   // definitions (let / assignment) of each variable in the program
+fn sz_count(s: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_LET || k == S_ASSIGN || k == S_IRET { sz_defs[nd[s].var] += 1; }
+  if k == S_PAR { sz_defs[nd[s].var] += 2; sz_defs[nd[s].op] += 2; sz_count(nd[s].c); return; }
+  if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { sz_count(c); c = nd[c].next; } return; }
+  if k == S_IF { sz_count(nd[s].b); sz_count(nd[s].c); return; }
+  if k == S_WHILE { sz_count(nd[s].b); return; }
+}   // immutable variable -> arrays (aid bits) allocated with it as length
 fn refine_var(env: i64, v: i64, op: i64, other: i64) {
   // the condition was annotated when it was evaluated; env already assumes its loads passed their
   // bounds checks, so evaluating `other` again must not mark them proven
   let sv = an_annot; an_annot = false; er(other, env); an_annot = sv;
   let rlo = RLO; let rhi = RHI; let rbot = RBOT;
   let x = env + LV(v);
-  if rbot || envp[x].bot { return; }
+  if rbot || env_bot[x] { return; }
   if op == O_LT {
     if rhi == INT64_MIN { set_dead(env); return; }
-    envp[x].hi = mn(envp[x].hi, rhi - 1);
+    env_hi[x] = mn(env_hi[x], rhi - 1);
     if nd[other].k == N_VAR && vars[nd[other].var].lenof != 0 {
       let a = vars[nd[other].var].lenof - 1;
-      if vars[a].aid >= 0 { envp[x].lt = envp[x].lt | ((1 as u64) << (vars[a].aid as u64)); }
+      if vars[a].aid >= 0 { env_lt[x] = env_lt[x] | ((1 as u64) << (vars[a].aid as u64)); }
     }
+    if nd[other].k == N_VAR { env_lt[x] = env_lt[x] | szmask[nd[other].var]; }   // other is the length of these arrays
   }
-  else if op == O_LE { envp[x].hi = mn(envp[x].hi, rhi); }
-  else if op == O_GT { if rlo == INT64_MAX { set_dead(env); return; } envp[x].lo = mx(envp[x].lo, rlo + 1); }
-  else if op == O_GE { envp[x].lo = mx(envp[x].lo, rlo); }
-  else if op == O_EQ { envp[x].lo = mx(envp[x].lo, rlo); envp[x].hi = mn(envp[x].hi, rhi); }
+  else if op == O_LE { env_hi[x] = mn(env_hi[x], rhi); }
+  else if op == O_GT { if rlo == INT64_MAX { set_dead(env); return; } env_lo[x] = mx(env_lo[x], rlo + 1); }
+  else if op == O_GE { env_lo[x] = mx(env_lo[x], rlo); }
+  else if op == O_EQ { env_lo[x] = mx(env_lo[x], rlo); env_hi[x] = mn(env_hi[x], rhi); }
   else if op == O_NE {
     if rlo == rhi {
-      if envp[x].lo == rlo && envp[x].lo < INT64_MAX { envp[x].lo += 1; }
-      else if envp[x].hi == rlo && envp[x].hi > INT64_MIN { envp[x].hi -= 1; }
+      if env_lo[x] == rlo && env_lo[x] < INT64_MAX { env_lo[x] += 1; }
+      else if env_hi[x] == rlo && env_hi[x] > INT64_MIN { env_hi[x] -= 1; }
     }
   }
-  if envp[x].lo > envp[x].hi { set_dead(env); }
+  if env_lo[x] > env_hi[x] { set_dead(env); }
 }
 fn neg_cmp(op: i64) -> i64 {
   if op == O_LT { return O_GE; } if op == O_GE { return O_LT; } if op == O_LE { return O_GT; }
@@ -1129,7 +1147,7 @@ fn arr_store(a: i64, vlo0: i64, vhi0: i64, vbot: bool) {
 }
 fn set_var_rg(env: i64, v: i64, lo: i64, hi: i64, bot: bool) {
   let i = env + LV(v);
-  envp[i].lo = lo; envp[i].hi = hi; envp[i].bot = bot; envp[i].lt = 0;
+  env_lo[i] = lo; env_hi[i] = hi; env_bot[i] = bot; env_lt[i] = 0;
 }
 fn as_stmt(s: i64, env: i64) {
   if dead(env) { return; }
@@ -1138,6 +1156,11 @@ fn as_stmt(s: i64, env: i64) {
   if k == S_ARR {
     let a = nd[s].var;
     if nd[s].a >= 0 { er(nd[s].a, env); }
+    // alloc(n) with n an immutable local: n is len(a) wherever both are visible
+    if nd[s].op == A_ALLOC && nd[s].a >= 0 && nd[nd[s].a].k == N_VAR && vars[a].aid >= 0 {
+      let n = nd[nd[s].a].var;
+      if vars[n].mutv == 0 && vars[n].glob == 0 && ty_int(vars[n].ty) && sz_defs[n] <= 1 { szmask[n] = szmask[n] | ((1 as u64) << (vars[a].aid as u64)); }
+    }
     if vars[a].lenv >= 0 {
       if nd[s].op == A_ALLOC { set_var_rg(env, vars[a].lenv, 1, 2147483647, false); }
       else { set_var_rg(env, vars[a].lenv, 0, 140737488355328, false); }
@@ -1182,8 +1205,8 @@ fn as_stmt(s: i64, env: i64) {
     if klo <= khi {
       set_var_rg(t, nd[s].var, klo, khi, false);
       let i = t + LV(nd[s].op);
-      if bbot { envp[i].lo = INT64_MIN; envp[i].hi = INT64_MAX; envp[i].bot = false; }
-      else { envp[i].lo = blo; envp[i].hi = bhi; envp[i].bot = bbot; }
+      if bbot { env_lo[i] = INT64_MIN; env_hi[i] = INT64_MAX; env_bot[i] = false; }
+      else { env_lo[i] = blo; env_hi[i] = bhi; env_bot[i] = bbot; }
       as_stmt(nd[s].c, t);
     }
     env_free(t); return;
@@ -1191,42 +1214,55 @@ fn as_stmt(s: i64, env: i64) {
   if k == S_INL {
     if an_inl >= MAX_LOOPS { fail("inlining nested too deeply"); }
     let L = an_inl; an_inl += 1;
-    inl_env[L] = env_new(); set_dead(inl_env[L]);
+    inl_env[L] = env_alloc(); set_dead(inl_env[L]);
     let mut c = nd[s].a;
     while c >= 0 { as_stmt(c, env); c = nd[c].next; }
     env_join(env, inl_env[L]);
-    if !dead(env) { envp[env + env_n].lo = 0; }
+    if !dead(env) { env_lo[env + env_n] = 0; }
     env_free(inl_env[L]); an_inl -= 1; return;
   }
   if k == S_CONT { env_join(cont_env[an_loops - 1], env); set_dead(env); return; }
   if k == S_BLOCK { let mut c = nd[s].a; while c >= 0 { as_stmt(c, env); c = nd[c].next; } return; }
   if k == S_IF {
     er(nd[s].a, env);
-    let t = env_alloc(); let f = env_alloc(); env_copy(t, env); env_copy(f, env);
-    refine(t, nd[s].a, true); refine(f, nd[s].a, false);
-    if an_annot && bv_sel[s] && !dead(f) { bv_alive[s] = true; }
-    as_stmt(nd[s].b, t); if nd[s].c >= 0 { as_stmt(nd[s].c, f); }
-    env_copy(env, t); env_join(env, f);
-    if dead(t) && dead(f) { set_dead(env); }
-    env_free(t); env_free(f); return;
+    // the then branch works on a copy, the else branch on env itself; then env = join(else, then)
+    let t = env_alloc(); env_copy(t, env);
+    refine(t, nd[s].a, true); refine(env, nd[s].a, false);
+    if an_annot && bv_sel[s] && !dead(env) { bv_alive[s] = true; }
+    as_stmt(nd[s].b, t); if nd[s].c >= 0 { as_stmt(nd[s].c, env); }
+    env_join(env, t);
+    env_free(t); return;
   }
   if k == S_WHILE {
-    let entry = env_alloc(); let head = env_alloc(); let bdy = env_new(); let nh = env_new();
+    let entry = env_alloc(); let head = env_alloc(); let bdy = env_alloc(); let nh = env_alloc();
     env_copy(entry, env); env_copy(head, env);
     if wcache[s] != 0 { env_join(head, wcache[s] - 1); }
     if an_loops >= MAX_LOOPS { fail("loops nested too deeply"); }
     let L = an_loops; an_loops += 1;
-    brk_env[L] = env_new(); cont_env[L] = env_new();
+    brk_env[L] = env_alloc(); cont_env[L] = env_alloc();   // dead until joined into (a join into a dead env copies)
+    // Only variables the loop assigns can differ between the head and the next iterate (the rest
+    // only narrow inside the body), so the joins, widening and the convergence test visit those.
+    let ml = am_list(s); let mln = AM_N;
     let mut it = 0;
     while true {
       set_dead(brk_env[L]); set_dead(cont_env[L]);
       env_copy(bdy, head); er(nd[s].a, bdy); refine(bdy, nd[s].a, true);
-      as_stmt(nd[s].b, bdy); env_join(bdy, cont_env[L]);
-      env_copy(nh, entry); env_join(nh, bdy);
-      env_join(nh, head);
-      if it >= 2 { env_widen(head, nh, it < 40); }
-      if env_eq(nh, head) { break; }
-      env_copy(head, nh);
+      as_stmt(nd[s].b, bdy);
+      if ml < 0 {
+        env_join(bdy, cont_env[L]);
+        env_copy(nh, entry); env_join(nh, bdy);
+        env_join(nh, head);
+        if it >= 2 { env_widen(head, nh, it < 40); }
+        if env_eq(nh, head) { break; }
+        env_copy(head, nh);
+      } else {
+        // nh = head + bdy + continue states on the assigned variables (head already covers entry)
+        AM_N = mln;   // inner loops reuse AM_N
+        am_copy(nh, head, ml); am_join(nh, bdy, ml); am_join(nh, cont_env[L], ml);
+        if it >= 2 { am_widen(head, nh, it < 40, ml); }
+        if am_eq(nh, head, ml) { break; }
+        am_copy(head, nh, ml);
+      }
       if it > 200 { fail("internal: range analysis did not converge"); }
       it += 1;
     }
@@ -1240,7 +1276,7 @@ fn as_stmt(s: i64, env: i64) {
       env_copy(head, nh);
       it += 1;
     }
-    if wcache[s] == 0 && wcache_bytes < WCACHE_MAX { wcache[s] = env_new_cache() + 1; wcache_bytes += (env_n + 1) * 32; }
+    if wcache[s] == 0 && wcache_bytes < WCACHE_MAX { wcache[s] = env_new_cache() + 1; wcache_bytes += (env_n + 1) * 32; wc_set[nwc_set] = s; nwc_set += 1; }
     if wcache[s] != 0 { env_copy(wcache[s] - 1, head); }
     if an_annot && has_mod(nd[s].b) { if wentry[s] == 0 { wentry[s] = env_new_keep() + 1; } env_copy(wentry[s] - 1, entry); wfn[s] = an_fn; }
     env_copy(env, head); refine(env, nd[s].a, false); env_join(env, brk_env[L]);
@@ -1249,17 +1285,97 @@ fn as_stmt(s: i64, env: i64) {
     return;
   }
 }
+// assigned-variable lists of loops (LV indices), per loop node; -1: use whole environments
+let am_at = alloc<i64>(1048576);   // node -> start + 1 in am_pool
+let am_len = alloc<i64>(1048576);
+let am_fn = alloc<i64>(1048576);
+let am_pool = alloc<i32>(4194304);
+let mut am_used: i64 = 0;
+let mut AM_FULL: bool = false;
+let am_seen = alloc<i64>(65536);
+let mut AM_TAG: i64 = 0;
+fn am_add(v: i64) {
+  if v < 0 || am_seen[v] == AM_TAG { return; }
+  am_seen[v] = AM_TAG;
+  let i = lmap[v]; if i < 0 { AM_FULL = true; return; }
+  if am_used >= 4194304 { AM_FULL = true; return; }
+  am_pool[am_used] = i as i32; am_used += 1;
+}
+fn am_walk(s: i64) {
+  if s < 0 || AM_FULL { return; }
+  let k = nd[s].k;
+  if k == S_LET || k == S_ASSIGN || k == S_IRET { am_add(nd[s].var); return; }
+  if k == S_ARR || k == S_PAR || k == S_SAVE || k == S_WRITE { AM_FULL = true; return; }   // lengths and other effects: whole envs
+  if k == S_BLOCK || k == S_INL { if k == S_INL { am_add(nd[s].var); } let mut c = nd[s].a; while c >= 0 { am_walk(c); c = nd[c].next; } return; }
+  if k == S_IF { am_walk(nd[s].b); am_walk(nd[s].c); return; }
+  if k == S_WHILE { am_walk(nd[s].b); return; }
+}
+fn am_list(s: i64) -> i64 {   // start in am_pool (length am_len[s]), or -1
+  if am_at[s] != 0 && am_fn[s] == an_fn { if am_at[s] < 0 { return -1; } AM_N = am_len[s]; return am_at[s] - 1; }
+  AM_TAG += 1; AM_FULL = false;
+  let st = am_used;
+  am_walk(nd[s].b);
+  am_fn[s] = an_fn;
+  if AM_FULL { am_used = st; am_at[s] = -1; return -1; }
+  am_at[s] = st + 1; am_len[s] = am_used - st; AM_N = am_len[s]; return st;
+}
+fn am_copy(d: i64, s: i64, ml: i64) { let n = am_len_of(ml); let mut q = 0; while q < n { let v = am_pool[ml + q] as i64; env_lo[d + v] = env_lo[s + v]; env_hi[d + v] = env_hi[s + v]; env_lt[d + v] = env_lt[s + v]; env_bot[d + v] = env_bot[s + v]; q += 1; } env_lo[d + env_n] = env_lo[s + env_n]; }
+fn am_join(d: i64, s: i64, ml: i64) {
+  if dead(s) { return; }
+  let n = am_len_of(ml); let mut q = 0;
+  while q < n {
+    let v = am_pool[ml + q] as i64;
+    if env_bot[d + v] { env_lo[d + v] = env_lo[s + v]; env_hi[d + v] = env_hi[s + v]; env_bot[d + v] = env_bot[s + v]; }
+    else if !env_bot[s + v] {
+      if env_lo[s + v] < env_lo[d + v] { env_lo[d + v] = env_lo[s + v]; }
+      if env_hi[s + v] > env_hi[d + v] { env_hi[d + v] = env_hi[s + v]; }
+    }
+    env_lt[d + v] = env_lt[d + v] & env_lt[s + v];
+    q += 1;
+  }
+}
+fn am_eq(a: i64, b: i64, ml: i64) -> bool {
+  let n = am_len_of(ml); let mut q = 0;
+  while q < n {
+    let v = am_pool[ml + q] as i64;
+    if env_lt[a + v] != env_lt[b + v] || env_bot[a + v] != env_bot[b + v] { return false; }
+    if !env_bot[a + v] && (env_lo[a + v] != env_lo[b + v] || env_hi[a + v] != env_hi[b + v]) { return false; }
+    q += 1;
+  }
+  return true;
+}
+fn am_widen(old: i64, nw: i64, use_thr: bool, ml: i64) {
+  let n = am_len_of(ml); let mut q = 0;
+  while q < n {
+    let v = am_pool[ml + q] as i64;
+    if !env_bot[old + v] && !env_bot[nw + v] {
+      if env_lo[nw + v] < env_lo[old + v] {
+        let mut t = INT64_MIN;
+        if use_thr { let mut i = nthr - 1; while i >= 0 { if thr[i] <= env_lo[nw + v] { t = thr[i]; break; } i -= 1; } }
+        env_lo[nw + v] = t;
+      }
+      if env_hi[nw + v] > env_hi[old + v] {
+        let mut t = INT64_MAX;
+        if use_thr { let mut i = 0; while i < nthr { if thr[i] >= env_hi[nw + v] { t = thr[i]; break; } i += 1; } }
+        env_hi[nw + v] = t;
+      }
+    }
+    q += 1;
+  }
+}
+let mut AM_N: i64 = 0;   // length of the list am_list returned last
+fn am_len_of(ml: i64) -> i64 { return AM_N; }
 fn env_new_cache() -> i64 { return env_new(); }   // cache blocks live until wcache_free (pool reset)
 fn fn_env(env: i64, f: i64) {
   let mut v = 0;
-  while v < env_n { envp[env + v].lo = 0; envp[env + v].hi = 0; envp[env + v].bot = true; envp[env + v].lt = 0; v += 1; }
-  envp[env + env_n].lo = 0;
-  if f == mainfn { let i = env + LV(0); envp[i].lo = 1; envp[i].hi = 2147483647; envp[i].bot = false; }
+  while v < env_n { env_lo[env + v] = 0; env_hi[env + v] = 0; env_bot[env + v] = true; env_lt[env + v] = 0; v += 1; }
+  env_lo[env + env_n] = 0;
+  if f == mainfn { let i = env + LV(0); env_lo[i] = 1; env_hi[i] = 2147483647; env_bot[i] = false; }
   let mut i = 0;
   while i < fns[f].np {
     let pv = fpvar[f * 16 + i];
-    if fpw[f * 16 + i] != 0 { let j = env + LV(vars[pv].lenv); envp[j].lo = 0; envp[j].hi = 140737488355328; envp[j].bot = false; }
-    else { let j = env + LV(pv); envp[j].lo = INT64_MIN; envp[j].hi = INT64_MAX; envp[j].bot = false; }
+    if fpw[f * 16 + i] != 0 { let j = env + LV(vars[pv].lenv); env_lo[j] = 0; env_hi[j] = 140737488355328; env_bot[j] = false; }
+    else { let j = env + LV(pv); env_lo[j] = INT64_MIN; env_hi[j] = INT64_MAX; env_bot[j] = false; }
     i += 1;
   }
 }
@@ -1272,6 +1388,9 @@ fn analyze_fn(f: i64) {
 }
 fn analyze() {
   let mut v = 0;
+  while v < nv { sz_defs[v] = 0; szmask[v] = 0; v += 1; }
+  v = 0; while v < nfn { if fns[v].used != 0 { sz_count(fns[v].body); } v += 1; }
+  v = 0;
   while v < nv { arr_leader[v] = v; vars[v].aid = -1; v += 1; }
   let mut na = 0;
   v = 0;
@@ -2487,12 +2606,17 @@ fn touch(v: i64) {
     i += 1;
   }
 }
+// constants hoisted to loop L: a list per loop (hl_head[L] -> var -> hl_next), not a scan of all variables
+let hl_head = alloc<i64>(1048576);
+let hl_next = alloc<i64>(65536);
+let hl_tail = alloc<i64>(1048576);
 fn hoist_var(v: u64, L: i64, t: i64) -> i64 {
-  let mut i = 0;
-  while i < nv { if vars[i].hoist == L + 1 && vars[i].cval == v && vars[i].ty == t { return i; } i += 1; }
+  let mut i = hl_head[L] - 1;
+  while i >= 0 { if vars[i].hoist == L + 1 && vars[i].cval == v && vars[i].ty == t { return i; } i = hl_next[i] - 1; }
   if nv >= MAX_VARS { fail("too many variables"); }
   clear_var(nv); vars[nv].owner = 0; vars[nv].ty = t; vars[nv].lenv = 0;
   vars[nv].hoist = L + 1; vars[nv].cval = v; vars[nv].reads = 1; vars[nv].reg = -1; vars[nv].slot = -1; vars[nv].start = loop_start[L];
+  hl_next[nv] = 0; if hl_head[L] == 0 { hl_head[L] = nv + 1; } else { hl_next[hl_tail[L] - 1] = nv + 1; } hl_tail[L] = nv + 1;
   nv += 1; return nv - 1;
 }
 let mut nchecks: i64 = 0;
@@ -2510,7 +2634,8 @@ fn walk_expr(e: i64) {
     if ncallpc < 1048576 { callpc[ncallpc] = pc; ncallpc += 1; }
   }
   else if k == N_LOAD {
-    touch_arr(nd[e].var); walk_expr(nd[e].a);
+    if nd[e].chk != 0 { touch_arr(nd[e].var); } else { touch(vars[nd[e].var].basev); }   // a proven access needs no length
+    walk_expr(nd[e].a);
     nchecks += 1; if nd[e].chk == 0 { nelided += 1; }
   }
   else if k == N_CONST {
@@ -2579,7 +2704,8 @@ fn walk_stmt(s: i64) {
   else if k == S_SAVE { pc += 1; nd[s].pos = pc; touch_arr(nd[s].var); touch(0); touch(1); walk_expr(nd[s].a); walk_expr(nd[s].b); }
   else if k == S_BRK || k == S_CONT { pc += 1; nd[s].pos = pc; }
   else if k == S_STORE {
-    pc += 1; nd[s].pos = pc; walk_expr(nd[s].a); walk_expr(nd[s].b); touch_arr(nd[s].var);
+    pc += 1; nd[s].pos = pc; walk_expr(nd[s].a); walk_expr(nd[s].b);
+    if nd[s].chk != 0 { touch_arr(nd[s].var); } else { touch(vars[nd[s].var].basev); }
     nchecks += 1; if nd[s].chk == 0 { nelided += 1; }
   }
   else if k == S_ARR {
@@ -4412,6 +4538,76 @@ fn sw_walk(s: i64) {
   if k == S_IF { sw_walk(nd[s].b); sw_walk(nd[s].c); return; }
   if k == S_WHILE { sw_walk(nd[s].b); return; }
 }
+// ---- loop copies of invariant scalars: before an innermost loop, each scalar it reads but never
+// assigns is copied into a variable used only inside the loop. The copy's live range is the loop,
+// so the allocator keeps it in a register there and spills the long-lived original instead.
+let LS_V = alloc<i64>(16);
+let LS_C = alloc<i64>(16);
+let mut LS_N: i64 = 0;
+let ls_len = alloc<bool>(65536);   // array length variables (bounds proofs need the original)
+fn ls_note(e: i64, w: i64) {
+  if e < 0 { return; }
+  let k = nd[e].k;
+  if k == N_VAR {
+    let v = nd[e].var;
+    if LS_N < 16 && vars[v].glob == 0 && vars[v].arr == 0 && vars[v].isconst == 0 && !ls_len[v] && (ty_int(vars[v].ty) || vars[v].ty == TY_F64) && count_assign(w, v) == 0 {
+      let mut i = 0; while i < LS_N && LS_V[i] != v { i += 1; }
+      if i == LS_N { LS_V[i] = v; LS_N += 1; }
+    }
+    return;
+  }
+  if k == N_CONST || k == N_ARR || k == N_NCPU { return; }
+  if k == N_CALL { let mut a = nd[e].a; while a >= 0 { ls_note(a, w); a = nd[a].next; } return; }
+  ls_note(nd[e].a, w); ls_note(nd[e].b, w);
+}
+fn ls_note_s(s: i64, w: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { ls_note_s(c, w); c = nd[c].next; } return; }
+  if k == S_IF { ls_note(nd[s].a, w); ls_note_s(nd[s].b, w); ls_note_s(nd[s].c, w); return; }
+  if k == S_WHILE { ls_note(nd[s].a, w); ls_note_s(nd[s].b, w); return; }
+  ls_note(nd[s].a, w); ls_note(nd[s].b, w);
+}
+fn ls_sub(e: i64) {
+  if e < 0 { return; }
+  let k = nd[e].k;
+  if k == N_VAR { let mut i = 0; while i < LS_N { if nd[e].var == LS_V[i] { nd[e].var = LS_C[i]; vars[LS_V[i]].reads -= 1; vars[LS_C[i]].reads += 1; return; } i += 1; } return; }
+  if k == N_CONST || k == N_ARR || k == N_NCPU { return; }
+  if k == N_CALL { let mut a = nd[e].a; while a >= 0 { ls_sub(a); a = nd[a].next; } return; }
+  ls_sub(nd[e].a); ls_sub(nd[e].b);
+}
+fn ls_sub_s(s: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { ls_sub_s(c); c = nd[c].next; } return; }
+  if k == S_IF { ls_sub(nd[s].a); ls_sub_s(nd[s].b); ls_sub_s(nd[s].c); return; }
+  if k == S_WHILE { ls_sub(nd[s].a); ls_sub_s(nd[s].b); return; }
+  ls_sub(nd[s].a); ls_sub(nd[s].b);
+}
+fn ls_loop(w: i64) {
+  LS_N = 0;
+  ls_note(nd[w].a, w); ls_note_s(nd[w].b, w);
+  if LS_N == 0 { return; }
+  let mut head = -1; let mut prev = -1; let mut i = 0;
+  while i < LS_N {
+    let v = LS_V[i];
+    let c = hidden(); vars[c].ty = vars[v].ty; vars[c].owner = CS_F; LS_C[i] = c;
+    let l = mk(S_LET); nd[l].var = c; nd[l].a = mk_var(v);
+    if prev < 0 { head = l; } else { nd[prev].next = l; }
+    prev = l; i += 1;
+  }
+  ls_sub(nd[w].a); ls_sub_s(nd[w].b);
+  let w2 = mk(S_WHILE); copy_node(w2, w); nd[w2].next = -1; nd[prev].next = w2;
+  set_block(w, head, nd[w].next);
+}
+fn ls_walk(s: i64) {
+  if s < 0 { return; }
+  let k = nd[s].k;
+  if k == S_BLOCK || k == S_INL { let mut c = nd[s].a; while c >= 0 { let nx = nd[c].next; ls_walk(c); c = nx; } return; }
+  if k == S_IF { ls_walk(nd[s].b); ls_walk(nd[s].c); return; }
+  if k == S_WHILE { if lh_inner(nd[s].b) { ls_loop(s); } else { ls_walk(nd[s].b); } return; }
+}
+fn ls_mark_lens() { let mut v = 0; while v < nv { ls_len[v] = false; v += 1; } v = 0; while v < nv { if vars[v].arr != 0 && vars[v].lenv >= 0 { ls_len[vars[v].lenv] = true; } v += 1; } }
 fn cs_walk(s: i64) {
   if s < 0 { return; }
   let k = nd[s].k;
@@ -4612,6 +4808,21 @@ fn temps_at(p: i64) -> i64 {
 // ---------------------------------------------------------------- x86-64 encoder
 let code = alloc<u8>(16777216);
 let mut clen: i64 = 0;
+fn nop_n(n0: i64) {   // n bytes of NOP instructions (multi-byte forms)
+  let mut n = n0;
+  while n > 0 {
+    let k = n; 
+    if k >= 9 { emh("660f1f840000000000"); n -= 9; }
+    else if k == 8 { emh("0f1f840000000000"); n -= 8; }
+    else if k == 7 { emh("0f1f8000000000"); n -= 7; }
+    else if k == 6 { emh("660f1f440000"); n -= 6; }
+    else if k == 5 { emh("0f1f440000"); n -= 5; }
+    else if k == 4 { emh("0f1f4000"); n -= 4; }
+    else if k == 3 { emh("0f1f00"); n -= 3; }
+    else if k == 2 { emh("6690"); n -= 2; }
+    else { byte(144); n -= 1; }
+  }
+}
 fn byte(x: i64) { if clen >= MAX_BYTES { fail("generated code limit reached"); } code[clen] = x as u8; clen += 1; }
 fn u32_(x: i64) { byte(x & 255); byte((x >> 8) & 255); byte((x >> 16) & 255); byte((x >> 24) & 255); }
 fn u64_(x: u64) { let mut i: u64 = 0; while i < 8 { byte(((x >> (8 * i)) & 255) as i64); i += 1; } }
@@ -4811,8 +5022,8 @@ fn emit_div_stubs() {
 }
 fn setcc_zx(cc: i64, r: i64) { encr(0, true, 2, 15, 144 | cc, 0, r); encr(1, false, 2, 15, 182, r, r); }
 fn test_rr(r: i64) { encr(1, false, 1, 133, 0, r, r); }
-fn jcc(cc: i64) -> i64 { byte(15); byte(128 | cc); u32_(0); return clen - 4; }
-fn jmp() -> i64 { byte(233); u32_(0); return clen - 4; }
+fn jcc(cc: i64) -> i64 { let s0 = clen; byte(15); byte(128 | cc); u32_(0); jrec(s0); return clen - 4; }
+fn jmp() -> i64 { let s0 = clen; byte(233); u32_(0); jrec(s0); return clen - 4; }
 let CC_B = 2; let CC_AE = 3; let CC_BE = 6; let CC_A = 7; let CC_S = 8; let CC_P = 10; let CC_NP = 11;
 let CC_E = 4; let CC_NE = 5; let CC_L = 12; let CC_GE = 13; let CC_LE = 14; let CC_G = 15;
 fn cc_of(op: i64) -> i64 {
@@ -4829,8 +5040,8 @@ fn pl_add(list: i64, at: i64) -> i64 {
   if npl >= MAX_PATCH { fail("too many branches"); }
   pl_at[npl] = at; pl_next[npl] = list; npl += 1; return npl - 1;
 }
-fn pl_patch(list0: i64, target: i64) { let mut l = list0; while l >= 0 { rel32(pl_at[l], target); l = pl_next[l]; } }
-fn pl_cat(a: i64, b: i64) -> i64 { let mut r = a; let mut l = b; while l >= 0 { r = pl_add(r, pl_at[l]); l = pl_next[l]; } return r; }
+fn pl_patch(list0: i64, target: i64) { let mut l = list0; while l >= 0 { if pl_at[l] >= 0 { rel32(pl_at[l], target); } l = pl_next[l]; } }   // pl_at -1: rewound
+fn pl_cat(a: i64, b: i64) -> i64 { let mut r = a; let mut l = b; while l >= 0 { if pl_at[l] >= 0 { r = pl_add(r, pl_at[l]); } l = pl_next[l]; } return r; }
 
 // ---------------------------------------------------------------- signed division by constant
 let mut MG_M: i64 = 0;
@@ -5123,7 +5334,26 @@ fn apply(op: i64, r: i64, sk0: i64, sr0: i64, si: u64) {
   if !is_cmp(op) { fail("internal: bad operator"); }
   alu(A_CMP, K_REG, r, sk, sr, si); setcc_zx(cc_of(op), r);
 }
-fn j8(op: i64) -> i64 { byte(op); byte(0); return clen - 1; }
+fn j8(op: i64) -> i64 { let s0 = clen; byte(op); byte(0); jrec(s0); return clen - 1; }
+// branches emitted while a loop is laid out (start, end), to choose its head padding
+let JR_S = alloc<i64>(65536);
+let JR_E = alloc<i64>(65536);
+let mut NJR: i64 = 0;
+let mut JREC: bool = false;
+fn jrec(s0: i64) { if JREC && NJR < 65536 { JR_S[NJR] = s0; JR_E[NJR] = clen; NJR += 1; } }
+fn jr_bad(d: i64, from: i64, cst: i64, cen: i64) -> i64 {   // weighted line-crossing branches with d more bytes
+  let mut b = 0; let mut i = 0;
+  while i < NJR {
+    if JR_S[i] >= from {
+      let a = JR_S[i] - 4 + d; let e = JR_E[i] + d;   // with a fused cmp/test of up to 4 bytes
+      if (a / 32) != ((e - 1) / 32) || (e % 32) == 0 { b += 1; }
+    }
+    i += 1;
+  }
+  let a = cst + d; let e = cen + d;
+  if (a / 32) != ((e - 1) / 32) || (e % 32) == 0 { b += 4; }   // the back edge (cmp + jcc) counts more
+  return b;
+}
 fn p8(at: i64, target: i64) {
   let d = target - (at + 1);
   if d < -128 || d > 127 { fail("internal: short branch"); }
@@ -5131,6 +5361,7 @@ fn p8(at: i64, target: i64) {
 }
 let mut trap_list: i64 = -1;
 let mut print_calls: i64 = -1;
+let mut heap_calls: i64 = -1;
 let mut printu_calls: i64 = -1;
 let mut putc_calls: i64 = -1;
 let mut write_calls: i64 = -1;
@@ -5159,6 +5390,8 @@ let OUT_BUF = 268435520;
 let OUT_CAP = 65536;
 let ARENA_TOP = 268501056;
 let ARENA_END = 268501064;
+let HEAP_TOP = 268501080;   // bump heap for alloc<T>(n): next free byte, end of the mapped chunk
+let HEAP_END = 268501088;
 let GLOB_BASE = 268501120;
 let BSS_FIXED = 65664;
 fn base_opnd(a: i64) {
@@ -7089,10 +7322,12 @@ fn vstmt_body(s: i64, lvl: i64) {
     if lvl < 0 && !refs_v(nd[s].a) {
       if is_const(nd[s].a) && nd[nd[s].a].v == 0 { return; }
       let mut entry = -1; let mut back = -1;
-      if !is_const(nd[s].a) { entry = pl_add(entry, jmp()); }
+      if !is_const(nd[s].a) { entry = pl_add(entry, jmp()); let mut al = 16; if lh_inner(nd[s].b) { al = 32; } while (clen % al) != 0 { byte(144); } }
       let top = clen;
       let L = nloopctx; nloopctx += 1; brk_list[L] = -1; cont_list[L] = -1;
       vstmt(nd[s].b, -1);
+      let c1 = nd[s].a;
+      if nd[c1].k == N_BIN && is_cmp(nd[c1].op) && ty_int(nd[nd[c1].a].ty) && simple(nd[c1].a) && simple(nd[c1].b) { let room = 32 - (clen % 32); if room < 14 { nop_n(room); } }
       pl_patch(cont_list[L], clen); pl_patch(entry, clen);
       vtemps(s);
       back = cond_jump(nd[s].a, true, back, VRG, VN); pl_patch(back, top);
@@ -7670,6 +7905,23 @@ fn gen_arr(s: i64, rg: i64, n: i64) {
       if vars[a].lenv >= 0 && vars[vars[a].lenv].reads != 0 { loc(vars[a].lenv); store(OK, ORR, rs); }
       return;
     }
+    if vars[a].shared == 0 {
+      // bump allocation from a lazily faulted reservation (fresh pages are zero); the stub maps
+      // a new chunk when it runs out. One syscall per gigabyte instead of one per array.
+      alui(A_ADD, RAX, 63); alui(A_AND, RAX, 18446744073709551552);
+      abs_op(139, RCX, HEAP_TOP);
+      lea(RDX, RCX, RAX, 0);
+      abs_op(59, RDX, HEAP_END);
+      let fast = jcc(CC_BE);
+      heap_calls = call_to(heap_calls);
+      let done = jmp();
+      rel32(fast, clen);
+      abs_op(137, RDX, HEAP_TOP); mov_rr(RAX, RCX);
+      rel32(done, clen);
+      if vars[vars[a].basev].reads != 0 { loc(vars[a].basev); store(OK, ORR, RAX); }
+      if vars[a].lenv >= 0 && vars[vars[a].lenv].reads != 0 { loc(vars[a].lenv); store(OK, ORR, rs); }
+      return;
+    }
     sys_save();
     emh("4889c6"); emh("31ff"); emh("ba03000000");
     if vars[a].shared != 0 { emh("41ba21000000"); } else { emh("41ba22000000"); }
@@ -7942,6 +8194,129 @@ fn ifconv(s: i64, rg: i64, n: i64) {
   ic_gen(nd[s].c, sl, rg, n, false);
   tdepth -= 1;
 }
+// ---- copy loops: `while i < E { [let j = i + X;] .. A[i + Xd] = B[i + Xs]; .. i += 1 }` over static
+// arrays (distinct between statements, same element width) becomes one `rep movs` per statement when
+// every copied range is in bounds; otherwise the checked loop runs (and traps where it did).
+// A forward element-by-element copy is exactly what rep movs does, overlap included.
+let CP_A = alloc<i64>(16);
+let CP_B = alloc<i64>(16);
+let CP_DX = alloc<i64>(16);   // offset expression of the destination index (-1: none)
+let CP_SX = alloc<i64>(16);
+let CP_LV = alloc<i64>(16);   // let variables -> their offset expressions
+let CP_LX = alloc<i64>(16);
+let CP_LU = alloc<i64>(16);   // uses of each let variable
+let mut CP_NL: i64 = 0;
+let mut CP_N: i64 = 0;
+let mut CP_IV: i64 = -1;
+let mut CP_DONE: i64 = -1;
+let mut CP_X: i64 = -1;
+fn cpl_off(x: i64) -> bool {   // x is iv + X (X simple, not iv), X + iv or iv: CP_X = X (-1 for none)
+  if nd[x].k == N_VAR && nd[x].var == CP_IV { CP_X = -1; return true; }
+  if nd[x].k == N_VAR { let mut q = 0; while q < CP_NL { if CP_LV[q] == nd[x].var { CP_X = CP_LX[q]; CP_LU[q] += 1; return true; } q += 1; } return false; }
+  if nd[x].k != N_BIN || nd[x].op != O_ADD || nd[x].ty != TY_I64 { return false; }
+  let a = nd[x].a; let b = nd[x].b;
+  if nd[a].k == N_VAR && nd[a].var == CP_IV && simple(b) && !(nd[b].k == N_VAR && nd[b].var == CP_IV) { CP_X = b; return true; }
+  if nd[b].k == N_VAR && nd[b].var == CP_IV && simple(a) && !(nd[a].k == N_VAR && nd[a].var == CP_IV) { CP_X = a; return true; }
+  return false;
+}
+fn cpl_static(a: i64) -> bool { return vars[a].arr != 0 && vars[a].arr <= 8 && (vars[a].arr & (vars[a].arr - 1)) == 0 && vars[a].lenv < 0 && vars[vars[a].basev].isconst != 0 && vars[a].alen > 0; }
+fn cpl_match(w: i64) -> bool {
+  let cnd = nd[w].a; let body = nd[w].b;
+  if nd[w].c >= 0 || nd[cnd].k != N_BIN || (nd[cnd].op != O_LT && nd[cnd].op != O_LE) || nd[nd[cnd].a].k != N_VAR || !simple(nd[cnd].b) { return false; }
+  CP_IV = nd[nd[cnd].a].var;
+  if vars[CP_IV].ty != TY_I64 || nd[nd[cnd].b].ty != TY_I64 || (nd[nd[cnd].b].k == N_VAR && nd[nd[cnd].b].var == CP_IV) { return false; }
+  if body < 0 || nd[body].k != S_BLOCK { return false; }
+  CP_N = 0; CP_NL = 0;
+  let mut c = nd[body].a; let mut last = -1;
+  while c >= 0 {
+    let k = nd[c].k;
+    if nd[c].next < 0 { last = c; break; }
+    if k == S_LET && CP_N == 0 {
+      if CP_NL >= 16 || !cpl_off(nd[c].a) { return false; }
+      if nd[nd[c].a].k == N_VAR && nd[nd[c].a].var != CP_IV { return false; }   // a copy of another let
+      CP_LV[CP_NL] = nd[c].var; CP_LX[CP_NL] = CP_X; CP_LU[CP_NL] = 0; CP_NL += 1;
+    } else if k == S_STORE {
+      let v = nd[c].b;
+      if CP_N >= 16 || nd[c].op >= 0 || nd[c].c >= 0 || nd[v].k != N_LOAD || nd[v].op > 0 { return false; }
+      let A = nd[c].var; let B = nd[v].var;
+      if !cpl_static(A) || !cpl_static(B) || vars[A].arr != vars[B].arr { return false; }
+      if !cpl_off(nd[c].a) { return false; } CP_DX[CP_N] = CP_X;
+      if !cpl_off(nd[v].a) { return false; } CP_SX[CP_N] = CP_X;
+      CP_A[CP_N] = A; CP_B[CP_N] = B; CP_N += 1;
+    } else { return false; }
+    c = nd[c].next;
+  }
+  if last < 0 || CP_N == 0 || !is_inc1(last, CP_IV) || count_assign(w, CP_IV) != 1 { return false; }
+  // the lets are only these indices
+  let mut q = 0; while q < CP_NL { if vars[CP_LV[q]].reads != CP_LU[q] { return false; } q += 1; }
+  // statements touch pairwise distinct arrays (a statement may copy within one array)
+  let mut i = 0;
+  while i < CP_N {
+    let mut j = 0;
+    while j < CP_N {
+      if i != j {
+        let ai = vars[CP_A[i]].basev; let bi = vars[CP_B[i]].basev; let aj = vars[CP_A[j]].basev; let bj = vars[CP_B[j]].basev;
+        if ai == aj || ai == bj || bi == aj { return false; }
+      }
+      j += 1;
+    }
+    i += 1;
+  }
+  // offsets are not assigned by the loop (only the increment and the lets run in it)
+  return true;
+}
+fn cpl_index(x: i64) {   // rax = iv + X
+  loc(CP_IV); load(RAX, OK, ORR, OI);
+  if x >= 0 { opnd(x); alu(A_ADD, K_REG, RAX, OK, ORR, OI); }
+}
+fn cpl_range(a: i64, x: i64, sn: i64, fb: i64) -> i64 {   // address of a[iv + X] into rax; fb: fallback list
+  let mut f = fb;
+  cpl_index(x);
+  mov_ri(RDX, vars[a].alen as u64);
+  alu(A_CMP, K_REG, RAX, K_REG, RDX, 0); f = pl_add(f, jcc(CC_AE));        // 0 <= lo < len (unsigned)
+  alur(A_SUB, RDX, RAX); load(RCX, K_MEM, sn, 0);
+  alu(A_CMP, K_REG, RCX, K_REG, RDX, 0); f = pl_add(f, jcc(CC_A));         // n <= len - lo
+  shift_ri(4, RAX, lg(vars[a].arr));
+  base_opnd(a); alu(A_ADD, K_REG, RAX, OK, ORR, OI);
+  return f;
+}
+fn cpl_gen(w: i64) -> i64 {   // emits the fast copy; returns the fallback patch list (the checked loop follows)
+  let cnd = nd[w].a; let le = nd[cnd].op == O_LE; let E = nd[cnd].b;
+  let mut fb = -1; let mut done = -1;
+  loc(CP_IV); load(RAX, OK, ORR, OI);
+  opnd(E); load(RCX, OK, ORR, OI);
+  alu(A_CMP, K_REG, RAX, K_REG, RCX, 0);
+  if le { done = pl_add(done, jcc(CC_G)); } else { done = pl_add(done, jcc(CC_GE)); }   // the loop does not run
+  alur(A_SUB, RCX, RAX);
+  if le { alui(A_ADD, RCX, 1); fb = pl_add(fb, jcc(CC_E)); }   // 2^64 iterations: leave it to the loop
+  let sn = tslot_push(); store(K_MEM, sn, RCX);
+  tslot_push(); tslot_push(); let ssi = tslot_push(); let sdi = tslot_push();
+  let mut i = 0;
+  let base = tdepth;
+  while i < CP_N { tslot_push(); tslot_push(); i += 1; }
+  i = 0;
+  while i < CP_N {
+    fb = cpl_range(CP_A[i], CP_DX[i], sn, fb); store(K_MEM, tbase + base + 2 * i, RAX);
+    fb = cpl_range(CP_B[i], CP_SX[i], sn, fb); store(K_MEM, tbase + base + 2 * i + 1, RAX);
+    i += 1;
+  }
+  store(K_MEM, ssi, RSI); store(K_MEM, sdi, RDI);
+  i = 0;
+  while i < CP_N {
+    load(RDI, K_MEM, tbase + base + 2 * i, 0); load(RSI, K_MEM, tbase + base + 2 * i + 1, 0); load(RCX, K_MEM, sn, 0);
+    let wd = vars[CP_A[i]].arr;
+    if wd == 8 { emh("f348a5"); } else if wd == 4 { emh("f3a5"); } else if wd == 2 { emh("66f3a5"); } else { emh("f3a4"); }
+    i += 1;
+  }
+  load(RSI, K_MEM, ssi, 0); load(RDI, K_MEM, sdi, 0);
+  // iv = E (+ 1)
+  opnd(E); load(RAX, OK, ORR, OI); if le { alui(A_ADD, RAX, 1); }
+  loc(CP_IV); store(OK, ORR, RAX);
+  tdepth -= 5 + 2 * CP_N;
+  done = pl_add(done, jmp());
+  CP_DONE = done;
+  return fb;
+}
 fn gen_stmt_body(s: i64, is_final: bool, rg: i64, n: i64) {
   let k = nd[s].k;
   if k == S_LET || k == S_ASSIGN {
@@ -7960,26 +8335,67 @@ fn gen_stmt_body(s: i64, is_final: bool, rg: i64, n: i64) {
   if k == S_WHILE {
     if is_const(nd[s].a) && nd[nd[s].a].v == 0 { return; }
     let mut entry = -1; let mut back = -1;
-    let mut v = 0;
-    while v < nv {
+    let mut v = -1;
+    if nd[s].var >= 0 { v = hl_head[nd[s].var] - 1; }
+    while v >= 0 {
       if vars[v].hoist == nd[s].var + 1 {
         if vars[v].reg >= 0 { mov_ri(vars[v].reg, vars[v].cval); }
         else if vars[v].xr >= 0 { mov_ri(RAX, vars[v].cval); sse(102, 1, 110, vars[v].xr, K_REG, RAX); }
       }
-      v += 1;
+      v = hl_next[v] - 1;
     }
     let m = nd[s].c;
     if m >= 0 { abs_op(139, RAX, ARENA_TOP); loc(m); store(OK, ORR, RAX); }
-    if vplan[s] != 0 { let ts = gen_vloop(s, vplan[s] - 1); pl_patch(ts, clen); }
-    if !is_const(nd[s].a) { entry = pl_add(entry, jmp()); }
-    let top = clen;
-    let L = nloopctx; nloopctx += 1; brk_list[L] = -1; cont_list[L] = -1;
-    if m >= 0 { loc(m); load(RAX, OK, ORR, OI); abs_op(137, RAX, ARENA_TOP); }
-    gen_stmt(nd[s].b, false);
-    pl_patch(cont_list[L], clen); pl_patch(entry, clen);
-    back = cond_jump(nd[s].a, true, back, rg, n); pl_patch(back, top);
-    pl_patch(brk_list[L], clen); nloopctx -= 1;
-    if m >= 0 { loc(m); load(RAX, OK, ORR, OI); abs_op(137, RAX, ARENA_TOP); }
+    // An innermost loop with a simple test is generated, measured and, when its back edge (cmp + jcc)
+    // would cross or end on a 32-byte line, rewound and generated again behind more (never
+    // executed) head padding: the JCC erratum makes such branches several times slower.
+    let mut cp_done = -1;
+    if vplan[s] == 0 && cpl_match(s) { let fb = cpl_gen(s); cp_done = CP_DONE; pl_patch(fb, clen); }
+    let cnd0 = nd[s].a;
+    let simple_t = cp_done < 0 && nd[cnd0].k == N_BIN && is_cmp(nd[cnd0].op) && ty_int(nd[nd[cnd0].a].ty) && simple(nd[cnd0].a) && simple(nd[cnd0].b) && !is_const(cnd0);
+    let inner = lh_inner(nd[s].b);
+    let c0 = clen; let npl0 = npl; let nds0 = NDS; let ncp0 = ncp; let nss0 = nss; let td0 = tdepth;
+    let mut pad = -1;   // -1: first attempt (align the head), else forced head padding
+    let mut pj = 0;     // position after the entry jump
+    let mut attempt = 0;
+    while true {
+      entry = -1; back = -1;
+      if inner && simple_t && attempt == 0 { JREC = true; NJR = 0; }
+      if vplan[s] != 0 { let ts = gen_vloop(s, vplan[s] - 1); pl_patch(ts, clen); }
+      if !is_const(nd[s].a) {
+        entry = pl_add(entry, jmp());
+        pj = clen;
+        if pad < 0 { let mut al = 16; if inner { al = 32; } while (clen % al) != 0 { byte(144); } }
+        else { let mut q = 0; while q < pad { byte(144); q += 1; } }
+      }
+      let top = clen;
+      let L = nloopctx; nloopctx += 1; brk_list[L] = -1; cont_list[L] = -1;
+      if m >= 0 { loc(m); load(RAX, OK, ORR, OI); abs_op(137, RAX, ARENA_TOP); }
+      gen_stmt(nd[s].b, false);
+      if !(inner && simple_t) || attempt > 0 {
+        // other loops: a simple test that would cross a line starts the next one (one NOP per iteration)
+        if simple_t && !(inner && attempt > 0) { let room = 32 - (clen % 32); if room < 14 { nop_n(room); } }
+      }
+      let cst = clen;
+      pl_patch(cont_list[L], clen); pl_patch(entry, clen);
+      back = cond_jump(nd[s].a, true, back, rg, n); pl_patch(back, top);
+      let cen = clen;
+      pl_patch(brk_list[L], clen); nloopctx -= 1;
+      if m >= 0 { loc(m); load(RAX, OK, ORR, OI); abs_op(137, RAX, ARENA_TOP); }
+      if !(inner && simple_t) || attempt > 0 || is_const(nd[s].a) { JREC = false; pl_patch(cp_done, clen); return; }
+      JREC = false;
+      // the head padding d (0..31 more bytes) with the fewest line-crossing branches after the head
+      let b0 = jr_bad(0, pj, cst, cen);
+      if b0 == 0 { pl_patch(cp_done, clen); return; }
+      let base_pad = top - pj;   // head padding of this attempt
+      let mut d = 1; let mut best = -1; let mut bb = b0;
+      while d < 32 { let x = jr_bad(d, pj, cst, cen); if x < bb { bb = x; best = d; } d += 1; }
+      if best < 0 { pl_patch(cp_done, clen); return; }
+      // rewind and generate again with base_pad + best bytes of head padding
+      clen = c0; let mut q = npl0; while q < npl { pl_at[q] = -1; q += 1; }
+      NDS = nds0; ncp = ncp0; nss = nss0; tdepth = td0;
+      pad = base_pad + best; attempt = 1;
+    }
     return;
   }
   if k == S_RET {
@@ -8220,6 +8636,28 @@ fn emit_print(list: i64, uns: bool) {
   emh("4883c43041595f5e5bc3");
 }
 fn emit_runtime() {
+  if heap_calls >= 0 {   // rax = bytes (multiple of 64) -> rax = zeroed memory; preserves all but rcx, rdx
+    pl_patch(heap_calls, clen);
+    emh("56574150415141524153");               // push rsi, rdi, r8 - r11
+    emh("50");                                 // push rax (size)
+    emh("4889c6");                             // mov rsi, rax
+    emh("b800000040"); emh("4839c6");          // mov eax, 1 GiB; cmp rsi, rax
+    let big = j8(115);                         // jae: size >= chunk
+    emh("4889c6");                             // mov rsi, rax (chunk)
+    p8(big, clen);
+    emh("56");                                 // push rsi (length)
+    emh("31ff"); emh("ba03000000");            // addr 0, PROT_READ | PROT_WRITE
+    emh("41ba22400000");                       // MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE
+    emh("49c7c0ffffffff4531c9b8090000000f05"); // fd -1, offset 0, mmap
+    emh("483d00f0ffff"); trap_if(7);
+    emh("5e5a");                               // pop rsi (length), pop rdx (size)
+    emh("488d0c10");                           // lea rcx, [rax + rdx]
+    abs_op(137, RCX, HEAP_TOP);
+    emh("4801c6");                             // add rsi, rax
+    abs_op(137, RSI, HEAP_END);
+    emh("415b415a415941585f5e");               // pop r11 - r8, rdi, rsi
+    emh("c3");
+  }
   emit_div_stubs();
   emit_ncpu();
   emit_convert();
@@ -8404,10 +8842,9 @@ fn generate() {
   let mut shift = 0;
   // drop main's empty frame unless functions exist or a prologue branch (arena trap) crosses it
   if frame != 0 || nfuncs != 0 || use_arena { patch32(frame_at + 3, frame); }
-  else {
-    i = frame_at;
-    while i < clen - 7 { code[i] = code[i + 7]; i += 1; }
-    clen -= 7; shift = 7;
+  else {   // a 7-byte NOP in its place: removing it would shift (and misalign) every loop after it
+    code[frame_at] = 15 as u8; code[frame_at + 1] = 31 as u8; code[frame_at + 2] = 128 as u8;
+    code[frame_at + 3] = 0 as u8; code[frame_at + 4] = 0 as u8; code[frame_at + 5] = 0 as u8; code[frame_at + 6] = 0 as u8;
   }
   if handler_off > frame_at { handler_off -= shift; }
   i = 0;
