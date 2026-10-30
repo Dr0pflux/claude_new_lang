@@ -45,6 +45,42 @@ this branch's fixed point (SHA-256 `b8c88884…9b44d`), produced by the chain ol
 (`cedfd47a…`) → integration `42d02c9` source → its fixed point → this `skite.ck` → fixed point.
 `make` now works from a clean tree and reproduces the seed byte for byte.
 
+## LLVM backend (`--llvm`, optional)
+
+`tools/skite-llvm prog.ck prog` compiles through LLVM: `skite prog.ck prog.ll --llvm` emits the
+typed program as one LLVM module, and `clang -O3 -march=native` optimizes and links it. The
+default `./skite` path is unchanged and still needs no external tools; only this mode needs clang.
+
+- **What skite does first:** tail recursion, inlining, bounds versioning and the range analysis.
+  Proven bounds checks are dropped, so LLVM sees check-free inner loops. Everything else
+  (register allocation, scheduling, vectorization, unrolling) is LLVM's.
+- **Same semantics:** wrapping 64-bit integers, masked shift counts, saturating float-to-int casts,
+  no FMA contraction or float reordering. Bounds and file failures flush output and raise SIGILL;
+  division traps raise SIGFPE. A small IR runtime provides buffered output, the scoped arena,
+  `file`/`argv`/`save` and process-based `par`.
+- **Validation:** `make test-llvm` (also in CI) runs `tests/run.sh`, the control-flow, typed and vector
+  oracle fuzzers, and checks that all Game and kernel programs print the same output as native.
+  The stream fuzzer and the Python oracles also pass. Four checks that inspect native machine code
+  or native compiler output are skipped in this mode.
+- **Speed (2026-10-30, Xeon 2.8 GHz, median of 3 runs, ms; Game at `--quick` sizes):**
+
+| program | native | `--llvm` | gcc | clang | rust |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| binarytrees 19 | 500 | **372** | 323 | 594 | 710 |
+| nbody 5000000 | 424 | **323** | 273 | 283 | 247 |
+| spectralnorm 3000 | **241** | 563 | 231 | 458 | 603 |
+| mandelbrot 4000 | **310** | 1458 | 1391 | 1376 | 1501 |
+| prefixsum | 224 | **149** | 197 | 152 | 175 |
+| matmul | 214 | **174** | 208 | 202 | 189 |
+| ngramhash | 284 | **231** | 256 | 219 | 281 |
+| intsort | 185 | **169** | 264 | 168 | 288 |
+| strsearch | **51** | 277 | 249 | 163 | 247 |
+| vigenere29 | **474** | 1011 | 676 | 1032 | 997 |
+
+  Neither backend wins everywhere: the native backend's AVX-512 lane-parallel and byte-lane loops
+  (mandelbrot, spectralnorm, text kernels) beat LLVM, while LLVM wins on call-heavy and
+  scalar-recurrence code. `make bench` times both backends and compares the better one.
+
 ## Build and learn
 
 ```sh
@@ -53,6 +89,8 @@ make                        # build the self-hosted compiler
 ./prog
 make test                   # fixed point, regressions and oracle fuzzing
 make bench QUICK=1          # matched Benchmarks Game, smaller preset
+tools/skite-llvm prog.ck prog   # optional LLVM backend (needs clang)
+make test-llvm              # LLVM backend regressions and fuzzers
 ```
 
 Tests require Python 3 and a C compiler for independent oracles. Benchmark
