@@ -147,6 +147,7 @@ Owned `alloc<T>` and `shared<T>` buffer bases are aligned to at least 64 bytes, 
 |---|---|
 | `let a = alloc<T>(n);` | zero-initialized array of any scalar or struct `T`; `n` ∈ 1..2³¹−1 (constant: compile-time check; runtime: trap). At `main`'s top level: lives for the whole program. **Anywhere else** (functions, loops): taken from the scoped heap (below) |
 | `let a = shared<T>(n);` | the same, visible across `par` workers |
+| `let m = alloc<T>(r, c);` | matrix of `r × c` elements (`len(m) = r·c`); `r`, `c` evaluated once; non-positive or overflowing shape: compile error (constant) or exit 1 (runtime). `m[i, j]` traps unless `0 ≤ i < rows(m)` and `0 ≤ j < cols(m)`; `m[i, j, s]` is `m[i·s + j]` with only the flat check. Globals: `alloc<T>(R, C)` with constants. Parameters `m: matrix[T]` / `m: mut matrix[T]` receive the shape as two hidden arguments |
 | `save(k, a, n);` | writes the first `n` bytes of `[u8]` `a` to the file named by `argv[k]` (created or truncated, mode 0755); traps if `k ≥ argc`, `n > len(a)` or the write fails; `main` only |
 | `let f = file(k);` | maps `argv[k]` read-only as `[u8]`; traps if `k ≥ argc` or open/map fails; an empty file has length 0 |
 | `let s = argv(k);` | the text of command-line argument `k` as a read-only `[u8]` (no copy); traps if `k ≥ argc`; `main` only |

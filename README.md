@@ -30,6 +30,15 @@ and differential fuzzing (no benchmark claims):
 - **Also:** `x * 3/5/9` as `lea`, 8-bit stack adjustments (owner's local experiment), loop-local
   copies of read-only scalars, stream loops without dead iota or per-block broadcasts.
 
+**Matrix types (owner's local fork, merged here):** `alloc<T>(rows, cols)` (constant or runtime
+shape, each dimension evaluated once; invalid or overflowing shapes exit), `m[r, c]`,
+`m[r, c, stride]` flat sugar, `rows(m)`/`cols(m)`, and `matrix[T]` / `mut matrix[T]` parameters
+that carry the shape as hidden arguments. Each coordinate is checked on its own, so `m[0, cols]`
+traps even when the flat offset is in bounds. Checks are dropped only for constant or
+`for i in 0..rows(m)` / `0..cols(m)` coordinates. A pure one-expression predicate called on an
+array load (`if p(a[i])`) is now inlined, using one temporary for the load. Covered by
+`tests/matrix_test.py` (19 cases, run by `tests/run.sh`).
+
 **Known issue:** `bootstrap/skite-seed` (the old prebuilt seed) builds a compiler from this source
 that crashes; build with an existing compiler instead (`./skite skite.ck stage1 && ./stage1 skite.ck
 skite`) until the seed is refreshed. The committed `skite` binary is the fixed point.

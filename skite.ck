@@ -527,6 +527,20 @@ struct Var { noff: i64, nlen: i64, mutv: i64, isconst: i64, alias: i64, hoist: i
   reg: i64, slot: i64, cval: u64, weight: i64, arr: i64, ro: i64, basev: i64, lenv: i64, shared: i64, alen: i64,
   lenof: i64, aid: i64, ty: i64, et: i64, owner: i64, glob: i64, garr: i64, xr: i64 }
 let vars = alloc<Var>(65536);
+// Matrix metadata: 0 means one-dimensional array. Matrix dimensions are compile-time constants.
+let matrix_rows = alloc<i64>(65536);
+let matrix_cols = alloc<i64>(65536);
+// Dynamic matrix shape is kept in compiler-generated immutable scalar bindings.
+// A positive matrix_cols denotes a compile-time shape; -1 denotes runtime shape.
+let matrix_rvar = alloc<i64>(65536);
+let matrix_cvar = alloc<i64>(65536);
+let shape_safe = alloc<bool>(1048576);
+let mut index_shape_safe: bool = false;
+// Parser-only proven ranges for immutable for-loop induction variables.
+let for_known = alloc<bool>(65536);
+let for_low = alloc<i64>(65536);
+let for_high = alloc<i64>(65536);
+let for_boundvar = alloc<i64>(65536);
 let mut nv: i64 = 0;
 
 struct Func { noff: i64, nlen: i64, np: i64, body: i64, used: i64, exit_list: i64, addr: i64, calls: i64, rett: i64, mark: i64 }
@@ -534,6 +548,7 @@ let fns = alloc<Func>(4096);
 let fpvar = alloc<i64>(65536);   // [f * 16 + i]
 let fpw = alloc<i64>(65536);
 let fpmut = alloc<i64>(65536);
+let fp_matrix = alloc<bool>(65536);
 let fpty = alloc<i64>(65536);
 let mut nfn: i64 = 0;
 let mut curfn: i64 = 0;
@@ -542,6 +557,7 @@ let mut mainfn: i64 = 0;
 fn mk(k: i64) -> i64 {
   if nn >= MAX_NODES { fail("program too large"); }
   nd[nn].k = k; nd[nn].op = 0; nd[nn].a = -1; nd[nn].b = -1; nd[nn].c = -1; nd[nn].next = -1; nd[nn].var = -1;
+  shape_safe[nn] = false;
   nd[nn].pos = 0; nd[nn].chk = 0; nd[nn].nn = 0; nd[nn].ty = TY_I64; nd[nn].v = 0; nd[nn].dlo = 0; nd[nn].dhi = -1; flit32[nn] = 0;
   if parsing_src != 0 && tstart != 0 { nd[nn].src = tstart - source; } else { nd[nn].src = -1; }
   nn += 1;
@@ -996,7 +1012,7 @@ fn er(e: i64, env: i64) { // range of expression e -> R*
   if k == N_LOAD {
     er(nd[e].a, env);
     let rlo = RLO; let rhi = RHI; let rbot = RBOT;
-    if an_annot { if vpre[e] || proven(nd[e].var, nd[e].a, rlo, rhi, rbot, env) { nd[e].chk = 0; } else { nd[e].chk = 1; } }
+    if an_annot { if shape_safe[e] || vpre[e] || proven(nd[e].var, nd[e].a, rlo, rhi, rbot, env) { nd[e].chk = 0; } else { nd[e].chk = 1; } }
     if an_annot { nd[e].dlo = rlo; nd[e].dhi = rhi; }
     chk_refine(nd[e].var, nd[e].a, env);
     if nd[e].op > 0 { type_rg(nd[e].ty); return; }
@@ -1171,7 +1187,7 @@ fn as_stmt(s: i64, env: i64) {
     er(nd[s].a, env);
     let rlo = RLO; let rhi = RHI; let rbot = RBOT;
     if an_annot {
-      if vpre[s] || proven(nd[s].var, nd[s].a, rlo, rhi, rbot, env) { nd[s].chk = 0; } else { nd[s].chk = 1; }
+      if shape_safe[s] || vpre[s] || proven(nd[s].var, nd[s].a, rlo, rhi, rbot, env) { nd[s].chk = 0; } else { nd[s].chk = 1; }
       nd[s].dlo = rlo; nd[s].dhi = rhi;
     }
     er(nd[s].b, env);
@@ -1733,6 +1749,7 @@ fn mk_load(a: i64, idx: i64) -> i64 {
 }
 fn copy_node(r: i64, e: i64) {
   nd[r].k = nd[e].k; nd[r].op = nd[e].op; nd[r].a = nd[e].a; nd[r].b = nd[e].b; nd[r].c = nd[e].c; nd[r].next = nd[e].next;
+  shape_safe[r] = shape_safe[e];
   nd[r].var = nd[e].var; nd[r].pos = nd[e].pos; nd[r].chk = nd[e].chk; nd[r].nn = nd[e].nn; nd[r].ty = nd[e].ty;
   nd[r].v = nd[e].v; nd[r].dlo = nd[e].dlo; nd[r].dhi = nd[e].dhi; nd[r].src = nd[e].src; flit32[r] = flit32[e];
 }
@@ -1790,6 +1807,7 @@ fn parse_call(off: i64, n: i64) -> i64 { // current token is '('
       let a = find_var(tk_noff, tk_nlen); next();
       if vars[a].et != fpty[pi] { fail_ty2("array element type mismatch: expected [", fpty[pi], "], found [", vars[a].et); }
       if fpmut[pi] != 0 && vars[a].ro != 0 { fail("read-only array passed to a mut parameter"); }
+      if fp_matrix[pi] && matrix_cols[a] == 0 { fail("matrix parameter needs a shaped matrix argument"); }
       vars[vars[a].basev].reads += 1; if vars[a].lenv >= 0 { vars[vars[a].lenv].reads += 1; }
       ag = mk(N_ARR); nd[ag].var = a; nd[ag].ty = TY_NONE;
     } else {
@@ -1802,6 +1820,12 @@ fn parse_call(off: i64, n: i64) -> i64 { // current token is '('
     nd[ag].next = -1;
     if prev < 0 { nd[e].a = ag; } else { nd[prev].next = ag; }
     prev = ag; i += 1;
+    if fp_matrix[pi] {
+      let a = nd[ag].var;
+      let row = matrix_dimexpr(a, true); let col = matrix_dimexpr(a, false);
+      nd[prev].next = row; nd[row].next = col; nd[col].next = -1;
+      prev = col; i += 2;
+    }
     if tk_kind != ',' { break; }
     next();
   }
@@ -1819,6 +1843,58 @@ fn parse_field(st: i64) -> i64 {
     f += 1;
   }
   fail_name("no such field", tk_noff, tk_nlen); return -1;
+}
+// A matrix coordinate must be validated independently. Mapping an invalid (row,col)
+// to -1 makes the existing checked array load/store trap; flat indexing remains legal.
+fn matrix_coord_proven(e: i64, n: i64, dv: i64) -> bool {
+  if is_const(e) { return (nd[e].v as i64) >= 0 && (n > 0 && (nd[e].v as i64) < n); }
+  if nd[e].k == N_VAR {
+    let v = nd[e].var;
+    if !for_known[v] || for_low[v] < 0 { return false; }
+    if n > 0 { return for_boundvar[v] < 0 && for_high[v] <= n; }
+    return dv >= 0 && for_boundvar[v] == dv;
+  }
+  return false;
+}
+fn matrix_dimexpr(a: i64, row: bool) -> i64 {
+  if matrix_cols[a] == 0 { fail("expected a matrix with two dimensions"); }
+  if matrix_cols[a] > 0 {
+    if row { return mkconst_t(matrix_rows[a] as u64, TY_I64); }
+    return mkconst_t(matrix_cols[a] as u64, TY_I64);
+  }
+  if row { return var_ref(matrix_rvar[a]); }
+  return var_ref(matrix_cvar[a]);
+}
+fn matrix_index(a: i64) -> i64 {
+  // Parser-only proof, consumed by a single load/store. Never carries across accesses.
+  index_shape_safe = false;
+  expect('[');
+  let row = need_int(parse_expr());
+  if tk_kind != ',' { expect(']'); return row; }
+  next();
+  let col = need_int(parse_expr());
+  if tk_kind == ',' {
+    // Explicit-stride indexing is transparent sugar for a[row * stride + col].
+    // Only the final flat offset is checked. It works for arrays of unknown shape.
+    next(); let stride = need_int(parse_expr()); expect(']');
+    return typed_bin(O_ADD, typed_bin(O_MUL, row, stride), col);
+  }
+  expect(']');
+  if matrix_cols[a] == 0 { fail("two-dimensional indexing requires alloc<T>(rows, cols)"); }
+  // Proven constant/for-loop coordinates are lowered straight to a flat index.
+  // No second bounds-check is needed: their individual ranges are guaranteed.
+  if matrix_coord_proven(row, matrix_rows[a], matrix_rvar[a]) && matrix_coord_proven(col, matrix_cols[a], matrix_cvar[a]) {
+    index_shape_safe = true;
+    return typed_bin(O_ADD, typed_bin(O_MUL, row, matrix_dimexpr(a, false)), col);
+  }
+  let f = find_fn_lit("__matrix_index");
+  if f < 0 { fail("internal: missing matrix index helper"); }
+  let ar = matrix_dimexpr(a, true);
+  let ac = matrix_dimexpr(a, false);
+  let e = mk(N_CALL); nd[e].var = f; nd[e].ty = TY_I64;
+  nd[e].a = conv(row, TY_I64); nd[nd[e].a].next = conv(col, TY_I64);
+  let b = nd[nd[e].a].next; nd[b].next = ar; nd[ar].next = ac; nd[ac].next = -1;
+  return e;
 }
 fn mk_call1(name: [u8], ag: i64) -> i64 {
   let f = find_fn_lit(name); if f < 0 { fail("internal: missing prelude function"); }
@@ -1838,9 +1914,11 @@ fn atom() -> i64 {
     if tk_kind == '(' && find_var(no, nl) < 0 {
       if eqs(no, nl, "argc") { if curfn != mainfn { fail("argc() is only available in main"); } next(); expect(')'); return var_ref(0); }
       if eqs(no, nl, "ncpu") { next(); expect(')'); return mk(N_NCPU); }
-      if eqs(no, nl, "len") {
-        next(); if tk_kind != T_ID { fail("len() expects an array"); }
+      if eqs(no, nl, "len") || eqs(no, nl, "rows") || eqs(no, nl, "cols") {
+        let length = eqs(no, nl, "len"); let row = eqs(no, nl, "rows");
+        next(); if tk_kind != T_ID { fail("len()/rows()/cols() expects an array"); }
         let a = lookup_arr(tk_noff, tk_nlen); next(); expect(')');
+        if !length { return matrix_dimexpr(a, row); }
         if vars[a].lenv < 0 { return mkconst_t(vars[a].alen as u64, TY_I64); }
         return var_ref(vars[a].lenv);
       }
@@ -1861,8 +1939,9 @@ fn atom() -> i64 {
       return parse_call(no, nl);
     }
     if tk_kind == '[' {
-      let a = lookup_arr(no, nl); next(); let idx = need_int(parse_expr()); expect(']');
+      let a = lookup_arr(no, nl); let idx = matrix_index(a);
       let e = mk_load(a, idx);
+      shape_safe[e] = index_shape_safe;
       if is_struct(vars[a].et) { let f = parse_field(vars[a].et); nd[e].op = f + 1; nd[e].ty = sfty[(vars[a].et - TY_STRUCT0) * 32 + f]; }
       return e;
     }
@@ -1933,7 +2012,7 @@ fn clear_var(v: i64) {
   vars[v].reads = 0; vars[v].start = 0; vars[v].end = 0; vars[v].reg = -1; vars[v].slot = -1; vars[v].cval = 0;
   vars[v].weight = 0; vars[v].arr = 0; vars[v].ro = 0; vars[v].basev = 0; vars[v].lenv = -1; vars[v].shared = 0;
   vars[v].alen = 0; vars[v].lenof = 0; vars[v].aid = 0; vars[v].ty = TY_I64; vars[v].et = 0; vars[v].owner = 0;
-  vars[v].glob = 0; vars[v].garr = 0; vars[v].xr = -1; forvar[v] = false; vflit32[v] = 0;
+  vars[v].glob = 0; vars[v].garr = 0; vars[v].xr = -1; matrix_rows[v] = 0; matrix_cols[v] = 0; matrix_rvar[v] = -1; matrix_cvar[v] = -1; for_known[v] = false; for_boundvar[v] = -1; forvar[v] = false; vflit32[v] = 0;
 }
 fn hidden() -> i64 {
   if nv >= MAX_VARS { fail("too many variables"); }
@@ -2034,9 +2113,37 @@ fn parse_stmt() -> i64 {
         if vars[srcv].arr != 1 { fail("view source must be a byte array"); }
         next();
       } else { ag = conv(parse_expr(), TY_I64); }
+      let mut mr = 0; let mut mc = 0; let mut rv = -1; let mut cv = -1;
+      let mut shape_head = -1; let mut shape_tail = -1;
+      if tk_kind == ',' {
+        if kind != A_ALLOC { fail("two-dimensional arrays require alloc<T>(rows, cols)"); }
+        let rowarg = ag;
+        next();
+        let c = conv(parse_expr(), TY_I64);
+        if is_const(rowarg) && is_const(c) {
+          mr = nd[rowarg].v as i64; mc = nd[c].v as i64;
+          if mr < 1 || mc < 1 || mr > 2147483647 / mc { fail("matrix dimensions exceed supported array length"); }
+          ag = mkconst_t((mr * mc) as u64, TY_I64);
+        } else {
+          // Evaluate both shape expressions exactly once, left to right.
+          // Hidden scalars keep the dimensions alive for indexing and accessors.
+          rv = hidden(); vars[rv].ty = TY_I64;
+          shape_head = mk(S_LET); nd[shape_head].var = rv; nd[shape_head].a = rowarg;
+          cv = hidden(); vars[cv].ty = TY_I64;
+          shape_tail = mk(S_LET); nd[shape_tail].var = cv; nd[shape_tail].a = c;
+          nd[shape_head].next = shape_tail;
+          let f = find_fn_lit("__matrix_size");
+          if f < 0 { fail("internal: missing matrix size helper"); }
+          ag = mk(N_CALL); nd[ag].var = f; nd[ag].ty = TY_I64;
+          nd[ag].a = var_ref(rv); nd[nd[ag].a].next = var_ref(cv);
+          mr = -1; mc = -1;
+        }
+      }
       expect(')'); expect(';');
       let v = declare(no, nl, false);
       vars[v].arr = w; vars[v].et = et; vars[v].ty = TY_NONE; vars[v].shared = shr as i64;
+      matrix_rows[v] = mr; matrix_cols[v] = mc;
+      matrix_rvar[v] = rv; matrix_cvar[v] = cv;
       if kind == A_VIEW {
         vars[v].shared = vars[srcv].shared; vars[v].basev = vars[srcv].basev; vars[v].ro = vars[srcv].ro;
         if vars[srcv].lenv < 0 { vars[v].alen = vars[srcv].alen / w; }
@@ -2057,6 +2164,10 @@ fn parse_stmt() -> i64 {
       }
       vars[vars[v].basev].reads += 1;
       s = mk(S_ARR); nd[s].var = v; nd[s].a = ag; nd[s].op = kind; nd[s].c = srcv; nd[s].chk = w; nd[s].v = scoped as u64;
+      if shape_head >= 0 {
+        nd[shape_tail].next = s;
+        let block = mk(S_BLOCK); nd[block].a = shape_head; s = block;
+      }
       depth -= 1; return s;
     }
     if aarr { fail("array type annotation needs an array constructor"); }
@@ -2106,6 +2217,17 @@ fn parse_stmt() -> i64 {
     a = conv(a, t); b = conv(b, t);
     let mark = nvis;
     let iv = declare(no, nl, true); vars[iv].ty = t; forvar[iv] = true;
+    // Static ranges are safe only for ascending, exclusive signed loops.
+    if t == TY_I64 && !incl && is_const(a) && is_const(b) {
+      let lo = nd[a].v as i64; let hi = nd[b].v as i64;
+      if lo >= 0 && hi >= lo { for_known[iv] = true; for_low[iv] = lo; for_high[iv] = hi; }
+    }
+    if t == TY_I64 && !incl && is_const(a) && nd[b].k == N_VAR {
+      let bv = nd[b].var;
+      if (nd[a].v as i64) >= 0 && vars[bv].mutv == 0 {
+        for_known[iv] = true; for_low[iv] = nd[a].v as i64; for_boundvar[iv] = bv;
+      }
+    }
     let init = mk(S_LET); nd[init].var = iv; nd[init].a = a;
     // the bound is evaluated once: constants, immutable scalars and enclosing for variables
     // (read-only in this body) are used as they are
@@ -2231,9 +2353,9 @@ fn parse_stmt() -> i64 {
       if vars[v].ro != 0 { fail("store to read-only array"); }
       let mut et = vars[v].et;
       let mut fld = -1;
-      let mut idx = 0;
+      let mut idx = 0; let mut idx_safe = false;
       if gidx >= 0 { idx = gidx; }
-      else { expect('['); idx = need_int(parse_expr()); expect(']'); }
+      else { idx = matrix_index(v); idx_safe = index_shape_safe; }
       if is_struct(et) { fld = parse_field(et); et = sfty[(et - TY_STRUCT0) * 32 + fld]; }
       let mut op = -1;
       let mut val = 0;
@@ -2259,10 +2381,11 @@ fn parse_stmt() -> i64 {
             let tv = hidden(); let r2 = deflt(r); vars[tv].ty = nd[r2].ty;
             let l1 = mk(S_LET); nd[l1].var = tv; nd[l1].a = r2; nd[l1].next = l2; head = l1; rv = mk_var(tv);
           }
-          let st = mk(S_STORE); nd[st].var = v; nd[st].op = -1; nd[st].chk = 1; nd[st].c = fld;
+          let st = mk(S_STORE); nd[st].var = v; nd[st].op = -1; nd[st].chk = 1; nd[st].c = fld; shape_safe[st] = idx_safe;
           let mut ld = 0;
           if direct { nd[st].a = idx; ld = mk_load(v, clone_expr(idx)); }
           else { nd[st].a = mk_var(ti); ld = mk_load(v, mk_var(ti)); }
+          shape_safe[ld] = idx_safe;
           if fld >= 0 { nd[ld].op = fld + 1; nd[ld].ty = et; } else if gidx >= 0 { nd[ld].ty = et; }
           let mut val2 = typed_bin(op, ld, rv);
           if !ty_int(et) || !ty_int(nd[val2].ty) { val2 = conv(val2, et); }
@@ -2278,6 +2401,7 @@ fn parse_stmt() -> i64 {
       expect(';');
       vars[vars[v].basev].reads += 1; if vars[v].lenv >= 0 { vars[vars[v].lenv].reads += 1; }
       s = mk(S_STORE); nd[s].var = v; nd[s].a = idx; nd[s].b = val; nd[s].op = op; nd[s].chk = 1; nd[s].c = fld;
+      shape_safe[s] = idx_safe;
       depth -= 1; return s;
     }
     if vars[v].mutv == 0 { fail("assignment to immutable variable"); }
@@ -2322,22 +2446,42 @@ fn parse_header(f: i64, decl: bool) {
     let mut mut_ = false; if tk_kind == T_MUT { mut_ = true; next(); }
     if tk_kind != T_ID { fail("expected parameter name"); }
     let no = tk_noff; let nl = tk_nlen; next(); expect(':');
-    let mut w = 0; let mut amut = false; let mut t = 0;
-    if tk_kind == T_MUT || tk_kind == '[' {
+    let mut w = 0; let mut amut = false; let mut t = 0; let mut ismat = false;
+    if tk_kind == T_ID && eqs(tk_noff, tk_nlen, "matrix") {
+      ismat = true; next(); expect('['); t = parse_type_s(true); expect(']'); w = ty_width(t);
+      if mut_ { fail("matrix parameter is a binding; use `name: mut matrix[T]` for writable elements"); }
+    } else if tk_kind == T_MUT || tk_kind == '[' {
       if tk_kind == T_MUT { amut = true; next(); }
+      if tk_kind == T_ID && eqs(tk_noff, tk_nlen, "matrix") { ismat = true; next(); }
       expect('['); t = parse_type_s(true); expect(']'); w = ty_width(t);
       if mut_ { fail("array parameters are bindings; use `name: mut [T]` for writable elements"); }
     } else { t = parse_type(); }
+    if ismat && fns[f].np + 3 > MAX_PARAMS { fail("too many parameters with matrix shape metadata"); }
     let pi = f * 16 + fns[f].np;
     if decl {
       let v = declare(no, nl, w == 0 && mut_);
       if w != 0 {
         vars[v].arr = w; vars[v].et = t; vars[v].ty = TY_NONE; vars[v].ro = (!amut) as i64;
         vars[v].basev = hidden(); vars[v].lenv = hidden();
+        if ismat {
+          let rv = hidden(); vars[rv].ty = TY_I64;
+          let cv = hidden(); vars[cv].ty = TY_I64;
+          matrix_rows[v] = -1; matrix_cols[v] = -1;
+          matrix_rvar[v] = rv; matrix_cvar[v] = cv;
+          fpvar[pi + 1] = rv; fpvar[pi + 2] = cv;
+        }
       } else { vars[v].ty = t; }
       fpvar[pi] = v;
     }
-    fpw[pi] = w; fpty[pi] = t; fpmut[pi] = amut as i64; fns[f].np += 1;
+    fpw[pi] = w; fpty[pi] = t; fpmut[pi] = amut as i64; fp_matrix[pi] = ismat;
+    if ismat {
+      fpw[pi + 1] = 0; fpw[pi + 2] = 0;
+      fpty[pi + 1] = TY_I64; fpty[pi + 2] = TY_I64;
+      fpmut[pi + 1] = 0; fpmut[pi + 2] = 0;
+      fp_matrix[pi + 1] = false; fp_matrix[pi + 2] = false;
+      fns[f].np += 2;
+    }
+    fns[f].np += 1;
     if tk_kind != ',' { break; }
     next();
   }
@@ -2439,11 +2583,22 @@ fn parse_global() {
   if isc && (aarr || tk_kind == T_STR || (tk_kind == T_ID && eqs(tk_noff, tk_nlen, "alloc"))) { fail("a const is a scalar (use let for arrays)"); }
   if tk_kind == T_ID && eqs(tk_noff, tk_nlen, "alloc") {
     next(); expect('<'); let et = parse_type_s(true); expect('>'); expect('(');
-    let n = conv(parse_expr(), TY_I64); expect(')'); expect(';');
+    let mut n = conv(parse_expr(), TY_I64);
+    let mut mr = 0; let mut mc = 0;
+    if tk_kind == ',' {
+      if !is_const(n) { fail("matrix dimensions must be compile-time constants"); }
+      mr = nd[n].v as i64;
+      next(); let c = conv(parse_expr(), TY_I64);
+      if !is_const(c) { fail("matrix dimensions must be compile-time constants"); }
+      mc = nd[c].v as i64;
+      if mr < 1 || mc < 1 || mr > 2147483647 / mc { fail("matrix dimensions exceed supported array length"); }
+      n = mkconst_t((mr * mc) as u64, TY_I64);
+    }
+    expect(')'); expect(';');
     if mut_ { fail("array bindings are immutable (their elements are not)"); }
     if ann != 0 && (!aarr || ann != et) { fail("array type annotation does not match the constructor"); }
     if !is_const(n) { fail("a global array needs a constant length"); }
-    static_array(new_global(no, nl, false), et, nd[n].v as i64);
+    let v = new_global(no, nl, false); static_array(v, et, nd[n].v as i64); matrix_rows[v] = mr; matrix_cols[v] = mc;
     return;
   }
   if tk_kind == T_STR {
@@ -2541,7 +2696,7 @@ fn check_par() {
     i += 1;
   }
 }
-let PRELUDE = "fn __pdig(x: u64) { if x >= 10 { __pdig(x / 10); } putc((x % 10) as i64 + 48); }\nfn __print_bool(b: bool) {\n  if b { putc(116); putc(114); putc(117); putc(101); }\n  else { putc(102); putc(97); putc(108); putc(115); putc(101); }\n  putc(10);\n}\nfn __pfrac6(t: u64) {\n  putc(46);\n  let mut p: u64 = 100000;\n  while p > 0 { putc((t / p % 10) as i64 + 48); p = p / 10; }\n}\nfn __pfix6(a: f64) {\n  let mut ip = a as u64;\n  let fr = a - ip as f64;\n  let s = fr * 1000000.0;\n  let mut t = s as u64;\n  let d = s - t as f64;\n  if d > 0.5 || (d == 0.5 && t % 2 == 1) { t += 1; }\n  if t == 1000000 { ip += 1; t = 0; }\n  __pdig(ip);\n  __pfrac6(t);\n}\nfn __print_f64(x: f64) {\n  if x != x { putc(78); putc(97); putc(78); putc(10); return; }\n  let neg = bits(x) >> 63 != 0;\n  if neg { putc(45); }\n  let mut a = x;\n  if neg { a = -x; }\n  if a == f64_from_bits(0x7FF0000000000000) { putc(105); putc(110); putc(102); putc(10); return; }\n  if a < 10000000000000000.0 { __pfix6(a); putc(10); return; }\n  if a < 18446744073709551616.0 { __pdig(a as u64); __pfrac6(0); putc(10); return; }\n  let mut e = 0;\n  while a >= 10.0 { a = a / 10.0; e += 1; }\n  __pfix6(a); putc(101); putc(43); __pdig(e as u64); putc(10);\n}\n";
+let PRELUDE = "fn __matrix_size(rows: i64, cols: i64) -> i64 {\n  if rows < 1 || cols < 1 || rows > 2147483647 / cols { exit(1); }\n  return rows * cols;\n}\nfn __matrix_index(row: i64, col: i64, rows: i64, cols: i64) -> i64 {\n  return (row * cols + col) | (0 - (((row as u64 >= rows as u64) || (col as u64 >= cols as u64)) as i64));\n}\nfn __pdig(x: u64) { if x >= 10 { __pdig(x / 10); } putc((x % 10) as i64 + 48); }\nfn __print_bool(b: bool) {\n  if b { putc(116); putc(114); putc(117); putc(101); }\n  else { putc(102); putc(97); putc(108); putc(115); putc(101); }\n  putc(10);\n}\nfn __pfrac6(t: u64) {\n  putc(46);\n  let mut p: u64 = 100000;\n  while p > 0 { putc((t / p % 10) as i64 + 48); p = p / 10; }\n}\nfn __pfix6(a: f64) {\n  let mut ip = a as u64;\n  let fr = a - ip as f64;\n  let s = fr * 1000000.0;\n  let mut t = s as u64;\n  let d = s - t as f64;\n  if d > 0.5 || (d == 0.5 && t % 2 == 1) { t += 1; }\n  if t == 1000000 { ip += 1; t = 0; }\n  __pdig(ip);\n  __pfrac6(t);\n}\nfn __print_f64(x: f64) {\n  if x != x { putc(78); putc(97); putc(78); putc(10); return; }\n  let neg = bits(x) >> 63 != 0;\n  if neg { putc(45); }\n  let mut a = x;\n  if neg { a = -x; }\n  if a == f64_from_bits(0x7FF0000000000000) { putc(105); putc(110); putc(102); putc(10); return; }\n  if a < 10000000000000000.0 { __pfix6(a); putc(10); return; }\n  if a < 18446744073709551616.0 { __pdig(a as u64); __pfrac6(0); putc(10); return; }\n  let mut e = 0;\n  while a >= 10.0 { a = a / 10.0; e += 1; }\n  __pfix6(a); putc(101); putc(43); __pdig(e as u64); putc(10);\n}\n";
 let mut user_start: i64 = 0;
 fn begin_src(k: i64) {
   if k == 0 { source = 0; in_prelude = true; parsing_src = 2; } else { source = user_start; in_prelude = false; parsing_src = 1; }
@@ -3053,6 +3208,22 @@ fn pure_nt_op(e: i64) -> bool {   // the node's own operation cannot trap
 fn lift_stmt(s: i64) {
   let k = nd[s].k;
   LIFT_OK = true; LIFT_H = -1; LIFT_T = -1;
+  // A pure, single-expression predicate called on a checked array load was
+  // previously not inlined because N_LOAD is not a simple call argument.
+  // Snapshot that argument into an immutable temporary first, preserving
+  // exactly one load, its trap semantics, and left-to-right evaluation.
+  // The normal expression inliner can now substitute the temporary instead
+  // of duplicating the array load across every predicate comparison.
+  if k == S_IF && nd[s].a >= 0 && nd[nd[s].a].k == N_CALL {
+    let ce = nd[s].a; let f = nd[ce].var;
+    let ag = nd[ce].a;
+    if fns[f].np == 1 && ag >= 0 && nd[ag].next < 0 && nd[ag].k == N_LOAD && !has_call(nd[ag].a) && inl_expr(f) >= 0 {
+      let t = hidden(); vars[t].ty = nd[ag].ty;
+      let l = mk(S_LET); nd[l].var = t; nd[l].a = ag;
+      let av = mk_var(t); nd[av].ty = nd[ag].ty; nd[ce].a = av;
+      LIFT_H = l; LIFT_T = l;
+    }
+  }
   if k == S_LET || k == S_ASSIGN || k == S_RET || k == S_PRINT || k == S_PUTC || k == S_IF {
     let e = nd[s].a;
     if e < 0 || !has_call(e) { return; }
@@ -4918,13 +5089,13 @@ fn lea(d: i64, base: i64, index: i64, disp: i64) {
   }
   if md == 1 { byte(disp & 255); } else if md == 2 { u32_(disp); }
 }
-// r * (1 + 2^scale), modulo 2^64: lea r, [r + r * 2^scale]
+// r * (1 + 2^scale), modulo 2^64.  One LEA, no flags or scratch registers.
 fn lea_mul_small(r: i64, scale: i64) {
   let mut rex = 72;
-  if (r & 8) != 0 { rex = 79; }   // REX.W | REX.R | REX.X | REX.B
+  if (r & 8) != 0 { rex = 79; } // REX.W | REX.R | REX.X | REX.B
   byte(rex); byte(141);
   let mut md = 0;
-  if (r & 7) == 5 { md = 1; }   // rbp / r13 as base need mod 01 with a zero displacement
+  if (r & 7) == 5 { md = 1; } // rbp/r13 cannot use mod=00 without displacement
   byte((md << 6) | ((r & 7) << 3) | 4);
   byte((scale << 6) | ((r & 7) << 3) | (r & 7));
   if md == 1 { byte(0); }
@@ -5539,7 +5710,10 @@ fn gen_call(e: i64, rg: i64, n: i64) {
   while i < NXREG { if ((xm >> i) & 1) != 0 { sse(102, 1, 126, XREG0 + i, K_REG, RAX); push_r(RAX); nx += 1; } i += 1; }
   let mut A = 8 * words;
   if rc { A = 0; }
-  if A != 0 { if A <= 127 { emh("4883ec"); byte(A); } else { emh("4881ec"); u32_(A); } }
+  if A != 0 {
+    if A <= 127 { emh("4883ec"); byte(A); }
+    else { emh("4881ec"); u32_(A); }
+  }
   sp_adj = 8 * (ns + nx) + A;
   let mut w = 0;
   k = 0;
@@ -5582,7 +5756,10 @@ fn gen_call(e: i64, rg: i64, n: i64) {
   }
   sp_adj = 0;
   byte(232); fns[f].calls = pl_add(fns[f].calls, clen); u32_(0);
-  if A != 0 { if A <= 127 { emh("4883c4"); byte(A); } else { emh("4881c4"); u32_(A); } }
+  if A != 0 {
+    if A <= 127 { emh("4883c4"); byte(A); }
+    else { emh("4881c4"); u32_(A); }
+  }
   i = NXREG - 1;
   while i >= 0 { if ((xm >> i) & 1) != 0 { pop_r(RCX); sse(102, 1, 110, XREG0 + i, K_REG, RCX); } i -= 1; }
   i = ns - 1;
@@ -5745,7 +5922,7 @@ fn gen(e: i64, rg: i64, n: i64) {
     loc(nd[a].var);
     let lk = OK; let lr = ORR;
     if op == O_MUL && fits_s32(kv) && kv > 1 && (kv & (kv - 1)) != 0 && (kv as i64) != -1 {
-      if lk == K_REG && (kv == 3 || kv == 5 || kv == 9) {   // r * (1 + 2^s): one lea
+      if lk == K_REG && (kv == 3 || kv == 5 || kv == 9) {
         mov_rr(r0, lr);
         let mut sh = 1; if kv == 5 { sh = 2; } if kv == 9 { sh = 3; }
         lea_mul_small(r0, sh); return;

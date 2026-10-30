@@ -380,4 +380,6 @@ echo 'PASS: loop-carried stores keep traps and outputs'
 rc=0; "$T/dmp" > "$T/dmp.out" || rc=$?
 [[ $rc -eq 136 && "$(cat "$T/dmp.out")" == "-3094914550737416739" ]] || { echo "FAIL: divmod pair (rc=$rc)" >&2; exit 1; }
 echo 'PASS: paired division and remainder'
+python3 tests/matrix_test.py "$SKITE" > /dev/null || { echo 'FAIL: matrix tests' >&2; exit 1; }
+echo 'PASS: matrix types'
 echo 'All tests passed'
