@@ -39,11 +39,12 @@ traps even when the flat offset is in bounds. Checks are dropped only for consta
 array load (`if p(a[i])`) is now inlined, using one temporary for the load. Covered by
 `tests/matrix_test.py` (19 cases, run by `tests/run.sh`).
 
-**Seed refreshed ([issue #25](https://github.com/Dr0pflux/skite.ck/issues/25)):** the old seed put BSS at
-`0x600000`, so any compiler image over 2 MiB overlapped it and crashed. `bootstrap/skite-seed` is now
-this branch's fixed point (SHA-256 `b8c88884…9b44d`), produced by the chain old seed
-(`cedfd47a…`) → integration `42d02c9` source → its fixed point → this `skite.ck` → fixed point.
-`make` now works from a clean tree and reproduces the seed byte for byte.
+**Bootstrap ELF regression ([issue #25](https://github.com/Dr0pflux/skite.ck/issues/25)):**
+The repair landed in `7188ac6`; its chain was the old seed → `42d02c9` source →
+its fixed point → the compiler source at `7188ac6` → fixed point. The seed is SHA-256 `b8c8888486a1bba4e4c7abf42c425ff445701a7a500cd5ac657dc882c9d9b44d`.
+`tests/bootstrap_elf.py` checks that the seed and a generated compiler image larger than
+2 MiB have disjoint `PT_LOAD` ranges, then compiles and runs a trivial program with both.
+It also verifies that an injected overlapping program header is rejected. Run with `make test`.
 
 ## General native code generation (branch `claude/affectionate-volta-nnb18v`, 2026-10-30)
 
