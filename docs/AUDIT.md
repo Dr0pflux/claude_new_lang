@@ -8,6 +8,15 @@ For positive even u64 divisor d=2m, floor(n/d)=floor((n>>>1)/m). Both shifted di
 
 # Compiler audit and validation status
 
+## Bootstrap ELF regression (issue #25)
+
+`tests/bootstrap_elf.py` parses ELF64 program headers and checks that the seed and
+a generated compiler image above 2 MiB have disjoint `PT_LOAD` memory ranges.
+Both compilers must build and run a trivial program, and a synthetic overlapping
+header must be rejected. `make test` runs this check. The active seed SHA-256 is
+`b8c8888486a1bba4e4c7abf42c425ff445701a7a500cd5ac657dc882c9d9b44d`; the test
+protects the fixed issue #25 repair against regression.
+
 Updated 2026-10-28. Verified integration: `c4837cf83e284b588b30daaaa2d66824fffc4e8f`
 (PR #10); its tree matches tested head `5e86b4b06154452e3d517de4dabf828bffe96a6c`.
 The [team ledger](https://github.com/Dr0pflux/skite.ck/issues/3) records newer work.

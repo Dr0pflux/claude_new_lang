@@ -9,6 +9,7 @@ skite: skite.ck
 selfcheck: skite
 	./skite skite.ck skite.check && cmp skite skite.check && rm -f skite.check && echo "selfcheck: fixed point"
 test: skite selfcheck
+	python3 tests/bootstrap_elf.py
 	./tests/run.sh
 	python3 tests/zero_divisor.py
 	python3 tests/divmod_pair.py
